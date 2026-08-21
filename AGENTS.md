@@ -1,4 +1,4 @@
-# Project
+# 项目概述
 
 - 项目名称：`CAN: Cryptographic Authentication Neural Gate Layer`。
 - 研究目标：实现 Gate Layer 在神经网络计算图中间的模型内生安全架构，融合浅层特征与密码 credential 验证信息。
@@ -7,7 +7,7 @@
 - `SECURITY.md` 记录信任模型和明确不保证的性质（当前阶段不解决白盒攻击问题）。
 - 本项目只允许防御性实现和验证，不实现攻击性后门、规避检测、未授权访问、凭据窃取或可直接用于攻击第三方系统的功能。
 
-# Session workflow
+# 会话工作流程
 
 - 每次开始工作时，先阅读 `AGENTS.md`、根目录 `PROJECT_WORKLOG.md` 以及与当前任务相关的文档。
 - 检查 `git status`、`git branch --show-current` 和完整 `HEAD`。如果目录不是 Git 仓库，明确记录，不得虚构分支或 commit。
@@ -16,19 +16,46 @@
 - 代码、配置和可复现的测试结果优先于过时文档；发现差异时记录差异和后续修正文档任务。
 - GPU 训练任务需要时在工作日志中明确标注，并记录预期时间和资源需求。
 
-# Engineering rules
+# 工程规则
 
 - 使用 Python 3.8+、PyTorch 2.0+、标准格式化工具（black, isort）。
 - 优先小而可审查的 patch，不重写无关模块，不格式化无关文件，不做与当前目标无关的重构。
 - 仅当抽象减少真实复杂度、消除明显重复或匹配已有架构时才新增抽象。
 - 结构化数据使用正式解析器或结构化 API，不用脆弱字符串拼接或正则模拟解析。
-- 所有公开 API 都有类型标注（typing）和简洁中文 docstring。
+- **所有公开 API 都有类型标注（typing）和简洁中文 docstring**。
+- **所有函数、类和关键方法必须添加中文注释，说明其功能、作用和关键参数**。
 - 测试使用显式、确定性的种子（torch.manual_seed, random.seed），并记录影响复现的环境条件。
 - 不提交秘密、凭据、私钥、大型 checkpoint、生成输出或大型二进制文件到 Git。
 - 严格验证不可信外部输入；未知字段、重复字段、错误长度、非有限数值、非规范编码和类型混淆默认拒绝。
 - 默认行为必须 fail closed；任何降级模式都必须显式配置、可审计且默认关闭。
 
-# Core architecture principles
+# 文档与代码规范
+
+- **文档内容尽量用中文描述**（可以保留使用一些英文术语，如 Gate Layer、Module-SIS、credential 等）。
+- **代码中必须添加中文注释**：
+  - 每个函数/方法必须有中文 docstring，说明功能、参数和返回值
+  - 关键代码块添加中文注释说明逻辑
+  - 复杂算法添加步骤说明
+  - 示例：
+    ```python
+    def forward(self, x: Tensor, credential: dict) -> Tensor:
+        """前向传播：融合特征与密码验证信息
+        
+        参数:
+            x: 输入特征图 [B, C, H, W]
+            credential: 密码凭证字典，包含 commitment, challenge, response
+        
+        返回:
+            gate_signal: 门控信号 [B]，范围 [0, 1]
+        """
+        # 步骤 1: 提取 Module-SIS 验证的中间结果
+        residual = self.compute_residual(credential)
+        # 步骤 2: 计算门控信号
+        gate_signal = self.gate_network(residual)
+        return gate_signal
+    ```
+
+# 核心架构原则
 
 本项目实现"Gate Layer 在计算图中间"的架构：
 
@@ -64,7 +91,7 @@ gate_signal -> [条件路由] -> 深层 or 公开head
 - replay、tamper、格式错误、权限提升和验证失败必须产生零受保护副作用。
 - 拒绝原因、验证 trace 和审计结果必须稳定、结构化、可测试，且不泄露秘密。
 
-# Testing rules
+# 测试规则
 
 - 每个新增模块都有对应的单元测试（`tests/v2/test_*.py`）。
 - 测试覆盖：正向测试（合法输入）、边界值、类型错误、形状不匹配。
@@ -77,7 +104,7 @@ gate_signal -> [条件路由] -> 深层 or 公开head
 - 测试命令：`pytest tests/v2/ -v`（记录到工作日志）。
 - 无法运行的测试必须在最终总结和工作日志中说明原因，不得用”应当通过”代替结果。
 
-# Git and worktree safety
+# Git 和工作树安全
 
 - 保留用户已有改动，忽略无关文件，不覆盖、回滚、删除或格式化无关内容。
 - 不使用 `git reset --hard`、`git checkout --` 或其他破坏性命令，除非用户明确授权准确目标。
@@ -85,11 +112,11 @@ gate_signal -> [条件路由] -> 深层 or 公开head
 - 未经明确要求，不推送分支、不创建 PR、不合并分支、不发布版本。
 - 多 worktree 项目以主工作树中的 `PROJECT_WORKLOG.md` 为跨分支唯一事实来源。
 
-# Definition of done
+# 完成定义
 
 1. 请求的行为已经实现。
 2. 相关测试通过，新增模块具有单元测试。
-3. 代码符合类型标注和 docstring 要求。
+3. 代码符合类型标注、中文 docstring 和中文注释要求。
 4. 工作文档与代码、配置和 Git 状态一致。
 5. 实现范围、未实现内容、测试结果和残余风险已经总结。
 6. toy、实验性、单机、小样本和非生产限制均有明确标记。
