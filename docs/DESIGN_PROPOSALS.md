@@ -139,14 +139,16 @@ gated_features = shallow_features × gate_signal
 
 ### 接口定义
 
-#### 数据结构
+#### 数据结构（Tensor-based，支持 batch、GPU、autograd）
 
 ```python
-from enum import Enum
+from enum import IntEnum
 from dataclasses import dataclass
+import torch
+from torch import Tensor
 
-class ReasonCode(Enum):
-    """拒绝原因码"""
+class ReasonCode(IntEnum):
+    """拒绝原因码（IntEnum 便于转换为 LongTensor）"""
     SUCCESS = 0
     LWE_VERIFICATION_FAILED = 1
     INVALID_SHAPE = 2
@@ -154,20 +156,83 @@ class ReasonCode(Enum):
     WRONG_DTYPE = 4
     DIMENSION_MISMATCH = 5
 
-@dataclass
+@dataclass(frozen=True)
 class VerificationEvidence:
-    """验证证据（无授权能力）"""
-    lwe_verified: bool          # LWE 验证是否通过
-    error_norm: float          # LWE 误差范数
-    reason: ReasonCode         # 原因码
+    """批量 LWE 验证证据（Tensor-based）
+    
+    所有字段都是 Tensor，支持 batch、GPU 和 autograd。
+    禁止使用 .item() 或返回 Python list。
+    """
+    verified: Tensor       # BoolTensor[B]，LWE 验证是否通过
+    error_norm: Tensor     # FloatTensor[B]，LWE 误差范数
+    reason_code: Tensor    # LongTensor[B]，拒绝原因码
 
-@dataclass
+@dataclass(frozen=True)
 class AuthorizationDecision:
-    """授权决策（由协调器提交）"""
-    allow: bool                # 是否允许访问深层
-    gate_signal: float        # 门控信号（训练时软值，推理时 {0, 1}）
+    """批量授权决策（Tensor-based）
+    
+    所有字段都是 Tensor，支持 batch、GPU 和 autograd。
+    """
+    allow: Tensor          # BoolTensor[B]，是否允许访问深层
+    gate_signal: Tensor    # FloatTensor[B]，门控信号（训练时 ∈ [0,1]，推理时 ∈ {0,1}）
     evidence: VerificationEvidence  # 关联的证据
 ```
+
+#### 非法输入的 Fail-Closed 数值语义
+
+对于形状、类型、有限性验证失败的样本，统一产生：
+```python
+verified = torch.tensor([False])
+error_norm = torch.tensor([float('inf')])  # +inf 表示"必然拒绝"
+reason_code = torch.tensor([对应的 ReasonCode])
+allow = torch.tensor([False])
+gate_signal = torch.tensor([0.0])
+```
+
+**关键原则**：
+- 不得让 `NaN` 进入 sigmoid 或后续特征计算
+- `error_norm = +inf` 保证经过 sigmoid 后 gate_signal ≈ 0
+- 所有失败样本的 gate_signal 严格为 0.0
+
+#### 输入约束
+
+**credential**：`Tensor[B, n]` 或 `np.ndarray[B, n]` 或 `[n]`（单样本）
+- 类型：float32/float64（自动转换为 float32）
+- 约束：有限值，n == LWEParams.n
+- 单样本 `[n]` 自动扩展为 `[1, n]`，然后广播到 `[B, n]`（B 从 shallow_features 推断）
+
+**shallow_features**：`Tensor[B, C, H, W]`
+- 类型：float32/float64/float16
+- 约束：
+  - 必须是 4D Tensor
+  - 必须是浮点 dtype
+  - 必须全部有限（无 NaN/Inf）
+  - Batch 维度 B 必须与 credential 一致
+  - Device 必须与 Gate Layer 的 buffer (A, b) 兼容
+
+**拒绝的输入**：
+- credential: 非有限值、非浮点类型、错误形状、维度不匹配
+- shallow_features: 非 Tensor、非 4D、非浮点 dtype、非有限值、batch 不一致
+
+#### 输出
+
+**gated_features**：`Tensor[B, C, H, W]`
+- 与 shallow_features 相同的 shape、dtype、device
+- `gated_features = shallow_features * gate_signal[:, None, None, None]`
+
+**decision**：`AuthorizationDecision`
+- `allow`: BoolTensor[B]
+- `gate_signal`: FloatTensor[B]
+- `evidence`: VerificationEvidence
+
+#### Mixed Batch 契约
+
+**必须支持**：
+- 同一 batch 中同时存在 valid、invalid 和格式错误的 credential
+- 每个样本独立生成 verified、reason_code、allow 和 gate_signal
+- 输出顺序与输入顺序严格一致
+- Invalid 样本不影响 valid 样本
+- 空 batch (B=0) 返回空 Tensor
 
 #### 模块接口
 
@@ -175,10 +240,30 @@ class AuthorizationDecision:
 ```python
 class LWEVerifier(nn.Module):
     def __init__(self, A: np.ndarray, b: np.ndarray, params: LWEParams):
-        ...
+        """初始化 LWE 验证器
+        
+        参数:
+            A: [m, n]，LWE 公钥矩阵，float32
+            b: [m]，LWE 公钥向量，float32
+            params: LWE 参数（包含 error_threshold）
+        """
+        super().__init__()
+        # 存储为 nn.Buffer（不可训练，但参与 device 转移）
+        self.register_buffer('A', torch.from_numpy(A).float())
+        self.register_buffer('b', torch.from_numpy(b).float())
+        self.error_threshold = params.error_threshold
+        self.n = A.shape[1]
+        self.m = A.shape[0]
     
-    def forward(self, credential: Tensor) -> VerificationEvidence:
-        """验证 credential，返回结构化证据（无副作用）"""
+    def forward(self, credential: Union[Tensor, np.ndarray]) -> VerificationEvidence:
+        """验证 credential，返回结构化证据（无副作用，可重复调用）
+        
+        参数:
+            credential: [B, n] 或 [n]
+        
+        返回:
+            VerificationEvidence（所有字段都是 Tensor[B]）
+        """
         ...
 ```
 
@@ -186,25 +271,82 @@ class LWEVerifier(nn.Module):
 ```python
 class AuthorizationCoordinator(nn.Module):
     def __init__(self, params: LWEParams, temperature: float = 5.0):
-        ...
+        """初始化授权协调器
+        
+        参数:
+            params: LWE 参数（包含 error_threshold）
+            temperature: 训练时软化温度（默认 5.0）
+        """
+        super().__init__()
+        self.error_threshold = params.error_threshold
+        self.temperature = temperature
     
     def forward(self, evidence: VerificationEvidence) -> AuthorizationDecision:
-        """根据证据做出授权决策"""
-        ...
+        """根据证据做出授权决策（唯一授权决策点）
+        
+        训练模式：软门控，gate_signal = sigmoid(normalized_margin / temperature)
+        推理模式：硬判定，gate_signal = evidence.verified.float()
+        
+        参数:
+            evidence: VerificationEvidence
+        
+        返回:
+            AuthorizationDecision
+        """
+        # allow 的唯一来源
+        allow = evidence.verified & (evidence.reason_code == ReasonCode.SUCCESS)
+        
+        if self.training:
+            # 训练：软门控（可微分）
+            # 使用归一化 margin 避免饱和
+            normalized_margin = (self.error_threshold - evidence.error_norm) / self.error_threshold
+            gate_signal = torch.sigmoid(normalized_margin / self.temperature)
+        else:
+            # 推理：硬判定
+            gate_signal = allow.to(evidence.error_norm.dtype)
+        
+        return AuthorizationDecision(
+            allow=allow,
+            gate_signal=gate_signal,
+            evidence=evidence
+        )
 ```
 
 **FeatureGate**：
 ```python
 class FeatureGate(nn.Module):
     def forward(self, shallow_features: Tensor, decision: AuthorizationDecision) -> Tensor:
-        """应用门控到特征"""
-        # gated_features = shallow_features * decision.gate_signal
-        ...
+        """应用门控到特征（保持 shape、dtype、device）
+        
+        参数:
+            shallow_features: [B, C, H, W]
+            decision: AuthorizationDecision（gate_signal [B]）
+        
+        返回:
+            gated_features: [B, C, H, W]
+        """
+        # gate_signal [B] → [B, 1, 1, 1]
+        gate = decision.gate_signal[:, None, None, None]
+        
+        # Element-wise 乘法
+        gated_features = shallow_features * gate
+        
+        # 保持原始的 shape、dtype、device
+        return gated_features
 ```
 
 **GateLayer**（组合）：
 ```python
 class GateLayer(nn.Module):
+    """Gate Layer：LWE 验证 + 授权决策 + 特征门控
+    
+    关键特性：
+    - 无状态：可重复调用（训练需要）
+    - 可微分：梯度通过 gated_features 回传给浅层网络
+    - 不可训练：A, b 冻结，无可训练参数
+    - Batch 友好：所有操作基于 Tensor
+    """
+    
     def __init__(self, A: np.ndarray, b: np.ndarray, params: LWEParams,
                  temperature: float = 5.0):
         super().__init__()
@@ -222,11 +364,19 @@ class GateLayer(nn.Module):
         返回:
             gated_features: [B, C, H, W]
             decision: AuthorizationDecision
+        
+        训练模式：
+        - 完整计算，软门控
+        - 梯度通过 gated_features 回传给 shallow_features
+        
+        推理模式：
+        - 硬判定，gate_signal ∈ {0, 1}
+        - Phase 1.3 可根据 decision.allow 提前拒绝
         """
         # 1. 验证器：产生证据（无副作用）
         evidence = self.verifier(credential)
         
-        # 2. 协调器：做出授权决策
+        # 2. 协调器：做出授权决策（唯一授权决策点）
         decision = self.coordinator(evidence)
         
         # 3. 特征门控：应用决策
@@ -234,6 +384,72 @@ class GateLayer(nn.Module):
         
         return gated_features, decision
 ```
+
+### 软门控温度校准
+
+#### 当前误差分布
+
+根据 Phase 1.1 测试结果：
+```
+valid credential error_norm ≈ 16
+invalid credential error_norm ≈ 900
+threshold = 48
+```
+
+#### 温度参数分析
+
+**原始方案**（可能饱和）：
+```python
+gate_signal = sigmoid((threshold - error_norm) / temperature)
+
+# Valid: sigmoid((48 - 16) / 5) = sigmoid(6.4) ≈ 0.998（接近饱和）
+# Invalid: sigmoid((48 - 900) / 5) = sigmoid(-170) ≈ 0（饱和）
+```
+
+**改进方案**（归一化 margin）：
+```python
+normalized_margin = (threshold - error_norm) / threshold
+gate_signal = sigmoid(normalized_margin / temperature)
+
+# Valid: sigmoid((48 - 16) / 48 / 5) = sigmoid(0.133) ≈ 0.533
+# Invalid: sigmoid((48 - 900) / 48 / 5) = sigmoid(-3.55) ≈ 0.028
+```
+
+**参数选择**：
+- `temperature = 5.0`（默认，提供合理的梯度）
+- `temperature = 1.0`（更接近硬阈值，但仍可微）
+- 训练后期可使用 temperature annealing（逐步降低温度）
+
+#### 监控指标
+
+实现时必须记录：
+- Valid/Invalid gate_signal 分布
+- 门控 margin 分布
+- shallow_features 的梯度范数
+- Coordinator 输出的梯度范数
+
+### 可训练性说明
+
+**Gate Layer 是可微分门控，不是可训练验证器。**
+
+**无可训练参数**：
+- `A`, `b` 存储为 `nn.Buffer`（冻结，不参与梯度更新）
+- `error_threshold`, `temperature` 是超参数（不参与梯度）
+- LWEVerifier、AuthorizationCoordinator、FeatureGate 都没有 `nn.Parameter`
+
+**梯度流动**：
+```
+Loss → gated_features → gate_signal → evidence.error_norm → ...
+     ↓
+shallow_features （可以接收梯度）
+
+A, b 不接收梯度（buffer 默认 requires_grad=False）
+```
+
+**测试要求**：
+- [ ] `test_A_b_no_grad`: A, b 不接收梯度
+- [ ] `test_gated_features_backward`: 梯度可以回传到 shallow_features
+- [ ] `test_no_trainable_parameters`: Gate Layer 的 `parameters()` 为空
 
 ### 实现步骤
 
