@@ -15,7 +15,7 @@
 **密码方案变更**：从 Module-SIS 改为 LWE (Learning With Errors)，理由：
 - LWE 更适合神经网络编译（线性运算 + 噪声注入）
 - 验证逻辑更简单（误差范数阈值判断）
-- 文献支持更充分（Shamir et al. 使用 LWE 而非 Module-SIS）
+- 实现复杂度更低（无需多项式环运算）
 
 ### 核心架构
 

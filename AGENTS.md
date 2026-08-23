@@ -59,27 +59,27 @@
 
 # 文档与代码规范
 
-- **文档内容尽量用中文描述**（可以保留使用一些英文术语，如 Gate Layer、Module-SIS、credential 等）。
+- **文档内容尽量用中文描述**（可以保留使用一些英文术语，如 Gate Layer、LWE、credential 等）。
 - **代码中必须添加中文注释**：
   - 每个函数/方法必须有中文 docstring，说明功能、参数和返回值
   - 关键代码块添加中文注释说明逻辑
   - 复杂算法添加步骤说明
   - 示例：
     ```python
-    def forward(self, x: Tensor, credential: dict) -> Tensor:
+    def forward(self, x: Tensor, credential: np.ndarray) -> Tensor:
         """前向传播：融合特征与密码验证信息
         
         参数:
             x: 输入特征图 [B, C, H, W]
-            credential: 密码凭证字典，包含 commitment, challenge, response
+            credential: LWE 密码凭证 (secret vector)
         
         返回:
             gate_signal: 门控信号 [B]，范围 [0, 1]
         """
-        # 步骤 1: 提取 Module-SIS 验证的中间结果
-        residual = self.compute_residual(credential)
-        # 步骤 2: 计算门控信号
-        gate_signal = self.gate_network(residual)
+        # 步骤 1: 计算 LWE 验证的误差范数
+        error_norm = self.compute_error_norm(credential)
+        # 步骤 2: 计算门控信号（基于误差阈值）
+        gate_signal = self.threshold_gate(error_norm)
         return gate_signal
     ```
 
@@ -127,7 +127,7 @@ gate_signal -> [条件路由] -> 深层 or 公开head
   - valid credential → gate_signal 高
   - invalid credential → gate_signal 低
   - 形状正确性
-  - 与参考实现的差分测试（Module-SIS 验证）
+  - 与参考实现的差分测试（LWE 验证逻辑）
 - 优先运行与改动直接相关的最小测试，再运行完整测试套件。
 - 测试命令：`pytest tests/v2/ -v`（记录到工作日志）。
 - 无法运行的测试必须在最终总结和工作日志中说明原因，不得用”应当通过”代替结果。

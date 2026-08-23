@@ -31,7 +31,7 @@
 ### Trusted components
 
 - 模型权重和推理代码（部署在可信环境）
-- Module-SIS 验证参数和算法实现
+- LWE 验证参数和算法实现
 - 训练流程和 checkpoint
 - Gate Layer 的神经编译正确性
 
@@ -41,7 +41,7 @@
 - Gate Layer 在推理模式下实现 fail-closed：invalid credential 时深层神经元零调用。
 - credential 验证失败、格式错误、篡改时默认路由到公开 head（弱化能力）。
 - 训练时使用软路由（可微分），推理时使用硬路由（真正不执行深层）。
-- Module-SIS 神经编译的正确性通过差分测试验证（V_nn == V_ref）。
+- LWE 神经编译的正确性通过差分测试验证（GateLayer.verify() == V_ref()）。
 
 ## Explicitly unsupported guarantees (current phase)
 
@@ -49,7 +49,7 @@
 
 - **白盒攻击防御**：攻击者读取、修改、删层、剪枝、微调或替换模型/推理代码后的安全性；
 - **TEE/安全启动**：可信执行环境、远程证明、宿主机控制或完整侧信道防护；
-- **密码学安全归约**：toy Module-SIS profile 不等同完整 ML-DSA 或已证明不可伪造方案；
+- **密码学安全归约**：toy LWE profile (n=128) 不等同生产级参数或已证明困难性假设；
 - **生产部署安全**：有限随机测试不替代全域 soundness、形式证明或密码学安全归约；
 - **跨设备/分布式安全**：单机实验结果不外推到生产、其他硬件、其他数据分布或任意部署方式。
 
@@ -66,7 +66,7 @@
 - **Gate Layer 行为**：
   - Valid credential → gate_signal 高（> 0.7）
   - Invalid credential → gate_signal 低（< 0.3）
-  - 差分测试：V_nn == V_ref（Module-SIS 正确性）
+  - 差分测试：GateLayer.verify() == V_ref()（LWE 验证正确性）
 - **Fail-closed 验证**：
   - Invalid credential → 深层调用计数 = 0
   - Invalid credential → 仅输出公开能力（coarse classification）
