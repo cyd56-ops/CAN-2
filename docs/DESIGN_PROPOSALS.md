@@ -228,11 +228,20 @@ gate_signal = torch.tensor([0.0])
 #### Mixed Batch 契约
 
 **必须支持**：
-- 同一 batch 中同时存在 valid、invalid 和格式错误的 credential
+- 同一 batch 中同时存在 valid、invalid 和**包含 NaN/Inf** 的 credential
 - 每个样本独立生成 verified、reason_code、allow 和 gate_signal
 - 输出顺序与输入顺序严格一致
 - Invalid 样本不影响 valid 样本
 - 空 batch (B=0) 返回空 Tensor
+
+**请求级错误（整批拒绝）**：
+- 错误的 dtype（如 int64, bool）
+- 错误的 rank（如 3D, 0D）
+- 错误的末维（n != params.n）
+
+**理由**：同一个 `Tensor[B, n]` 的所有行共享 shape 和 dtype，无法在同一 batch 内表示异构格式。逐样本异构需要 list 输入，会破坏向量化，当前阶段不支持。
+
+**Mixed batch 定义**：指同一 `Tensor[B, n]` 中，某些行是 valid credential，某些行是 invalid credential，某些行包含 NaN/Inf。
 
 #### 模块接口
 
@@ -325,6 +334,14 @@ class FeatureGate(nn.Module):
         返回:
             gated_features: [B, C, H, W]
         """
+        B = shallow_features.shape[0]
+        
+        # 验证 batch 一致性
+        if decision.gate_signal.shape[0] != B:
+            raise ValueError(
+                f"Batch 不一致：shallow_features {B} vs decision {decision.gate_signal.shape[0]}"
+            )
+        
         # gate_signal [B] → [B, 1, 1, 1]
         gate = decision.gate_signal[:, None, None, None]
         
@@ -373,6 +390,19 @@ class GateLayer(nn.Module):
         - 硬判定，gate_signal ∈ {0, 1}
         - Phase 1.3 可根据 decision.allow 提前拒绝
         """
+        B = shallow_features.shape[0]
+        
+        # 处理单 credential 广播
+        if isinstance(credential, np.ndarray):
+            credential = torch.from_numpy(credential).float()
+        
+        if credential.ndim == 1:
+            # [n] → [B, n] 广播到与 shallow_features 相同的 batch
+            credential = credential.unsqueeze(0).expand(B, -1)
+        elif credential.shape[0] == 1 and B > 1:
+            # [1, n] → [B, n]
+            credential = credential.expand(B, -1)
+        
         # 1. 验证器：产生证据（无副作用）
         evidence = self.verifier(credential)
         
@@ -398,35 +428,48 @@ threshold = 48
 
 #### 温度参数分析
 
-**原始方案**（可能饱和）：
+**设计目标**：Valid credential → gate ≈ 1.0，Invalid credential → gate ≈ 0.0
+
+根据 Phase 1.1 测试结果：
+```
+valid credential error_norm ≈ 16
+invalid credential error_norm ≈ 900
+threshold = 48
+```
+
+**方案**：使用原始公式（避免过度软化）
 ```python
 gate_signal = sigmoid((threshold - error_norm) / temperature)
 
-# Valid: sigmoid((48 - 16) / 5) = sigmoid(6.4) ≈ 0.998（接近饱和）
-# Invalid: sigmoid((48 - 900) / 5) = sigmoid(-170) ≈ 0（饱和）
+# 测试不同温度：
+temperature = 1.0:
+  Valid: sigmoid((48 - 16) / 1.0) = sigmoid(32) ≈ 1.0 ✓
+  Invalid: sigmoid((48 - 900) / 1.0) = sigmoid(-852) ≈ 0.0 ✓
+
+temperature = 5.0:
+  Valid: sigmoid((48 - 16) / 5.0) = sigmoid(6.4) ≈ 0.998 ✓
+  Invalid: sigmoid((48 - 900) / 5.0) = sigmoid(-170) ≈ 0.0 ✓
+
+temperature = 10.0:
+  Valid: sigmoid((48 - 16) / 10.0) = sigmoid(3.2) ≈ 0.96 ✓
+  Invalid: sigmoid((48 - 900) / 10.0) = sigmoid(-85) ≈ 0.0 ✓
 ```
 
-**改进方案**（归一化 margin）：
-```python
-normalized_margin = (threshold - error_norm) / threshold
-gate_signal = sigmoid(normalized_margin / temperature)
+**推荐**：`temperature = 5.0`（默认）
+- Valid credential 产生接近 1.0 的 gate_signal
+- Invalid credential 产生接近 0.0 的 gate_signal
+- 提供足够的梯度（不会完全饱和）
+- 训练/推理差异小
 
-# Valid: sigmoid((48 - 16) / 48 / 5) = sigmoid(0.133) ≈ 0.533
-# Invalid: sigmoid((48 - 900) / 48 / 5) = sigmoid(-3.55) ≈ 0.028
-```
-
-**参数选择**：
-- `temperature = 5.0`（默认，提供合理的梯度）
-- `temperature = 1.0`（更接近硬阈值，但仍可微）
-- 训练后期可使用 temperature annealing（逐步降低温度）
+**注意**：Gate Layer 本身无可训练参数，软化的主要目的是提供梯度给浅层网络，而不是为了 Gate 自身的学习。因此 sigmoid 轻微饱和是可接受的。
 
 #### 监控指标
 
 实现时必须记录：
-- Valid/Invalid gate_signal 分布
-- 门控 margin 分布
-- shallow_features 的梯度范数
-- Coordinator 输出的梯度范数
+- **Valid/Invalid gate_signal 分布**：确认 valid ≈ 1.0, invalid ≈ 0.0
+- **训练/推理 gate_signal 差异**：确认差异小
+- **Shallow_features 的梯度范数**：确认梯度流动正常
+- **训练/推理输出差异**：最终模型输出的差异
 
 ### 可训练性说明
 
@@ -439,12 +482,20 @@ gate_signal = sigmoid(normalized_margin / temperature)
 
 **梯度流动**：
 ```
-Loss → gated_features → gate_signal → evidence.error_norm → ...
-     ↓
-shallow_features （可以接收梯度）
+Loss → gated_features
+     ↓ (∂Loss/∂gated_features × gate_signal)
+shallow_features （接收梯度）
 
+gate_signal 本身不参与参数更新（Gate Layer 无可训练参数）
 A, b 不接收梯度（buffer 默认 requires_grad=False）
+Credential 通常不需要梯度（外部输入）
 ```
+
+**准确说明**：
+- Gate Layer 提供可微分的门控信号
+- 梯度通过 `gated_features = shallow_features * gate_signal` 回传
+- 浅层网络（layer1, layer2）接收到的梯度是 `∂Loss/∂gated_features × gate_signal`
+- Gate_signal 的数值影响梯度大小，但 Gate 本身不学习
 
 **测试要求**：
 - [ ] `test_A_b_no_grad`: A, b 不接收梯度
