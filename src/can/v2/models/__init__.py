@@ -1,7 +1,10 @@
-"""CAN v2 模型模块
+"""CAN V2 的模型组件。"""
 
-包含集成 Gate Layer 的完整网络架构。
+from .gated_resnet import (
+    BasicBlock,
+    GatedResNet18,
+    InferenceOutput,
+    TrainingOutput,
+)
 
-计划内容:
-- gated_resnet.py: GatedResNet18，在 layer2 之后插入 Gate Layer 的双路模型
-"""
+__all__ = ["BasicBlock", "GatedResNet18", "InferenceOutput", "TrainingOutput"]

@@ -1,0 +1,7 @@
+[run]
+source =
+    src/can
+
+[report]
+show_missing = True
+skip_empty = True

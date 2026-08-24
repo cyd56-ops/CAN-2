@@ -3,8 +3,8 @@
 ## 当前研究阶段
 
 **阶段**: V2 - Gate Layer 在计算图中间架构  
-**状态**: Phase 1.1 完成 - LWE 密码原语实现  
-**最后更新**: 2026-08-21
+**状态**: Phase 2 修复完成 - 等待 Claude 复验
+**最后更新**: 2026-08-24
 
 ---
 
@@ -45,20 +45,22 @@ Input (image, credential)
    - 参数：n=128, m=256, σ=1.0, threshold=48.0
    - 验证逻辑：L2 误差范数 < threshold
 3. **路由机制**：
-   - 训练时：软路由（可微分，使用 sigmoid）
+   - 训练时：软路由（可微分，`gate_signal = sigmoid((threshold-error)/T)`）
    - 推理时：硬路由（真正不执行深层，gate_signal ∈ {0, 1}）
+   - **已实现**：Phase 1.2 Gate Layer 产生 gate_signal 并应用到 shallow features
+   - **已实现**：Phase 1.3 Gated ResNet 根据 gate_signal 控制深层实际执行
 4. **能力分级**：
    - Valid credential：**10-class fine-grained classification**（深层 + protected head）
    - Invalid credential：**2-class coarse classification**（公开 head，通过知识蒸馏训练）
    - 粗粒度标签：CIFAR-10 → CIFAR-2（animal vs vehicle）
 5. **Baseline 模型**：
-   - **Phase 1（原型验证）**：ResNet-18 on CIFAR-10
+   - **Phase 1-2（架构与训练原型）**：ResNet-18 on CIFAR-10
      - 10 类 → 2 类（animal vs vehicle）
      - 目的：快速验证 Gate Layer 架构可行性
-   - **Phase 2（能力分级）**：ResNet-18 on CIFAR-100
+   - **Phase 4（能力分级扩展）**：ResNet-18 on CIFAR-100
      - 100 类 → 20 类（超类）或 10 类（更粗）
      - 目的：展示显著的能力差距
-   - **Phase 3（可选）**：ResNet-50 on ImageNet 子集
+   - **Phase 5（可选）**：ResNet-50 on ImageNet 子集
      - 1000 类 → 100 类或 10 类
      - 目的：验证在大规模任务上的可行性
 
@@ -66,7 +68,7 @@ Input (image, credential)
 
 ## 实施路线图
 
-### Phase 1: 基础架构搭建 [CURRENT]
+### Phase 1: 基础架构搭建 [COMPLETED]
 
 **目标**：实现 Gate Layer 在计算图中间的基本架构
 
@@ -119,17 +121,53 @@ Input (image, credential)
 - ❌ 删除 `tests/v2/test_module_sis.py`
 - ✅ 更新 `src/can/v2/crypto/__init__.py` 仅导出 LWE 接口
 
-#### 1.2 Neural Gate Layer [NEXT]
+#### 1.2 Neural Gate Layer [COMPLETED]
 
 **文件**：`src/can/v2/layers/gate_layer.py`
 
-实现内容：
-- `GateLayer(nn.Module)`：
-  - 输入：`(shallow_features, credential)`
-  - 内部：特征融合 + LWE 验证的神经编译
-  - 输出：`gate_signal ∈ [0, 1]`（训练）或 `{0, 1}`（推理）
+设计内容：
+- `LWEVerifier`：将 credential 转换为批量、结构化的 `VerificationEvidence`
+- `AuthorizationCoordinator`：唯一生成批量 `AuthorizationDecision`
+- `FeatureGate`：执行 `shallow_features * gate_signal`，不让图像特征参与认证判定
+- `GateLayer(nn.Module)`：组合上述组件，对外返回 `(gated_features, decision)`
 - 训练模式：软路由（sigmoid，可微分）
-- 推理模式：硬路由（threshold = 0.5）
+- 推理模式：硬路由（`error_norm < error_threshold`）
+- Phase 1-2 使用静态 credential，不实现 replay 防御；replay 留到后续研究阶段
+
+**完成时间**：2026-08-23
+
+**实现内容**：
+- `LWEVerifier`：无副作用的 LWE 验证器
+- `AuthorizationCoordinator`：唯一授权决策点
+- `FeatureGate`：将 gate_signal 应用到 shallow features
+- `GateLayer`：组合层，支持 batch、device 转移和 autograd
+
+**关键特性**：
+- Tensor-based 数据结构，支持 batch、GPU device 契约和 autograd
+- 无状态设计，可重复调用
+- 可微分但不可训练：A、b 冻结，梯度回传到 shallow_features
+- Fail-closed 输入验证：非法 credential 产生 `gate_signal = 0.0`
+- 训练时使用软门控，推理时使用硬判定
+
+**测试结果**：
+- 测试通过率：43/43（100%）
+- LWE 验证：5 个测试（差分、边界、无状态）
+- 训练/推理模式：3 个测试（软门控、硬判定、一致性）
+- Batch 处理：5 个测试（单样本、mixed batch、一致性）
+- 输入验证：15 个测试（NaN/Inf、dtype、shape、device）
+- 梯度传播：3 个测试（A/b 冻结、反向传播、无参数）
+- 特征门控：5 个测试（allow/deny、shape 保持、batch）
+- 授权边界：7 个测试（组件职责分离、类型验证）
+- 完整 `tests/v2`：81/81 通过
+
+**代码规模**：
+- 实现：`src/can/v2/layers/gate_layer.py`（476 行）
+- 测试：`tests/v2/test_gate_layer.py`（487 行）
+
+**安全声明**：
+- Toy LWE 参数（默认 n=128），无生产级密码学安全保证，可被最小二乘伪造
+- Phase 1-2 不防御 replay 攻击
+- 当前结果仅验证“LWE 验证可以编译为神经网络”的技术可行性
 
 关键约束：
 - `gate_signal` 必须是可微分的（训练时）
@@ -146,38 +184,19 @@ Input (image, credential)
 - 差分测试：`GateLayer.verify() == V_ref()`
 - 形状测试：batch 处理正确性
 
-#### 1.3 Gated ResNet-18 [TODO]
+#### 1.3 Gated ResNet-18 [COMPLETED - CLAUDE ACCEPTED]
 
 **文件**：`src/can/v2/models/gated_resnet.py`
 
-实现内容：
-- `GatedResNet18(nn.Module)`：
-  - 浅层：layer1 + layer2（到第一个下采样）
-  - Gate Layer：在 layer2 之后
-  - 深层：layer3 + layer4 + fc
-  - 公开 head：从 shallow_features 直接到 coarse classifier
-  - 保护 head：从 deep_features 到 fine-grained classifier
+设计内容：
+- 使用 CIFAR ResNet-18 stem：3x3 stride=1，不使用 maxpool
+- Gate Layer 位于 layer2 之后，输入 shallow_features [B,128,16,16]
+- 训练模式返回两个完整 batch logits，不在模型内计算任务损失
+- 训练模式仅让 valid 子批进入深层，避免 invalid 样本污染深层 BatchNorm；protected logits 的 invalid 行为零占位
+- 推理模式按 allow mask 向量化拆分 batch，只让 valid 子批进入 layer3/layer4
+- 推理输出携带 logits 对应的原 batch indices，不用 None 或压缩后丢失位置
 
-路由逻辑：
-```python
-def forward(self, x, credential):
-    shallow_feat = self.layer2(self.layer1(x))
-    gate_signal = self.gate_layer(shallow_feat, credential)
-    
-    if self.training:
-        # 软路由（可微分）
-        deep_feat = self.layer4(self.layer3(shallow_feat * gate_signal))
-        protected_out = self.protected_head(deep_feat)
-        public_out = self.public_head(shallow_feat)
-        return protected_out, public_out, gate_signal
-    else:
-        # 硬路由（真正不执行深层）
-        if gate_signal > 0.5:
-            deep_feat = self.layer4(self.layer3(shallow_feat))
-            return self.protected_head(deep_feat), None, 1.0
-        else:
-            return None, self.public_head(shallow_feat), 0.0
-```
+规范接口与路由伪代码以 `docs/DESIGN_PROPOSALS.md` 的 Phase 1.3 Revision 1 为准。训练输出使用完整 batch 的 `TrainingOutput`，推理输出使用携带原 batch indices 的 `InferenceOutput`；空路由使用稳定二维空 Tensor，不使用 `None`。
 
 **测试文件**：`tests/v2/test_gated_resnet.py`
 
@@ -187,56 +206,84 @@ def forward(self, x, credential):
 - 形状正确性
 - Forward/backward pass 无异常
 
+**Codex 开发侧实现结果（2026-08-23）**：
+- `BasicBlock` 与 CIFAR ResNet-18 `[2,2,2,2]` stage 已实现
+- `TrainingOutput` 返回完整 batch logits；invalid protected 行为与浅层计算图相连的零占位
+- `InferenceOutput` 返回稀疏 logits 和递增的原 batch indices
+- 全 invalid batch 不调用 layer3、layer4 或 protected head
+- mixed batch 在训练和推理时均只把 valid 子批送入深层，避免污染深层 BatchNorm
+- 新增测试：25/25 通过；模型模块行覆盖率 99%
+- 完整 `tests/v2`：106/106 通过
+- Black、isort、`py_compile`、`git diff --check`：通过
+- 环境：Python 3.11.8、PyTorch CPU；CUDA/GPU 路径未实测
+- Claude 已于 2026-08-23 完成独立验收
+
 ---
 
-### Phase 2: 训练流程 [NEXT]
+### Phase 2: 训练流程 [IMPLEMENTED - OFFLINE VERIFIED]
 
 **目标**：训练 Gated ResNet-18，使其具有能力分级
 
-#### 2.1 Public head 知识蒸馏 [TODO]
+#### 2.1-2.4 Training Pipeline Revision 1 [IMPLEMENTED - OFFLINE VERIFIED]
 
-**文件**：`src/can/v2/training/distillation.py`
+规范来源：`docs/DESIGN_PROPOSALS.md` Phase 2 Revision 1。
 
-实现内容：
-- 使用预训练 ResNet-18（full model）作为教师
-- 训练 public head（从 shallow_features）学习粗粒度分类
-- 损失函数：KL 散度 + CE loss
-- 目标：coarse accuracy 达到合理水平（如 60-70% on CIFAR-10）
+设计内容：
+- Phase 2.1：CIFAR-10/CIFAR-2 数据、固定 split 和 V_ref rejection-sampling credential
+- Phase 2.2：masked protected CE + public coarse CE + 冻结 teacher KD
+- Phase 2.3：Stage A protected baseline → Stage B public distillation → Stage C joint fine-tuning
+- Phase 2.4：严格 YAML 配置、CLI、原子 checkpoint 和确定性恢复
+- Teacher 固定为 Stage A best checkpoint 的冻结副本；Stage B/C 通过路径和 SHA-256 绑定，缺失或不一致时 fail fast
+- 默认 epoch 上限：Stage A/B/C = 20/60/20，并分别使用 validation 指标 early stopping
+- 验证严格使用 `InferenceOutput.protected_indices` / `public_indices` 对齐标签
+- 单元测试不得联网；当前环境缺少 torchvision，实现前必须安装兼容版本并记录
+- 已实现：`data.py`、`loss.py`、`metrics.py`、`trainer.py`、默认 YAML 和配置入口
+- 当前环境：torchvision 未安装；离线 fake dataset 测试不依赖 torchvision
 
-#### 2.2 联合训练 [TODO]
-
-**文件**：`src/can/v2/training/train_gated.py`
-
-训练目标：
-- Protected path：fine-grained accuracy ≈ baseline（valid credential）
-- Public path：coarse accuracy ≈ 蒸馏目标（invalid credential）
-- Gate Layer：正确路由（valid → 1, invalid → 0）
+**实现与验证结果（2026-08-24）**：
+- `tests/v2/test_training.py`：40/40 通过
+- 完整 `tests/v2/`：146/146 通过
+- 配置 dry-run：严格 schema、重复 key、未知字段和设备校验通过
+- CPU offline smoke（`smoke_size=16`、`batch_size=4`）：A/B/C 各 1 epoch，loss 分别为 4.5726/0.3525/3.2549，三阶段 checkpoint、teacher 链接和 Stage C 约束路径通过
+- 非法 smoke（`smoke_size=16`、`batch_size=128`）现在明确报错，不再以 `loss=None` 静默成功或写出空训练 checkpoint
+- smoke 使用 synthetic CIFAR-like 数据；不代表 CIFAR-10 准确率或训练收敛结果
+- 真实 CIFAR-10 训练尚未执行，原因是当前环境没有 torchvision 且不允许隐式联网下载
+- Phase 2 training 模块覆盖率：约 86%（Trainer 85%、data 86%、loss 80%、metrics 88%；剩余主要为少量异常分支）
+- 完整 V2 行覆盖率：90%，达到设计目标
+- 新增 fake torchvision 适配测试：覆盖 transform 构造和 CIFAR-10 Dataset 初始化，不触发网络下载
+- 验收修复：显式 keypair RNG、LWE/split metadata、Stage C fail-fast、valid>=2 约束、CLI `--resume`
+- 空训练修复：脚本 smoke 参数预检、DataLoader 构建后检查和 trainer epoch 样本检查形成三层 fail-fast
+- resume smoke 从 Stage C epoch 1 恢复到 epoch 2 成功
 
 损失函数：
 ```
-L_total = L_protected + λ_public * L_public + λ_gate * L_gate
+L_total = alpha * L_protected_masked
+        + beta_ce * L_public_ce
+        + beta_kd * T^2 * L_public_kd
 ```
 
-其中：
-- `L_protected`：CrossEntropy（protected_out, fine_labels）
-- `L_public`：CrossEntropy（public_out, coarse_labels）+ KL（distillation）
-- `L_gate`：BCE（gate_signal, is_valid_credential）
+Gate Layer 当前无可训练参数，不添加 `L_gate` 或 gate regularization。
 
 **配置文件**：`configs/v2/train_gated_resnet18_cifar10.yaml`
 
-训练超参数：
-- Epochs: 100
+默认训练超参数：
+- Stage A/B/C epoch 上限：20/60/20；patience：5/10/5
 - Batch size: 128
-- Optimizer: SGD（lr=0.1, momentum=0.9, weight_decay=5e-4）
-- λ_public: 0.5
-- λ_gate: 1.0
+- Optimizer: SGD（lr=0.1；joint lr=0.01；momentum=0.9；weight_decay=5e-4）
+- KD temperature: 4.0
+- Stage C protected baseline 最大允许下降：0.03（绝对 accuracy）
 
 **测试文件**：`tests/v2/test_training.py`
 
 测试要求：
 - 损失函数计算正确
+- 训练态使用 `TrainingOutput.decision.allow` 对 protected logits/labels 做相同 mask
+- 评估态使用 `InferenceOutput.protected_indices` / `public_indices` 对齐 logits、labels 和指标，禁止假设稀疏 logits 仍按完整 batch 排列
+- 全 invalid batch 不对空 protected 目标调用 CrossEntropy，而是返回与图相连的零 loss
 - 训练循环无异常
 - Checkpoint 保存/加载正确
+
+**当前限制**：真实 CIFAR-10、多种子、GPU 和正式指标仍待执行；Phase 2 training 子模块约 86%，完整 V2 行覆盖率已达到设计目标 90%。
 
 ---
 
@@ -417,35 +464,38 @@ Input (image, credential_high, credential_mid)
   - [x] 测试覆盖率 100%
   - [x] 决策文档 `docs/V2_LWE_IMPLEMENTATION.md` 完成
   - [x] 清理 Module-SIS 相关代码
+- [x] **Phase 1.2: Neural Gate Layer 实现**（2026-08-23）
+  - [x] `src/can/v2/layers/gate_layer.py` 实现完成
+  - [x] `tests/v2/test_gate_layer.py` 43 个测试全部通过
+  - [x] Gate Layer 行覆盖率 99%
+  - [x] 完整 `tests/v2` 81 个测试全部通过
+  - [x] black、isort 和差分测试通过
+- [x] **Phase 1.3: Gated ResNet-18 Codex 开发实现**（2026-08-23）
+  - [x] CIFAR ResNet-18、Gate Layer 和双 head 集成完成
+  - [x] `TrainingOutput` / `InferenceOutput` 契约实现完成
+  - [x] 全 invalid、mixed batch、fail-closed 和梯度测试完成
+  - [x] 新增测试 25/25，模型覆盖率 99%，完整 V2 测试 106/106
+  - [x] Claude 独立验收
+- [x] **Phase 2.1-2.4: Training Pipeline Revision 1 实现**（2026-08-24）
+  - [x] CIFAR-10/CIFAR-2 数据接口、固定 split 工具和 V_ref credential rejection sampling
+  - [x] masked protected CE、public CE、冻结 teacher KD 和 all-invalid 图连接零 loss
+  - [x] Stage A/B/C trainer、稀疏 indices 指标对齐、early stopping、Stage C protected 约束
+  - [x] 严格 YAML/CLI、显式下载开关、原子 checkpoint 和 RNG 恢复
+  - [x] 离线训练测试 40/40、完整 V2 测试 146/146、Phase 2 training 覆盖率约 86%、完整 V2 覆盖率 90%
+  - [x] CPU 三阶段 smoke 通过；空 DataLoader 和不合法 smoke 配置已 fail fast
 
 ### 进行中
-- [ ] 无
+- [ ] **Phase 2 修复后的 Claude 复验与真实实验准备**
 
 ### 下一步（唯一下一步）
 
-**实现 Neural Gate Layer**
+**先由 Claude 复验 resume、teacher/LWE/split 约束和覆盖率，再安装兼容 torchvision 运行真实 CIFAR-10 三阶段训练。**
 
-具体任务：
-1. 创建 `src/can/v2/layers/gate_layer.py`：
-   - 实现 `GateLayer(nn.Module)` 类
-   - 集成 LWE 验证逻辑（使用 `V_ref`）
-   - 实现软路由（训练模式）和硬路由（推理模式）
-   - 支持 batch 处理
-
-2. 创建 `tests/v2/test_gate_layer.py`：
-   - 测试 valid/invalid credential 路由行为
-   - 测试训练/推理模式切换
-   - 差分测试：`GateLayer.verify()` vs `V_ref()`
-   - 形状和 batch 测试
-
-3. 运行测试：`pytest tests/v2/test_gate_layer.py -v`
-
-4. 更新本工作日志
-
-**注意**：Gate Layer 的关键在于如何将 LWE 验证（NumPy）编译为可微分的神经计算（PyTorch）。可能需要：
-- 将 A, b 转换为 `nn.Parameter`（冻结，不更新）
-- 将矩阵乘法和范数计算用 PyTorch ops 实现
-- 训练时使用 soft threshold（sigmoid），推理时使用 hard threshold
+审核重点：
+1. torchvision 前置依赖、离线单元测试与数据划分
+2. rejection sampling credential 生成和确定性 RNG
+3. masked protected loss、public CE + KD 及三阶段训练策略
+4. `InferenceOutput` indices 指标对齐、checkpoint 和多种子评估
 
 ---
 
@@ -477,13 +527,13 @@ Input (image, credential_high, credential_mid)
    - 需要在 Phase 2 中实验验证
 
 4. **数据集选择策略？** [NEW]
-   - **Phase 1（原型验证）**：CIFAR-10（10→2 类）
-     - 优势：快速迭代，2 小时训练
+   - **Phase 1-3（架构、训练与 CIFAR-10 评估原型）**：CIFAR-10（10→2 类）
+     - 优势：快速迭代；正式耗时以当前硬件 smoke benchmark 为准
      - 劣势：能力差距不够显著
-   - **Phase 2（能力分级）**：CIFAR-100（100→20 类）
+   - **Phase 4（能力分级扩展）**：CIFAR-100（100→20 类）
      - 优势：能力差距显著，有自带超类
-     - 劣势：训练时间稍长（1 天）
-   - **Phase 3（可选）**：ImageNet（1000→100 类）
+     - 劣势：训练时间需要在 Phase 4 资源评估后确定
+   - **Phase 5（可选）**：ImageNet（1000→100 类）
      - 优势：最强说服力
      - 劣势：成本高，需要多 GPU
 
@@ -508,7 +558,7 @@ Input (image, credential_high, credential_mid)
 
 3. **能力分级效果**：Public head 能力是否真的弱于 protected head
    - **CIFAR-10 风险**：10→2 类的差距可能不够显著（都很容易）
-   - **缓解措施**：Phase 2 使用 CIFAR-100（100→20 类）
+   - **缓解措施**：Phase 2 先建立 CIFAR-10 训练基线，Phase 4 再使用 CIFAR-100（100→20 类）验证更明显的能力分级
 
 4. **PyTorch 与 NumPy 一致性** [NEW RISK]：
    - Gate Layer 使用 PyTorch 实现 LWE 验证
@@ -527,7 +577,7 @@ Input (image, credential_high, credential_mid)
 - **TEE 部署**：后续阶段
 - **密码学安全归约**：Toy profile 不保证（LWE 参数 n=128 过小）
 - **生产部署**：研究原型阶段
-- **ImageNet 实验**：Phase 1-2 不考虑（Phase 3 可选）
+- **ImageNet 实验**：Phase 1-4 不考虑（Phase 5 可选）
 
 ---
 
@@ -558,32 +608,50 @@ Input (image, credential_high, credential_mid)
 
 ---
 
-### Gate Layer 实现（待完成）
-- 测试状态：未运行
-- 差分测试：未运行
-- 软/硬路由切换：未验证
+### Gate Layer 实现 [COMPLETED 2026-08-23]
+
+**开发侧环境**：
+- Python 3.11.8
+- PyTorch 2.13.0+cpu
+- pytest 9.0.2
+- CPU-only；本阶段未运行 GPU 测试
+
+**开发侧测试结果（2026-08-23）**：
+- Gate Layer：43/43 通过
+- Gate Layer 行覆盖率：99%（190 statements，2 missed）
+- 完整 `tests/v2`：81/81 通过
+- 差分测试：推理 `decision.allow` / `gate_signal` 与 `V_ref()` 一致
+- Mixed batch：valid、invalid、NaN/Inf 逐样本处理通过
+- 训练/推理：软门控、硬门控和模式切换通过
+- 梯度：`gated_features` 可向 `shallow_features` 回传梯度
+- 格式：black 与 isort (`--profile black`) 检查通过
+
+**覆盖率命令**：
+```bash
+pytest tests/v2/test_gate_layer.py -v --cov=src/can/v2/layers --cov-config=.coveragerc --cov-report=term-missing
+```
+
+**残余验证缺口**：
+- CUDA/GPU device 路径尚未实测（当前环境仅 CPU）
 
 ---
 
-### Gated ResNet-18（待完成）
+### Gated ResNet-18 实验路线（与当前方案同步）
 
-#### CIFAR-10 实验（Phase 1 原型验证）
-- 训练状态：未开始
-- Protected accuracy：未测量（目标 ≥90%，10 类）
-- Public accuracy：未测量（目标 ~65%，2 类）
-- Logits 等价性：未验证
-- Latency：未测量
+#### CIFAR-10 实验（Phase 2-3 原型验证）
+- 训练状态：Phase 2 训练代码已实现；真实数据训练尚未运行
+- Protected/Public accuracy：待 Phase 2 smoke test 和正式训练测量
+- Logits 等价性与 latency：Phase 3 评估实验测量
+- 选择规则：只使用 validation 指标选择 checkpoint，冻结后再评估官方 test set
 
-#### CIFAR-100 实验（Phase 2 能力分级展示）
-- 训练状态：未开始
-- Protected accuracy：未测量（目标 ≥72%，100 类）
-- Public accuracy：未测量（目标 ~55%，20 类超类）
-- 能力差距：未测量（预期 100→20 比 10→2 更显著）
-- 与 CIFAR-10 对比：未完成
+#### CIFAR-100 实验（Phase 4 能力分级扩展）
+- 状态：尚未开始，依赖 CIFAR-10 Phase 2-3 验证完成
+- 任务：100 类 protected → 20 类超类 public
+- 目标：验证比 CIFAR-10 更明显的能力分级；具体准确率不预先宣称
 
-#### ImageNet 实验（Phase 3 可选）
-- 状态：暂不考虑（成本过高，原型阶段不需要）
-- 建议：等 CIFAR-100 实验成功后再决定
+#### ImageNet 实验（Phase 5 可选）
+- 状态：当前路线不执行
+- 触发条件：CIFAR-100 结果和资源评估完成后重新审议
 
 ---
 
@@ -596,6 +664,37 @@ Input (image, credential_high, credential_mid)
 ---
 
 ## 提交历史
+
+### Checkpoint: Neural Gate Layer Revision 5 [已就绪]
+
+**Status**: Ready to commit
+
+**Files to commit**:
+- `.coveragerc`
+- `src/can/v2/layers/gate_layer.py`
+- `src/can/v2/layers/__init__.py`
+- `tests/v2/test_gate_layer.py`
+- `docs/DESIGN_PROPOSALS.md`
+- `PROJECT_WORKLOG.md`
+
+**验证结果**：
+- `pytest tests/v2/test_gate_layer.py -q --cov=src/can/v2/layers --cov-config=.coveragerc --cov-report=term-missing`：43 passed，99% coverage
+- `pytest tests/v2/ -q`：81 passed
+- black、isort、`py_compile` 和 `git diff --check`：通过
+
+**建议 commit message**：
+```text
+feat: implement neural gate layer
+
+- compile toy LWE verification into batched PyTorch operations
+- add structured evidence, authorization coordination, and feature gating
+- support soft training gates and fail-closed hard inference gates
+- add 43 gate-layer tests with 99% coverage
+```
+
+**历史记录**：该 checkpoint 生成时下一步为 Phase 1.3；当前路线已进入 Phase 2 训练流程。
+
+---
 
 ### Checkpoint: LWE 密码原语实现 [已就绪]
 
@@ -653,9 +752,9 @@ Scope: Research prototype, white-box defense out of scope
 - 保持"唯一下一步"明确且可执行
 
 **数据集选择策略**：
-- **Phase 1**：CIFAR-10（快速原型验证，10→2 类）
-- **Phase 2**：CIFAR-100（能力分级展示，100→20 类，推荐用于论文）
-- **Phase 3**：ImageNet（可选，大规模验证，1000→100 类，成本高）
+- **Phase 1-2**：CIFAR-10（架构与训练原型，10→2 类）
+- **Phase 4**：CIFAR-100（能力分级扩展，100→20 类，推荐用于论文）
+- **Phase 5**：ImageNet（可选，大规模验证，1000→100 类，成本高）
 
 **为什么选择这个顺序**：
 1. CIFAR-10 快速验证架构可行性（1-2 天训练）

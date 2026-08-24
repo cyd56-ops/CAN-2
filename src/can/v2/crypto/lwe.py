@@ -28,7 +28,8 @@ LWE 问题：
 """
 
 from dataclasses import dataclass
-from typing import Tuple, Dict
+from typing import Dict, Optional, Tuple, Union
+
 import numpy as np
 
 
@@ -49,11 +50,12 @@ class LWEParams:
         - sigma=1.0: 小噪声（保证验证成功率）
         - secret_bound=2.0: 秘密向量小范数约束
     """
-    n: int = 128              # 秘密维度
-    m: int = 256              # 公钥维度
-    q: float = 8380417.0      # 模数（约 2^23，toy 中用于缩放）
-    sigma: float = 1.0        # 噪声标准差
-    secret_bound: float = 2.0    # 秘密范数上界
+
+    n: int = 128  # 秘密维度
+    m: int = 256  # 公钥维度
+    q: float = 8380417.0  # 模数（约 2^23，toy 中用于缩放）
+    sigma: float = 1.0  # 噪声标准差
+    secret_bound: float = 2.0  # 秘密范数上界
     error_threshold: float = None  # 验证阈值（自动计算）
 
     def __post_init__(self):
@@ -72,11 +74,15 @@ class LWEParams:
             self.error_threshold = self.sigma * np.sqrt(self.m) * 3.0
 
 
-def generate_keypair(params: LWEParams) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+def generate_keypair(
+    params: LWEParams,
+    rng: Optional[Union[np.random.Generator, np.random.RandomState]] = None,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """生成 LWE 密钥对
 
     参数:
         params: LWE 参数
+        rng: 可选显式随机源；未提供时兼容使用 NumPy 全局随机源。
 
     返回:
         (A, secret, b):
@@ -92,15 +98,23 @@ def generate_keypair(params: LWEParams) -> Tuple[np.ndarray, np.ndarray, np.ndar
     # 生成公钥矩阵 A（标准正态分布，不归一化）
     # Toy 简化：用 N(0,1) 而非 Uniform(0, q)
     # 不归一化是为了让 valid 和 invalid credentials 产生显著不同的误差
-    A = np.random.randn(params.m, params.n).astype(np.float32)
+    random_source = rng if rng is not None else np.random
+    if not hasattr(random_source, "standard_normal") and not hasattr(
+        random_source, "randn"
+    ):
+        raise TypeError("rng 必须提供 standard_normal 或 randn")
+    normal = getattr(random_source, "standard_normal", None)
+    if normal is None:
+        normal = getattr(random_source, "randn")
+    A = normal((params.m, params.n)).astype(np.float32)
 
     # 生成秘密向量 s（小范数）
     # 从 N(0, 0.5) 采样后截断到 [-secret_bound/2, secret_bound/2]
-    secret = (np.random.randn(params.n) * 0.5).astype(np.float32)
+    secret = (normal(params.n) * 0.5).astype(np.float32)
     secret = np.clip(secret, -params.secret_bound / 2, params.secret_bound / 2)
 
     # 生成噪声向量 e
-    noise = (np.random.randn(params.m) * params.sigma).astype(np.float32)
+    noise = (normal(params.m) * params.sigma).astype(np.float32)
 
     # 计算公钥向量 b = A*s + e
     # Toy 简化：不做 mod q 运算
@@ -109,8 +123,9 @@ def generate_keypair(params: LWEParams) -> Tuple[np.ndarray, np.ndarray, np.ndar
     return A, secret, b
 
 
-def verify(credential: np.ndarray, A: np.ndarray, b: np.ndarray,
-           params: LWEParams) -> bool:
+def verify(
+    credential: np.ndarray, A: np.ndarray, b: np.ndarray, params: LWEParams
+) -> bool:
     """验证 LWE credential
 
     参数:
@@ -157,8 +172,9 @@ def verify(credential: np.ndarray, A: np.ndarray, b: np.ndarray,
         return False
 
 
-def V_ref(credential_dict: Dict, A: np.ndarray, b: np.ndarray,
-          params: LWEParams) -> int:
+def V_ref(
+    credential_dict: Dict, A: np.ndarray, b: np.ndarray, params: LWEParams
+) -> int:
     """参考验证器：将 credential 验证映射为 {0, 1}
 
     这是用于差分测试的参考实现，Gate Layer 的神经验证器必须与此一致。
@@ -175,7 +191,7 @@ def V_ref(credential_dict: Dict, A: np.ndarray, b: np.ndarray,
     """
     try:
         # 提取 credential 向量
-        credential = credential_dict.get('vector')
+        credential = credential_dict.get("vector")
 
         if credential is None:
             return 0
@@ -212,6 +228,7 @@ def compute_error_norm(credential: np.ndarray, A: np.ndarray, b: np.ndarray) -> 
 # ============================================================================
 # 辅助函数：生成 invalid credentials（用于训练和测试）
 # ============================================================================
+
 
 def generate_random_credential(params: LWEParams, scale: float = 1.0) -> np.ndarray:
     """生成随机的 invalid credential

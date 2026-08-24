@@ -1,0 +1,49 @@
+schema_version: 1
+seed: 20260824
+device: auto
+lwe:
+  n: 128
+  m: 256
+  sigma: 1.0
+  error_threshold: 48.0
+data:
+  root: data/cifar10
+  download: false
+  validation_fraction: 0.1
+  split_seed: 20260824
+  num_workers: 0
+stages:
+  A:
+    epochs: 20
+    patience: 5
+    valid_ratio: 1.0
+    alpha: 1.0
+    beta_ce: 0.0
+    beta_kd: 0.0
+  B:
+    epochs: 60
+    patience: 10
+    valid_ratio: 0.0
+    alpha: 0.0
+    beta_ce: 0.5
+    beta_kd: 0.5
+  C:
+    epochs: 20
+    patience: 5
+    max_protected_drop: 0.03
+    valid_ratio: 0.5
+    alpha: 1.0
+    beta_ce: 0.25
+    beta_kd: 0.25
+optimizer:
+  name: sgd
+  lr: 0.1
+  joint_lr: 0.01
+  momentum: 0.9
+  weight_decay: 0.0005
+kd:
+  temperature: 4.0
+training:
+  batch_size: 128
+  max_grad_norm: 5.0
+  checkpoint_dir: checkpoints/v2/cifar10
