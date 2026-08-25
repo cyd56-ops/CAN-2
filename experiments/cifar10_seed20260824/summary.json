@@ -1,0 +1,37 @@
+{
+  "split_hash": "27bc2a48bf23dfaf3dfe64b839b941ae8ab0b70b030c6b4acf9a5da1726c6f35",
+  "keypair": {
+    "A_sha256": "ad58370685d7e657bb91a1d1aaf60ef9d2c04dc8c0813cddafcf24c7cdb34601",
+    "b_sha256": "b5983383b0464213f8b1852494e14b818909a9bc2ade4d38f5cb8c8af2f7679f"
+  },
+  "stage_a": {
+    "epoch": 15.0,
+    "loss": 0.41080689982131674,
+    "protected_accuracy": 0.7878,
+    "public_accuracy": 0.5468,
+    "protected_total": 5000.0,
+    "public_total": 5000.0,
+    "public_balanced_accuracy": 0.45629793405532837,
+    "public_macro_f1": 0.3660154938697815
+  },
+  "stage_b": {
+    "epoch": 60.0,
+    "loss": 0.5203610955819785,
+    "protected_accuracy": 0.8088,
+    "public_accuracy": 0.913,
+    "protected_total": 5000.0,
+    "public_total": 5000.0,
+    "public_balanced_accuracy": 0.9075714945793152,
+    "public_macro_f1": 0.9088653326034546
+  },
+  "stage_c": {
+    "epoch": 18.0,
+    "loss": 0.27339227406302746,
+    "protected_accuracy": 0.9012,
+    "public_accuracy": 0.958,
+    "protected_total": 5000.0,
+    "public_total": 5000.0,
+    "public_balanced_accuracy": 0.9499636292457581,
+    "public_macro_f1": 0.9555583000183105
+  }
+}
