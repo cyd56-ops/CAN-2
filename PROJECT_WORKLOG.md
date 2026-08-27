@@ -3,14 +3,20 @@
 ## 当前研究阶段
 
 **阶段**: V2 - Gate Layer 在计算图中间架构  
-**状态**: Phase 2 修复完成 - 等待 Claude 复验
-**最后更新**: 2026-08-24
+**状态**: Phase 2 真实 CIFAR-10 多 seed 训练完成 - 进入 Phase 3 evaluator
+**最后更新**: 2026-08-27
+
+**Phase 3 进度**: evaluator 核心模块、单 checkpoint CLI、Manifest/摘要校验、多 seed aggregate、latency 测量、完整能力/Gate 指标与 6 项离线专项测试已实现；真实 test split 评估仍待执行。
 
 ---
 
 ## 研究目标
 
-实现模型内生安全：在神经网络中间嵌入基于 LWE 的认证神经元层（Gate Layer），该层融合浅层特征与密码 credential 信息，根据验证结果控制深层神经元的激活。
+在神经网络中间嵌入固定的 toy LWE-inspired 关系验证门（Gate Layer），根据 credential
+关系判定控制深层神经元的实际执行，研究**可信部署边界内的模型能力分级控制**。
+
+当前实现不提供签名不可伪造性、身份认证、密码学访问控制 soundness 或白盒抗性，
+不得将本研究原型描述为生产密码系统。
 
 **密码方案变更**：从 Module-SIS 改为 LWE (Learning With Errors)，理由：
 - LWE 更适合神经网络编译（线性运算 + 噪声注入）
@@ -63,6 +69,47 @@ Input (image, credential)
    - **Phase 5（可选）**：ResNet-50 on ImageNet 子集
      - 1000 类 → 100 类或 10 类
      - 目的：验证在大规模任务上的可行性
+
+---
+
+## 威胁模型与主张边界
+
+### TM-API（当前正向保证适用的模型）
+
+攻击者可无限次提交任意 `(image, credential)` 并观察预期的能力输出，但不持有模型权重，
+不能修改进程内存、计算图或直接调用内部模块。模型权重、推理代码、协调器和部署入口可信。
+
+`TM-API` 的外部边界是计划在 Phase 3.6 实现的服务层 response envelope，
+**不是**当前原始 PyTorch `InferenceOutput`。原始输出包含 `decision`、连续 `error_norm`、
+`reason_code`、`verified`、`gate_signal` 与路由索引，只允许 evaluator 等测试仪器访问。
+
+在 response envelope 完成前，下列结论只在模型层成立：
+
+- invalid credential 时 `layer3`、`layer4` 和 protected head 零调用；
+- invalid 路径只产生 2 类公开能力，valid 路径产生 10 类受保护能力；
+- 推理态 `allow` / `gate_signal` 与 NumPy `V_ref` 逐样本一致。
+
+服务层完成后只能声明不泄露**额外的**验证证据、连续距离、reason code、路由索引或内部特征；
+public/protected 能力结果本身可能让调用方推断能力等级，不主张路由不可区分性。
+
+### TM-WB（明确不主张抗性的模型）
+
+攻击者持有 checkpoint 与运行时，可插 hook、改张量或直接调用内部方法。当前实现对此不提供保证：
+credential 只控制执行路径，不影响 protected 权重本身的可用性。攻击者可直接调用受保护内部路径，
+或通过常数规模运行时篡改绕过控制流；已有 direct-path 等价测试支持绕过后无业务能力损失。
+
+不得把该结论写成“单次赋值”或提供可迁移的攻击 PoC。仅翻转 `decision.allow` 时，
+`gated_features` 已被 `gate_signal` 清零，不能恢复正常 protected 语义。
+
+### 统一术语与写作规则
+
+- Gate Layer 统一称为**固定的 toy LWE-inspired 关系验证门**。
+- 不得称为“密码学验证门”或“密码学访问控制”；当前关系无安全归约且可被最小二乘伪造。
+- replay 防御不在当前路线中；静态 credential 可重复使用。
+- FAR/FRR 是当前采样分布下的实现正确性判据，不是密码学安全指标。
+- `capability_gap_fine` 的随机猜测基线必须标注 `is_analytic: true`，不是攻击者能力上界。
+- 每条论文安全陈述必须绑定 `TM-API`、`TM-WB` 或 `TM-NA`，并映射到 Claim ID。
+- GateBreaker 的 gate 是输入驱动的学习式 MoE 路由器；本项目 Gate Layer 是 credential 驱动的固定关系判定器。只作机制区分，不作安全强弱类比。
 
 ---
 
@@ -285,17 +332,33 @@ Gate Layer 当前无可训练参数，不添加 `L_gate` 或 gate regularization
 
 **当前限制**：真实 CIFAR-10、多种子、GPU 和正式指标仍待执行；Phase 2 training 子模块约 86%，完整 V2 行覆盖率已达到设计目标 90%。
 
+**Gate 判定跨 Stage 的限定**：在 `A`、`b`、`error_threshold`、credential generator、
+输入规范化、dtype 与设备配置均冻结时，训练模型权重不改变 Gate 判定，因为 Gate 无可训练参数，
+且验证链不依赖图像特征。跨 Stage FAR/FRR 仍须测量，但用途是检测配置漂移的回归检查，
+不是学习稳定性或密码学安全性的证据。
+
 ---
 
-### Phase 3: 评估实验（CIFAR-10）[LATER]
+### Phase 3: 评估实验（CIFAR-10）[IN PROGRESS]
 
-**目标**：验证 Gate Layer 的功能正确性和能力分级（快速原型验证）
+**目标**：在模型层验证 Gate Layer 的功能正确性、能力分级、路由隔离和运行代价。
 
 **数据集**：CIFAR-10（10 类 → 2 类）
 
-#### 3.1 功能正确性实验
+**前置状态**：Phase 2 已在服务器 RTX A4000（16 GB）完成真实 CIFAR-10 三阶段训练，seed `20260824`、`20260825`、`20260826` 均已完成，并分别生成 Stage A/B/C checkpoint 和摘要文件。三个 seed 的最终均值/标准差待汇总文件核验后补录。
 
-**文件**：`src/can/v2/experiments/functional_test.py`
+**当前任务**：先由 Claude 完成 Phase 3 evaluator 的 pre-run 代码审阅；通过后，在服务器加载三个
+Stage C best checkpoint，运行官方 test split 评估并汇总 `mean ± std`。代码审阅与服务器正式运行
+之间不得根据 test split 调整模型、阈值、checkpoint 或指标定义。
+
+**当前实现**：
+
+- `src/can/v2/experiments/test_evaluator.py`：模型层指标、mixed batch 路由校验和 latency；
+- `scripts/eval_cifar10_test.py`：单 checkpoint CLI、summary/manifest/SHA-256 校验与 Stage C 三 seed 聚合；
+- `tests/v2/test_test_evaluator.py`：5 项离线专项测试；
+- 当前 aggregate 只接受 Stage C，尚不能直接生成 Stage A/B/C 统一聚合报告。
+
+#### 3.1 功能正确性实验
 
 实验内容：
 1. **Fail-closed 验证**：
@@ -304,7 +367,7 @@ Gate Layer 当前无可训练参数，不添加 `L_gate` 或 gate regularization
 
 2. **差分测试**：
    - Valid credential 输出 vs 深层 direct 输出
-   - 逐 token 比较 logits 差异
+   - 逐样本比较 logits，验证 mixed batch 与独立 reference route 一致
 
 3. **Gate signal 分布**：
    - Valid credential → gate_signal 均值和方差
@@ -312,12 +375,10 @@ Gate Layer 当前无可训练参数，不添加 `L_gate` 或 gate regularization
 
 #### 3.2 能力分级实验
 
-**文件**：`src/can/v2/experiments/capability_tiering.py`
-
 实验内容：
 1. **Protected accuracy**（valid credential）：
    - Fine-grained classification accuracy
-   - 与 baseline ResNet-18 比较
+   - 以 Stage A protected accuracy 作为 `stage_a_reference`
 
 2. **Public accuracy**（invalid credential）：
    - Coarse classification accuracy
@@ -327,9 +388,10 @@ Gate Layer 当前无可训练参数，不添加 `L_gate` 或 gate regularization
    - Valid credential logits vs 深层 direct logits
    - 计算 L2 距离、余弦相似度
 
-#### 3.3 性能实验
+独立训练的无 Gate 同构 ResNet-18 尚不存在，不得作为当前 Phase 3 已实现 baseline。
+该项作为未来消融 `no_gate_ablation`，对应 claim C-014。
 
-**文件**：`src/can/v2/experiments/performance.py`
+#### 3.3 性能实验
 
 实验内容：
 - Latency：valid vs invalid credential
@@ -339,6 +401,34 @@ Gate Layer 当前无可训练参数，不添加 `L_gate` 或 gate regularization
 **Baseline 比较**：
 - External verifier + full model（验证器在模型外部）
 - 记录：verifier latency, model latency, total latency
+
+当前 evaluator 尚未实现 external-verifier baseline 的完整测量；完成前 claim C-007 保持 pending。
+
+#### 3.4 Stage A/B/C 对照
+
+拟报告五项：protected accuracy、public accuracy、protected logits 等价性、public/protected
+capability gap、实际 public/protected forward 次数。Stage A/B 可用同一单 checkpoint evaluator
+分别运行，但当前聚合器只支持三个 Stage C 结果；A/B/C 统一报告需要另行冻结汇总协议或补充评估编排。
+
+不得把 Stage A/B 中间阶段与 Stage C 主结果并列为最终模型，也不得用 validation 与 test 指标直接作差。
+
+#### 3.5 评估纪律
+
+- 使用真实标签、固定 CIFAR-2 映射、确定性 reference model 和严格的 indices/labels 对齐；
+- CIFAR 分类具有 ground truth，不引入 LLM judge；
+- 能力差距必须与效用、路由完整性和执行代价成对报告；
+- 每个预注册 checkpoint 在官方 test split 上正式评估一次，输出记录时间与 checkpoint SHA-256；
+- test split 不用于修改 checkpoint、阈值、训练超参数或选择规则。
+
+#### 3.6 服务层 response envelope [PENDING，claim C-013]
+
+在 Stage C 正式 test split 评估之后单独设计和实现，不阻塞模型层 evaluator：
+
+1. 剥离 `decision`、连续 `error_norm`、reason code、verified、gate signal 和路由 indices；
+2. 每个样本返回同构 envelope，字段集合和 shape 不随 valid/invalid 改变；
+3. 只允许暴露预期的 public/protected 能力结果，不声称能力等级不可观察；
+4. 增加全 valid、全 invalid、mixed batch 的序列化脱敏测试；
+5. evaluator 仍可访问原始内部证据，服务层调用方不可访问。
 
 ---
 
@@ -453,6 +543,39 @@ Input (image, credential_high, credential_mid)
 
 ---
 
+### Phase W: 权重级绑定 [SEPARATE RESEARCH TRACK]
+
+Phase W 不是 Phase 4/5 的既定增强，也不排入当前主线。若启动，必须先单独评审方案。
+
+候选方向是用 credential 派生的材料对 protected 权重做可逆掩码或置换。其可主张范围仅为：
+
+- checkpoint at-rest 机密性；
+- 首次能力提取需要一次合法 credential。
+
+在普通 PyTorch 软件执行模型中，protected 计算要求解掩码权重出现在攻击者可读地址空间，
+因此该方案不能建立 `TM-WB` 运行时抗性。攻击者取得一次合法 credential 后仍可 dump 明文权重。
+TEE、split inference 或服务端权重驻留会改变可信计算基，不构成模型内生白盒抗性的证据，
+也不能由此推出一般性不可能结论。
+
+启动前必须分别解决构造、密钥管理、checkpoint 中间状态、解掩码时机、浮点/BatchNorm 等价性、
+GPU 明文窗口、掩码恢复风险以及训练/部署流程重构。
+
+---
+
+## 主张与证据
+
+权威台账位于 `docs/RESEARCH_DESIGN.md` 第 7 节，当前包含 C-001 至 C-014。
+
+- `satisfied`：C-001、C-003、C-004、C-008、C-009；
+- `declared`：C-010、C-011；
+- `partial`：C-002、C-005；
+- `pending`：C-006、C-007、C-012、C-013、C-014。
+
+C-003 当前仅在模型层 satisfied；其完整 `TM-API` 服务边界依赖 C-013。
+`stage_a_reference` 与尚不存在的 `no_gate_ablation` 禁止混用。
+
+---
+
 ## 当前状态
 
 ### 已完成
@@ -483,19 +606,31 @@ Input (image, credential_high, credential_mid)
   - [x] 严格 YAML/CLI、显式下载开关、原子 checkpoint 和 RNG 恢复
   - [x] 离线训练测试 40/40、完整 V2 测试 146/146、Phase 2 training 覆盖率约 86%、完整 V2 覆盖率 90%
   - [x] CPU 三阶段 smoke 通过；空 DataLoader 和不合法 smoke 配置已 fail fast
+- [x] **Phase 2 真实 CIFAR-10 三阶段训练**：三个 seed 均完成 Stage A/B/C checkpoint 与摘要
+- [x] **Phase 3 evaluator 实现**：核心模块、CLI、manifest/SHA-256 校验、Stage C 三 seed aggregate、latency 与 5 项离线测试
+- [x] **威胁模型与 claim/evidence 台账**：TM-API/TM-WB/TM-NA 与 C-001 至 C-014 已记录
+- [x] **文档同步后的回归测试**（2026-08-27）：设置 `PYTHONPATH=.` 后运行 `pytest tests/v2/ -q`，151 passed
 
 ### 进行中
-- [ ] **Phase 2 修复后的 Claude 复验与真实实验准备**
+- [ ] **Phase 3 evaluator pre-run 审阅与 CIFAR-10 官方 test split 评估执行**
 
 ### 下一步（唯一下一步）
 
-**先由 Claude 复验 resume、teacher/LWE/split 约束和覆盖率，再安装兼容 torchvision 运行真实 CIFAR-10 三阶段训练。**
+**先由 Claude 对 Phase 3 evaluator、CLI、测试和服务器运行命令完成 pre-run 审阅；审阅通过后，
+在服务器加载三个 seed 的 Stage C best checkpoint，运行官方 test split 评估并汇总 `mean ± std`。**
 
 审核重点：
-1. torchvision 前置依赖、离线单元测试与数据划分
-2. rejection sampling credential 生成和确定性 RNG
-3. masked protected loss、public CE + KD 及三阶段训练策略
-4. `InferenceOutput` indices 指标对齐、checkpoint 和多种子评估
+1. 三个 seed 的 checkpoint、summary 和配置对应关系
+2. valid/invalid credential 路由与 fail-closed 深层调用计数
+3. `InferenceOutput` indices 与 test labels 的严格对齐
+4. test split protected/public 指标、latency 和多 seed mean ± std
+5. 每次 test 评估的时间、checkpoint SHA-256 与代码/配置版本
+6. 跨 Stage FAR/FRR 仅作为冻结配置回归检查，不解释为安全指标
+
+**紧随其后**：冻结并实现 Stage A/B/C 统一汇总协议，以及 Phase 3.6 服务层 response envelope。
+
+**测试环境备注**：直接运行 `pytest tests/v2/ -q` 未设置 `PYTHONPATH` 时在收集阶段报
+`ModuleNotFoundError: No module named 'src'`；按仓库导入方式设置 `PYTHONPATH=.` 后完整测试通过。
 
 ---
 
@@ -571,13 +706,14 @@ Input (image, credential_high, credential_mid)
    - ImageNet：成本高，可能在原型阶段过早
    - **策略**：渐进式实验（10→100→1000）
 
-### 明确的非目标（当前阶段）
+### 当前明确不主张的能力
 
-- **白盒攻击防御**：当前阶段不考虑
-- **TEE 部署**：后续阶段
-- **密码学安全归约**：Toy profile 不保证（LWE 参数 n=128 过小）
-- **生产部署**：研究原型阶段
-- **ImageNet 实验**：Phase 1-4 不考虑（Phase 5 可选）
+- **TM-WB 白盒抗性**：当前控制流门控可被直接调用内部路径或常数规模运行时篡改绕过；
+- **Replay 防御**：静态 credential 可重用，当前主线没有 challenge-response 或 nonce 状态；
+- **密码学安全性**：toy LWE-inspired 关系无安全归约，可被最小二乘伪造；
+- **生产部署安全**：研究原型，服务层 response envelope 仍待 Phase 3.6 实现；
+- **TEE/安全启动与侧信道防护**：不在当前主线；
+- **ImageNet 结果**：Phase 5 可选，尚未开始。
 
 ---
 
@@ -601,6 +737,9 @@ Input (image, credential_high, credential_mid)
 **未测量项**（避免与 README 旧表述混淆）：
 - 大样本（≥1000 次）统计的假阳性率置信区间
 - 单次验证 latency 的基准测试（~0.1ms 为估算，非 benchmark 实测）
+
+上述假阳性/假阴性只针对有限的 toy credential 采样与固定阈值，不能解释为签名不可伪造性、
+身份认证成功率或密码学访问控制安全性。
 
 **参数配置**（toy profile，非生产）：
 - n=128, m=256, σ=1.0, threshold=48.0
@@ -632,15 +771,16 @@ pytest tests/v2/test_gate_layer.py -v --cov=src/can/v2/layers --cov-config=.cove
 ```
 
 **残余验证缺口**：
-- CUDA/GPU device 路径尚未实测（当前环境仅 CPU）
+- Phase 1/2 开发侧 CUDA/GPU device 路径未实测；Phase 2 真实训练已在服务器 RTX A4000（16 GB）完成
 
 ---
 
 ### Gated ResNet-18 实验路线（与当前方案同步）
 
 #### CIFAR-10 实验（Phase 2-3 原型验证）
-- 训练状态：Phase 2 训练代码已实现；真实数据训练尚未运行
-- Protected/Public accuracy：待 Phase 2 smoke test 和正式训练测量
+- 训练状态：Phase 2 真实 CIFAR-10 三阶段训练已完成，三个 seed（20260824/20260825/20260826）均有独立 checkpoint
+- 训练结果：各 seed 的 validation 摘要已保存；多 seed 均值/标准差待汇总文件核验
+- Protected/Public accuracy：训练 validation 指标已产生；官方 test split 指标待 Phase 3 evaluator
 - Logits 等价性与 latency：Phase 3 评估实验测量
 - 选择规则：只使用 validation 指标选择 checkpoint，冻结后再评估官方 test set
 
@@ -660,6 +800,8 @@ pytest tests/v2/test_gate_layer.py -v --cov=src/can/v2/layers --cov-config=.cove
 - Shamir et al., "How to Securely Implement Cryptography in Deep Neural Networks"
 - Regev, "On lattices, learning with errors, random linear codes, and cryptography" (LWE 原始论文)
 - Knowledge Distillation: Hinton et al., "Distilling the Knowledge in a Neural Network"
+- Wu et al., "GateBreaker: Gate-Guided Attacks on Mixture-of-Expert LLMs"（本地 preprint；
+  在未由官方来源核实录用信息前不固定声称正式发表场次）
 
 ---
 
@@ -750,6 +892,7 @@ Scope: Research prototype, white-box defense out of scope
 - 所有测试结果（pass/fail/skip）必须记录在此
 - 所有设计决策和风险必须记录在此
 - 保持"唯一下一步"明确且可执行
+- 本文档是唯一动态事实源；`PROJECT_WORKLOG_2.md` 仅保留为 2026-08-26 修订提案历史，不再具有当前状态权威性
 
 **数据集选择策略**：
 - **Phase 1-2**：CIFAR-10（架构与训练原型，10→2 类）

@@ -2,6 +2,24 @@
 
 本文档记录项目所有阶段的设计方案，每个新功能的实现都必须先在此文档中添加设计方案，代码实现将严格遵循此文档。
 
+## 当前统一安全模型（2026-08-27）
+
+本节与根目录 `PROJECT_WORKLOG.md`、`SECURITY.md` 及 `docs/RESEARCH_DESIGN.md` 第 7 节台账
+共同构成当前权威口径。下文早期 revision 中与本节冲突的安全措辞只作为历史决策记录，
+不得用于当前实现或论文主张。
+
+- 当前 Gate Layer 是**固定的 toy LWE-inspired 关系验证门**，不是数字签名、身份认证或生产密码学访问控制。
+- `TM-API`：调用方只能通过可信服务入口提交任意 image/credential；正向保证的最终边界是
+  Phase 3.6 response envelope，而非原始 `InferenceOutput`。envelope 完成前只主张模型层行为。
+- `TM-WB`：攻击者持有 checkpoint 与运行时。当前实现不提供抗性；protected 内部路径可被直接调用，
+  或通过常数规模运行时篡改绕过。不得写成“单次赋值”，也不实现可迁移的攻击 PoC。
+- 静态 credential 可重用；当前路线不提供 replay 防御。challenge-response/nonce 只可作为未来独立方案，
+  不能写成 Phase 3/4 已承诺能力。
+- FAR/FRR 是有限 toy 采样下的实现正确性判据，不是密码学安全指标。
+- `stage_a_reference` 是已实现的 Stage A protected accuracy；独立训练的无 Gate 同构模型
+  `no_gate_ablation` 尚不存在，属于未来消融（C-014）。
+- 当前主张状态以 `docs/RESEARCH_DESIGN.md` 的 C-001 至 C-014 为准。
+
 ## 文档结构
 
 - 每个方案包含：设计目标、架构设计、接口定义、实现步骤、测试要求、风险和限制
@@ -18,7 +36,7 @@
 
 ### 设计目标
 
-实现 LWE (Learning With Errors) 密码原语，提供密钥生成、验证和参考实现。
+实现 toy LWE-inspired 数值关系原语，提供参数生成、关系验证和参考实现。
 
 ### 实现内容
 
@@ -82,7 +100,8 @@ shallow_features + AuthorizationDecision → 特征门控 → gated_features
 
 **明确限制和安全披露**：
 - ⚠️ **Toy LWE 安全性**：无模运算，m>n，threshold=48 宽松。可通过最小二乘伪造。**仅用于神经编译演示，不具有密码学安全性**。
-- ⚠️ **不防御 replay 攻击**：Phase 1-2 使用静态 credential，credential 可以被重复使用。研究重点是验证"LWE 验证可以编译为神经网络"，replay 防御留到 Phase 3-4。
+- ⚠️ **不防御 replay 攻击**：当前实现使用静态 credential，credential 可以被重复使用。
+  replay 防御不在当前主线；任何 challenge-response/nonce 扩展都需要独立方案评审。
 - Gate Layer 包含：验证器（evidence）、协调器（decision）、特征门控（gating）三个组件。
 
 ### 核心架构
@@ -678,9 +697,8 @@ pytest tests/v2/test_gate_layer.py -v --cov=src/can/v2/layers
 
 **风险**：无模运算，m>n，threshold=48 宽松，可通过最小二乘伪造。
 
-**缓解措施**：
-- **Phase 1-2**：明确标注"仅用于神经编译演示"
-- **Phase 3-4（可选升级）**：整数模运算 + 更大参数 + 更紧阈值
+**缓解措施**：所有阶段明确标注“仅用于神经编译与能力路由演示”。整数模运算、标准协议或
+更大参数只能作为未来独立密码方案研究，不能通过调大 toy 参数获得生产安全声明。
 
 #### 2. 不防御 Replay 攻击（明确限制）
 
@@ -691,12 +709,10 @@ pytest tests/v2/test_gate_layer.py -v --cov=src/can/v2/layers
 - Replay 防御需要复杂的状态管理、持久化、并发控制
 - 训练需要重复使用 credential，与 One-Time Credential 冲突
 
-**Phase 3-4 升级路径**：
-- **Challenge-Response**：交互式，密码学安全
-- **Time-based Nonce**：非交互式，简单
-- **训练/推理分离**：训练不检测 replay
+**未来候选方向（未承诺）**：Challenge-Response、nonce 与训练/部署协议分离。
+这些方向需要重新定义 canonical encoding、状态、并发、失败语义和安全归约，不能描述为当前能力。
 
-**记录到 SECURITY.md**："Phase 1-2 不防御 replay 攻击。Replay 防御留到 Phase 3-4。"
+**记录到 SECURITY.md**："当前静态 credential 可重用，不提供 replay 防御。"
 
 #### 3. Fail-closed 范围限定
 
@@ -748,7 +764,7 @@ gated_features = shallow_features * gate_signal.view(B, 1, 1, 1)
 
 6. ✅ **Batch 接口兼容**：使用 Tensor[B] 向量化处理 evidence 和 decision
 7. ✅ **训练可行性**：credential 可重复使用
-8. ✅ **安全模型一致**：SECURITY.md 明确不防御 replay
+8. ✅ **安全模型一致**：SECURITY.md 明确当前不防御 replay
 
 ### 总结
 
@@ -767,7 +783,7 @@ gated_features = shallow_features * gate_signal.view(B, 1, 1, 1)
 - ✅ 解决 Codex 指出的所有根本性问题
 - ✅ 架构清晰、无状态、可微分
 - ✅ 专注于核心目标："LWE 验证的神经编译"
-- ✅ 为 Phase 3-4 的 replay 防御打好基础
+- ✅ 为未来独立 replay 协议研究保留清晰边界（不构成当前路线承诺）
 
 ---
 # Phase 1.3: Gated ResNet-18 设计方案（Revision 1）
@@ -987,7 +1003,7 @@ self.layer1 = self._make_layer(64, 2, stride=1)
 self.layer2 = self._make_layer(128, 2, stride=2)
 ```
 
-本阶段在项目内实现标准 `BasicBlock`、downsample 和 `_make_layer`，不新增 torchvision 依赖。实现必须使用 ResNet-18 的 `[2,2,2,2]` block 配置、Kaiming 初始化和标准残差连接；测试与无 Gate 的同构 CIFAR ResNet baseline 比较参数结构和 direct protected logits。
+本阶段在项目内实现标准 `BasicBlock`、downsample 和 `_make_layer`，不新增 torchvision 依赖。实现必须使用 ResNet-18 的 `[2,2,2,2]` block 配置、Kaiming 初始化和标准残差连接；测试比较参数结构和 direct protected logits。独立无 Gate 的同构 CIFAR ResNet baseline 尚不存在，属于未来 `no_gate_ablation`。
 
 ### 2. Gate Layer 集成
 
@@ -1253,7 +1269,7 @@ loss = alpha * loss_protected + beta * loss_public
 ### 符合 Phase 1 目标
 
 - [x] 实现 Gate Layer 在计算图中间的架构
-- [x] 验证密码验证逻辑可以嵌入 ResNet-18
+- [x] 验证 toy LWE-inspired 关系判定可以嵌入 ResNet-18
 - [x] Fail-closed：invalid credential 不执行深层
 
 ### Phase 2 预留
@@ -2099,15 +2115,707 @@ python scripts/train_gated_resnet.py \
 
 **实验验收**：
 - 至少运行 3 个预先声明的随机种子，报告均值、标准差和每次原始结果
-- Protected：报告 top-1 accuracy，并报告相对同构无 Gate CIFAR ResNet-18 baseline 的绝对下降；初始目标为下降不超过 3 个百分点
+- Protected：报告 top-1 accuracy，并相对 Stage A protected accuracy（`stage_a_reference`）
+  检查 Stage C 下降不超过配置上限。独立无 Gate 同构 baseline 尚未训练，仅作为 C-014 未来消融
 - Public：同时报告 accuracy、balanced accuracy、macro-F1 和 2×2 confusion matrix，避免 CIFAR-2 的 40/60 类别不平衡误导
 - 报告 Stage A/B/C 学习曲线、valid ratio 敏感性和最终选择 checkpoint 的规则
-- 官方 test set 只在配置和 checkpoint 选择冻结后评估一次，不用于调参
+- 官方 test set 仅在配置和 checkpoint 选择冻结后使用，不用于调参。主结果为三个 seed 的 Stage C best checkpoint，各评估一次；Stage A/B 如执行则是独立标注的预注册消融，各 checkpoint 各评估一次。确定性测试只使用离线 fixture，不重复访问官方 test split。
 
 上述阈值是原型实验目标而非保证；未达到时如实记录，不得通过更换 test seed 或反复查看 test set 选择结果。
 
 **资源预估**：实现和 CPU 单元测试不要求 GPU；正式 CIFAR-10 三阶段训练建议 1 张 ≥8 GB CUDA GPU。单 seed 的时间需要先用 1 epoch smoke benchmark 实测后写入 `PROJECT_WORKLOG.md`，再决定完整 epochs；不得沿用未经当前硬件测量的时间估计。
 
 **明确限制**：Phase 2 仍使用 toy LWE、静态可重用 credential，不解决 replay 或白盒攻击，不构成生产安全系统。所有训练代码必须遵循进度条规范（任一时刻唯一进度条 + `tqdm.write`）。
+
+---
+
+## Phase 3.1: CIFAR-10 Test Split Evaluator [PROPOSED]
+
+### 背景与现状
+
+Phase 2 的三阶段训练已在服务器上跑完 3 个 seed（20260824/20260825/20260826），结果汇总在 `experiments/`。需要明确的是：
+
+1. **现有 `experiments/*/summary.json` 全部是 validation split 指标**，不是 test split。证据：每个 stage 的 `protected_total = public_total = 5000`，即 50000 训练集 × `validation_fraction=0.1`。因此 Phase 2 总结中"官方 test set 只在配置和 checkpoint 选择冻结后评估一次"这一条**尚未执行**，本方案就是执行它。
+2. **本地 `checkpoints/v2/cifar10/` 是 smoke test 残留**（`split_indices.json` 仅 16 个索引：train 12 / val 4）。真实 checkpoint 在服务器上，评估器必须按"外部传入 checkpoint 路径"设计，不得假设某个固定本地目录可用。
+3. **secret 不落盘**。`scripts/train_gated_resnet.py:399-401` 用 `np.random.default_rng(seed + 100)` 确定性重建 keypair，`summary.json` 只记录 `A_sha256` / `b_sha256`。因此评估器必须自己重建 keypair 并校验哈希，不能从 checkpoint 读取 credential。
+
+### 设计目标
+
+在 CIFAR-10 官方 test split（10000 张，训练全程未接触）上评估 Stage A/B/C checkpoint：
+
+1. 产出可直接进论文的 protected / public 指标，结构与现有 multiseed 汇总一致，便于并排成表
+2. 把 Gate Layer 的路由正确性做成**硬断言**而非软指标——当前采样分布下观测 FAR/FRR 必须为 0，混合 batch 路由必须逐样本一致
+3. 补上同粒度可比指标（粗粒度投射），支撑"授权=细粒度、未授权=粗粒度"的核心论点
+4. 全程确定性：同一 checkpoint 在相同环境下重复运行，输出逐字节一致（去时间戳后）；官方 test split 不因确定性测试而反复用于调参
+
+### 为什么不直接复用 `trainer.validate()`
+
+`GatedResNetTrainer.validate()`（`src/can/v2/training/trainer.py:352`）已经实现了"全 valid 跑 protected + 全 invalid 跑 public"的双路径评估，但有三处不足：
+
+| 不足 | 说明 |
+|---|---|
+| 依赖过重 | 需要完整构造 trainer：optimizer、teacher identity、credential RNG 状态。评估只需要 model + keypair + 数据 |
+| 指标不足 | 只累计 `EvaluationMetricAccumulator` 的 4 个指标，缺 gate 行为指标（FAR/FRR、reason code、error norm 分布）和混合 batch 路由校验 |
+| 缺同粒度对比 | protected 只有 10 类指标。stage_c 的 protected 0.9006 vs public 0.9563 字面上像"未授权更强"，因为 2 类任务本身更简单，必须投射到同粒度才可比 |
+
+**结论**：新增独立评估器，复用 `EvaluationMetricAccumulator`、`CIFAR10WithCoarse`、`get_cifar_transforms(False)`、`CredentialGenerator`、`fine_to_coarse`，**不改动 trainer 的任何契约**。
+
+### 核心架构
+
+```
+src/can/v2/experiments/test_evaluator.py     新增
+  ├── TestSplitEvaluator                     评估器主类
+  ├── GateBehaviorAccumulator                FAR/FRR、reason code、error norm
+  └── ProtectedProjectionAccumulator         10 类 → 2 类粗粒度投射
+
+scripts/eval_cifar10_test.py                 新增 CLI 入口
+tests/v2/test_test_evaluator.py              新增单元测试（synthetic 数据，离线）
+```
+
+**不新增 config 文件**。评估配置从 checkpoint 的 `metadata["config"]` 读取；CLI 只允许覆盖运行时字段
+`data.root`、`device`、`batch_size`、`num_workers` 和 `mixed_ratio`，以及显式的
+`--measure-latency`、`--expected-checkpoint-sha256`、`--force-overwrite` 开关。
+其余字段（`lwe`、`seed`、`mapping_version`）一律以 checkpoint 为准。
+
+**这四项不影响 accuracy 类指标，但 `batch_size` 会影响 `gate` 与 `mixed_batch` 段**。`all_invalid()` 转发到 `batch_generate(B, 0.0)`（`src/can/v2/training/data.py:212-215`），每批在同一个 `self.rng` 流上先做 `B` 次 `rng.normal`、再做一次 `rng.permutation(B)`。batch 256 是 39 次 `permutation(256)` 加 1 次 `permutation(16)`，batch 128 是 78 次 `permutation(128)`，消耗的 RNG 状态量不同，后续 normal 抽样随之错位，**实际采到的 invalid credential 集合不同**。因此 `error_norm_stats.invalid`、`min_margin` 和混合批的 valid mask 都依赖 `batch_size`。
+
+对应约束：顶层 JSON 必须记录 `eval_batch_size`；`--aggregate` 必须校验各 seed 的 `eval_batch_size` 一致，不一致直接失败，否则 `gate` 段的 mean/std 跨 seed 不可比。
+
+**为什么锁定 LWE 参数**：如果评估时用了与训练不同的 `error_threshold`，invalid credential 可能被误判为通过，FAR 会假性归零，产生最危险的静默失败。
+
+### Keypair 重建与校验（fail-fast 链）
+
+**加载 checkpoint 必须显式 `weights_only=False`**。当前环境 torch 2.13，而 `weights_only` 自 torch 2.6 起默认为 `True`；checkpoint 的 `metadata` 内含 `numpy.ndarray`（A、b）和整个 config dict，默认模式下加载直接失败，断言 1 根本执行不到。写法与训练脚本保持一致（`scripts/train_gated_resnet.py:443-444`、`490`、`536`，`src/can/v2/training/trainer.py:462-465`）：
+
+```python
+payload = torch.load(checkpoint_path, map_location=device, weights_only=False)
+metadata = payload["metadata"]
+```
+
+`weights_only=False` 会反序列化任意对象，因此只对本项目自己产出的 checkpoint 使用。
+
+#### Checkpoint 完整性与可信 manifest
+
+从服务器拉取的 checkpoint 必须在加载前完成 SHA-256 校验。正式结果的完整性校验链：
+
+**1. Manifest 格式**（`checkpoints_manifest.json`）：
+
+```json
+{
+  "manifest_version": 1,
+  "generated_at": "2026-08-24T12:00:00Z",
+  "generator": "scripts/generate_checkpoint_manifest.py",
+  "checkpoints": {
+    "cifar10_seed20260824/stage_c/best.ckpt": {
+      "sha256": "abc123...",
+      "size_bytes": 12345678,
+      "seed": 20260824,
+      "stage": "C",
+      "epoch": 18
+    },
+    "cifar10_seed20260825/stage_c/best.ckpt": { "..." },
+    "cifar10_seed20260826/stage_c/best.ckpt": { "..." }
+  }
+}
+```
+
+**Checkpoint key 规范化规则**：
+- Key 必须是相对于 `checkpoints/v2/` 的 POSIX 路径（前向斜杠 `/`，无 `./` 前缀）
+- 评估器从 CLI 传入的 `--checkpoint` 完整路径中提取相对路径：
+  ```python
+  from pathlib import Path
+  ckpt_path = Path(args.checkpoint).resolve()
+  v2_root = (Path(__file__).parent.parent / "checkpoints/v2").resolve()
+  try:
+      relative_key = ckpt_path.relative_to(v2_root)
+  except ValueError as exc:
+      raise ValueError(f"checkpoint 必须位于 checkpoints/v2/ 目录树下: {ckpt_path}") from exc
+  relative_key = relative_key.as_posix()
+  # 例如：relative_key == "cifar10_seed20260824/stage_c/best.ckpt"
+  ```
+- Windows 路径自动转换为 POSIX 格式（`Path.as_posix()`）
+- Manifest 查找失败、路径歧义、摘要不匹配时立即失败（fail fast，见下文错误示例）
+
+**2. Manifest 保存与分发**：
+- Manifest 必须独立于 checkpoint 保存（不能打包在同一 tar/zip 中）
+- 训练结束后立即生成，与 checkpoint 一同上传到服务器
+- 分发时将 manifest 本身的 SHA-256 记录在独立文件（如 `manifest_sha256.txt`）或 `PROJECT_WORKLOG.md` 中
+- CLI 传入的期望摘要必须与该独立清单核对，不能直接从 checkpoint 所在目录自动读取同名摘要文件
+
+**3. 评估时校验流程**：
+
+```bash
+# 方式 1：直接指定期望摘要（适合单 checkpoint 评估）
+python scripts/eval_cifar10_test.py \
+  --checkpoint checkpoints/v2/cifar10_seed20260824/stage_c/best.ckpt \
+  --expected-checkpoint-sha256 abc123...
+
+# 方式 2：使用 manifest（适合批量评估）
+python scripts/eval_cifar10_test.py \
+  --checkpoint checkpoints/v2/cifar10_seed20260824/stage_c/best.ckpt \
+  --checkpoint-manifest checkpoints_manifest.json \
+  --expected-manifest-sha256 def456...
+```
+
+使用 manifest 时：
+1. 先用 `--expected-manifest-sha256` 校验 manifest 文件本身的完整性
+2. 从 manifest 中查找 checkpoint 路径对应的期望 SHA-256
+3. 计算 checkpoint 实际 SHA-256 并比对
+4. 任一步骤失败立即退出，不加载 checkpoint
+
+除 SHA-256 外，还必须交叉校验 manifest 条目的 `size_bytes`、`seed`、`stage`、`epoch` 与实际文件大小及
+checkpoint metadata 一致；任一字段缺失、不一致或类型错误均 fail fast。
+
+**互斥参数检查**：
+- `--expected-checkpoint-sha256` 与 `--checkpoint-manifest` 不能同时使用
+- 若同时传入，CLI 立即退出并提示：
+   ```
+
+参数组合规则：
+- 直接摘要模式：必须提供 `--expected-checkpoint-sha256`，且不得提供任一 manifest 参数；
+- manifest 模式：必须同时提供 `--checkpoint-manifest` 和 `--expected-manifest-sha256`，且不得提供直接摘要；
+- 三个摘要参数均省略时仅允许本地调试/smoke，输出 `integrity_check: "not_performed"`；
+- 仅提供其中一个 manifest 参数，或同时提供两种模式的参数，立即失败。
+  Error: --expected-checkpoint-sha256 and --checkpoint-manifest are mutually exclusive.
+  Use --expected-checkpoint-sha256 for single checkpoint verification,
+  or --checkpoint-manifest + --expected-manifest-sha256 for batch verification.
+  ```
+
+**Fail fast 错误示例**：
+
+Manifest 查找失败：
+```
+Error: Checkpoint key not found in manifest
+  Checkpoint: checkpoints/v2/cifar10_seed20260824/stage_c/best.ckpt
+  Normalized key: cifar10_seed20260824/stage_c/best.ckpt
+  Manifest: checkpoints_manifest.json
+  Available keys: ['cifar10_seed20260825/stage_c/best.ckpt', ...]
+```
+
+摘要不匹配：
+```
+Error: Checkpoint SHA-256 mismatch
+  Checkpoint: checkpoints/v2/cifar10_seed20260824/stage_c/best.ckpt
+  Expected (from manifest): abc123...
+  Actual:                   def456...
+  Manifest: checkpoints_manifest.json
+```
+
+Checkpoint 不在 `checkpoints/v2/` 树下：
+```
+Error: Checkpoint must be under checkpoints/v2/ directory tree
+  Checkpoint: /other/path/model.ckpt
+  Expected root: /path/to/project/checkpoints/v2/
+```
+
+**4. 信任边界**：
+- `--expected-checkpoint-sha256` 和 `--expected-manifest-sha256` 的值由人工从可信源（如 git 提交、实验日志）获取并传入
+- 不依赖 checkpoint 内部的自描述字段（如 `payload["metadata"]["sha256"]`，这种字段本身就在待校验文件内）
+- 正式论文结果必须在 `PROJECT_WORKLOG.md` 中记录所有期望摘要的来源（谁计算、何时计算、通过何种渠道传递）
+
+**5. 未提供期望摘要时的降级行为**：
+- 评估器仍会计算并记录 `checkpoint.sha256` 到输出 JSON
+- 但必须标注 `"integrity_check": "not_performed"`
+- 不得将其称为完整性校验，也不得用于正式论文结果
+- 适用场景：本地开发调试、smoke test
+
+```python
+seed = metadata["config"]["seed"]
+params = LWEParams(**metadata["lwe"])   # 只传 n/m/sigma/error_threshold，q 与 secret_bound 走默认值
+A, secret, b = generate_keypair(params, rng=np.random.default_rng(seed + 100))
+
+# 断言 0（向后兼容）：若 checkpoint 声明了 keypair_rng_scheme / keypair_rng_version，
+#   则必须等于当前 scheme_version=1（即 numpy.default_rng(seed + 100)）；
+#   字段缺失时按 v1 处理，并在输出标注 rng_scheme_source="assumed_v1"
+# 断言 1：重建的 A/b 与 checkpoint 记录逐元素相等
+assert np.array_equal(A, metadata["A"]) and np.array_equal(b, metadata["b"])
+# 断言 2：若提供 --summary，严格校验其 provenance 字段
+#   顶层 split_hash、keypair.A_sha256、keypair.b_sha256 必须存在，
+#   且分别与 checkpoint metadata.split.split_hash 及重建后的 A/b 哈希完全一致
+# 断言 3：重建的 secret 确实是 valid credential
+assert V_ref({"vector": secret}, A, b, params) == 1
+# 断言 4：标签映射版本一致
+assert metadata["mapping_version"] == DATA_MAPPING_VERSION
+```
+
+任一断言失败直接抛异常退出，**不产出任何 JSON**。宁可没有结果，也不要错的结果。
+
+`--summary` 在技术上可以省略，但正式论文结果和多 seed 汇总必须提供。省略时仍执行断言 0/1/3/4，
+并在输出中写入 `provenance_check: "partial"`；提供时写入 `provenance_check: "complete"`。
+若 `--summary` 文件缺少上述任一字段，或任一哈希与 checkpoint/重建结果不一致，必须 fail fast，
+且不得生成部分 JSON 或静默跳过校验。
+
+**断言 0 必须向后兼容**：`scripts/train_gated_resnet.py:428-436` 写入的 `checkpoint_metadata` 只包含 `config`、`config_signature`、`mapping_version`、`lwe`、`A`、`b`、`split` 七个键，**没有任何 rng scheme 字段**。服务器上三个 seed 的训练已经跑完，checkpoint 无法回填。因此字段缺失时必须视为 `scheme_version = 1` 并继续，只在字段存在且值不等于 1 时才 fail；否则断言 0 会在全部 9 个 checkpoint 上必然失败，评估器一份结果都产不出来。
+
+真正的保护是断言 1——逐元素比对 A/b 不依赖任何新增字段。若将来训练脚本改了 keypair 的 rng 派生规则，断言 1 会立即失败，不会静默用错 keypair。
+
+**断言 2 增加 `split_hash` 交叉比对**：`experiments/*/summary.json` 顶层已有 `split_hash`（seed20260824 为 `27bc2a48...`），可与 checkpoint 内 `metadata["split"]["split_hash"]` 比对，是现成的溯源手段。
+
+#### Credential RNG 播种约定
+
+确定性要求（§6）依赖 credential 采样可复现。`all_invalid()` 走 `batch_generate` 的 rejection sampling（`src/can/v2/training/data.py:150-154`），若不固定种子，每次运行采到的 invalid credential 都不同，`error_norm_stats.invalid`、`min_margin` 和混合批 credential 会逐次变化，输出哈希不可能稳定。
+
+因此评估器**必须**用固定派生种子构造 `CredentialGenerator`：
+
+```python
+credential_generator = CredentialGenerator(
+    A, secret, b, params, seed=int(metadata["config"]["seed"]) + 500
+)
+```
+
+**使用 `+ 500` 而非训练脚本的 `+ 1`**（`scripts/train_gated_resnet.py:402-404`）：训练用 `seed + 1`，评估用 `seed + 500`，这是显式的不同派生 seed，避免实现层面的 RNG 状态复用；它不是密码学独立性证明，也不保证统计独立。该种子写入输出 JSON 的 `credential_rng_seed` 字段，并在 `credential_rng_note` 中记录派生规则。若 checkpoint metadata 记录了训练 credential seed，也必须同时输出并校验；旧 checkpoint 缺失时写 `training_credential_rng_seed: null`。
+
+### 数据加载
+
+```python
+dataset = CIFAR10WithCoarse(root, train=False,
+                            transform=get_cifar_transforms(False),
+                            download=False)
+loader = DataLoader(dataset, batch_size=..., shuffle=False, drop_last=False)
+```
+
+- `train=False` → 官方 test split
+- `get_cifar_transforms(False)` → 只有 ToTensor + Normalize，无数据增强
+- `shuffle=False`、`drop_last=False` → 10000 张全部评估，不丢尾批
+- 断言 `len(dataset) == 10000`
+
+#### 尾批与 mixed_ratio 预检
+
+`drop_last=False` 会产生尾批：10000 张、batch 256 → 39 个满批 + 1 个 16 张尾批。而 `batch_generate` 在 `round(batch_size × ratio) < min_valid` 时抛 `ValueError`（`src/can/v2/training/data.py:179-183`）。尾批 16 张下 `mixed_ratio < 0.09375` 就会触发——**前 39 批全部跑完之后才崩**，白跑一轮。
+
+因此必须在加载数据前预检，风格对齐 `scripts/train_gated_resnet.py:_validate_batch_contract`。
+混合遍历要求 `0 < mixed_ratio < 1`，因为它必须同时包含 valid 与 invalid 子批；全 valid 和全 invalid
+分别由前两遍专门覆盖。若需测试全 invalid 边界，调用 `all_invalid()` 的专用遍历，不把它伪装成 mixed routing：
+
+```python
+tail = len(dataset) % batch_size or batch_size
+if not 0.0 < mixed_ratio < 1.0:
+    raise ValueError("mixed_ratio 必须位于 (0, 1)，全 valid/invalid 使用专用遍历")
+num_valid = round(tail * mixed_ratio)
+num_invalid = tail - num_valid
+if num_valid < 2 or num_invalid < 1:
+    raise ValueError(
+        f"mixed_ratio={mixed_ratio} 在尾批 size={tail} 下无法同时保证至少两个 valid 和一个 invalid 样本"
+    )
+```
+
+`num_valid >= 2` 是因为 protected 深层路径含 BatchNorm，训练/评估契约要求有效子批至少两个样本；
+public 路径在 `model.eval()` 下使用固定统计量，invalid 子批至少一个样本即可。该不对称约束只适用于
+mixed routing 的实现稳定性，不代表两类样本的统计置信度不同。
+
+**泄漏检查**：不能直接比较 train/validation 与 test 的整数索引，因为两个 CIFAR-10 split 都从 0 编号，数值重合不代表样本重合。评估器必须断言 `dataset_name=CIFAR10`、`split=test`、`train=False`、数据集大小为 10000，并记录训练阶段的 split 大小和 `split_hash`。`leakage_check` 只报告 split 身份与元数据完整性，不把跨 split 整数索引交集当作无泄漏证明。
+
+### 指标定义
+
+#### 1. Authorized path（全 valid credential）
+
+调用 `credential_generator.all_valid(batch_size)`，模型走 protected 分支：
+
+| 指标 | 来源 |
+|---|---|
+| `protected_accuracy` | 10 类 top-1，复用 `EvaluationMetricAccumulator` |
+| `protected_confusion` | 10×10 混淆矩阵，复用 `EvaluationMetricAccumulator` |
+| `protected_macro_f1` | 10 类 macro-F1，**新累计器从 `protected_confusion` 导出** |
+| `protected_per_class_accuracy` | 10 维向量，**新累计器从 `protected_confusion` 导出** |
+
+**注意来源差异**：`EvaluationMetricAccumulator` 只为 public 侧计算 macro-F1（`src/can/v2/training/metrics.py:79-88`），protected 侧只维护 accuracy 和 10×10 confusion。后两个指标必须由 `ProtectedProjectionAccumulator` 从 confusion matrix 自行导出，不能直接复用现有方法。导出公式与 `_macro_f1` 一致（precision/recall 各自 `clamp_min(1)`，F1 分母 `clamp_min(1e-12)`），以保证与 public 侧数值语义可比。
+
+protected confusion matrix 的行表示真实 fine label，列表示预测 fine label；`protected_per_class_accuracy[c] = confusion[c,c] / confusion[c,:].sum()`。当某类真实样本数为 0 时，该类准确率返回 `null`，macro-F1 只对有真实样本的类别求平均；官方 CIFAR-10 test split 每类均有 1000 个样本，因此正式结果不会出现空类。
+
+**valid credential 的统计强度**：`all_valid()` 是 `np.repeat(secret, batch_size)`（`src/can/v2/training/data.py:203-210`），即**同一个 credential 复制 10000 份**。因此 `error_norm_stats.valid` 的 std 恒为 0，FRR 的有效独立 credential 数是 1 而非 10000。输出 JSON 必须记录 `distinct_valid_credentials: 1`，避免把"10000 个样本 FRR=0"读成 10000 次独立试验。
+
+#### 2. Unauthorized path（全 invalid credential）
+
+调用 `credential_generator.all_invalid(batch_size)`，模型走 public 分支。直接复用 `EvaluationMetricAccumulator.compute()`：
+
+- `public_accuracy`、`public_balanced_accuracy`、`public_macro_f1`、`public_confusion`（2×2）
+
+保留 balanced accuracy 和 macro-F1 的理由与 Phase 2 一致：CIFAR-2 是 40/60 不平衡（vehicle 4 类 / animal 6 类），裸 accuracy 会误导。
+
+#### 3. 能力差距（新增，论文关键）
+
+现有 stage_c 结果是 protected 0.9006 / public 0.9563，字面看像"未授权方反而更强"。这是任务粒度不同造成的假象——2 类分类本身就比 10 类容易。要支撑核心论点，必须在**同一粒度**上比较：
+
+**`protected_coarse_accuracy`**：把 protected 的 10 类预测经 `fine_to_coarse` 投射成 2 类后计算准确率。与 `public_accuracy` 同粒度可比。
+
+**投射必须走预建查表，不能逐元素调用 `fine_to_coarse`**。该函数对入参做严格类型检查（`src/can/v2/training/data.py:20-21`：`not isinstance(fine_label, int)` 即抛 `TypeError`），实测 `np.int64(3)` 与 `torch.tensor(3)` 都会被拒，逐元素喂 `logits.argmax(1)` 的元素必然失败。正确写法是用 Python int 建一次 LUT 再向量化索引，既复用权威映射，也符合 `metrics.py` 中"禁止逐样本 `.item()`"的风格：
+
+```python
+_COARSE_LUT = torch.tensor(
+    [fine_to_coarse(i) for i in range(10)], dtype=torch.long
+)   # 模块级常量，只在 import 时构建一次
+coarse_pred = _COARSE_LUT.to(logits.device)[logits.argmax(1)]
+```
+
+真实粗标签直接取 `CIFAR10WithCoarse` 已提供的 `coarse_labels`，不重复投射，避免两条映射路径产生分歧。
+
+- 预期两者接近，说明门控没有牺牲粗粒度能力
+- 若 `protected_coarse_accuracy` 明显低于 `public_accuracy`，说明 Stage C 的联合训练损害了 protected 路径，需要回查 `max_protected_drop` 约束
+
+**`capability_gap_fine`**：protected 10 类准确率 − 当前 public head 输出空间下的细类随机猜测基线。
+
+未授权路径只有 2 类输出头，结构上无法产生细粒度预测，因此其细粒度能力上界 = 粗类内随机猜测：
+
+```
+vehicle（4 个细类）：1/4 = 0.25
+animal （6 个细类）：1/6 ≈ 0.1667
+test 集类别均衡（每类 1000）→ 加权 = 0.4 × 0.25 + 0.6 × 0.1667 = 0.2
+```
+
+这个值按定义解析计算，不做实验测量——测量它需要给未授权方一个它本来没有的 10 类头，那就不是在评估当前架构了。字段命名为 `unauthorized_fine_random_guess_baseline`，并标注 `"is_analytic": true`；它不是对任意攻击者的能力上界。
+
+#### 4. Gate 行为
+
+| 指标 | 定义 | 期望 |
+|---|---|---|
+| `far` | 当前 invalid credential 采样分布中被 `decision.allow` 接受的经验比例 | 观测值 0.0 |
+| `frr` | 当前 valid credential 样本中被拒的经验比例 | 观测值 0.0 |
+| `invalid_samples` / `valid_samples` | FAR/FRR 的实际样本数和采样分布 | 必须写入 JSON |
+| `reason_code_histogram` | `ReasonCode` 各码计数 | valid 批全 `SUCCESS(0)`，invalid 批全 `LWE_VERIFICATION_FAILED(1)`，无其他码 |
+| `error_norm_stats` | valid / invalid 两组的 mean/std/min/max | valid ≈16，invalid ≈200 |
+| `min_margin` | 按 all/valid/invalid 分组统计 `min(abs(error_norm - error_threshold))` | all ≈32.6, valid ≈32.6, invalid ≈105 |
+
+`min_margin` 量化"门控判决离阈值边界有多远"。toy LWE 下 threshold=48，valid error_norm ≈16（margin ≈32.6）、invalid error_norm ≈200（margin ≈105）。`all` 组的 min_margin 被 valid 侧压住（≈32.6，是阈值的 0.68 倍）。这个数字在论文里比单纯说"FAR=0"更有信息量。
+
+其中 `all` 是 valid 与 invalid 合并后的最小 margin，`valid` 和 `invalid` 分别只在对应样本组内统计。
+非法输入、非有限值，以及用 `inf` 表示验证失败的 error norm 均不纳入统计；某组没有可用样本时输出 `null`。
+
+FAR/FRR 只表示当前 credential 采样分布和有限样本数下的经验观测，不表示总体密码学安全保证。输出必须同时包含 `valid_samples`、`invalid_samples` 和采样策略；toy LWE、静态 credential 与 replay 限制必须在结果中保留。
+
+**FRR 的有效样本数是 1，不是 10000**。`all_valid()` 对同一个 secret 做 `np.repeat`，10000 个 valid 样本共享同一个 credential 向量，`error_norm` 完全相同（std 恒为 0）。所以 `frr = 0.0` 只说明"这一个 valid credential 在 10000 次前向中稳定通过"，不构成对 valid credential 分布的统计估计。输出 JSON 记录 `distinct_valid_credentials: 1` 与 `distinct_invalid_credentials`（invalid 侧走 rejection sampling，每样本独立），把两侧的统计强度差异显式写出来。
+
+#### 5. 混合 batch 路由一致性
+
+第三遍遍历 test split，每批用 `batch_generate(batch_size, mixed_ratio, min_valid=2)` 生成混合 credential，并对同一批 image 执行按 mask 拆分的 reference routing，验证三件事：
+
+1. 逐样本 `decision.allow` 与 `CredentialBatch.expected_valid` 完全相等 → `routing_mismatches == 0`
+2. `protected_indices ∪ public_indices` 覆盖整个 batch，且交集为空
+3. mixed routing 与 reference routing 的逐样本 logits 在预先固定的 `torch.testing.assert_close(atol, rtol)` 下相等；指标差异只作为辅助报告，不作为唯一正确性判据
+
+**第 3 条是在查 batch 级串扰**。BatchNorm 在 eval 模式下用 running stats，理论上不会串扰，但 `_forward_public` 走 `shallow_features` 而 protected 走 `gated_features`（`src/can/v2/models/gated_resnet.py:322-334`），两条路径的输入来源不同，值得实测确认而非假定。
+
+混合批次的正确性以同一批 image 的 reference routing 为准：先按 `allow` mask 拆分 valid/invalid 子批，分别执行对应路径，再与 mixed routing 的对应 logits 使用固定 `torch.testing.assert_close(atol=1e-5, rtol=1e-4)` 比较。指标差值只作为诊断字段，不作为唯一验收条件。
+
+**reference routing 必须复用被测混合批自己的 credential 行，并从 images 重跑**：
+
+```python
+mask = batch.expected_valid                       # 来自被测混合批，不重新采样
+ref_protected = model(images[mask],  creds[mask])   # 纯 valid 子批
+ref_public    = model(images[~mask], creds[~mask])  # 纯 invalid 子批
+```
+
+三条约束，缺一条这项检查就失去意义：
+
+1. **不得调用 `all_valid()` / `all_invalid()` 重新生成 credential**。那会额外消耗 credential RNG 流（破坏 §6 确定性），且 invalid 子批用的是与被测批不同的 credential，比较的不再是同一组输入。
+2. **必须从 `images` 重新前向，不能复用已算出的 features**。只有重跑才真正覆盖 `_forward_public` 走 `shallow_features`、protected 走 `gated_features` 这个输入来源差异（`src/can/v2/models/gated_resnet.py:322-334`），而这正是本条要查的串扰。
+3. **子批为空时跳过对应比较**并在 JSON 中记录跳过次数。正常 mixed 配置通过预检后两侧均非空；空子批仅允许作为显式边界 fixture，不计入 mixed 正确性结论。
+
+**Empty subbatch 计数与验收门槛**：
+
+`empty_subbatch_skips` 记录在 mixed routing 遍历中遇到空 protected 或空 public 子批的次数。正常评估下（10000 张、batch 256、mixed_ratio=0.5）应恒为 0。此字段的作用：
+
+1. **单元测试边界 fixture**：手工构造极端 batch（如 batch_size=2, mixed_ratio=0.99）应先命中 mixed_ratio 预检并被拒绝；fixture 可直接构造“预检前”的空 invalid mask，用于测试 `index_coverage_complete` 的边界计算，不得将其当作正式评估遍历结果；
+2. **实现正确性验收门槛**：正式评估时 `empty_subbatch_skips.valid == 0 && empty_subbatch_skips.invalid == 0` 必须成立，否则说明 mixed_ratio 预检失效；
+3. **不影响 reference routing 正确性判据**：空子批不参与 logits allclose 比较（没有 logits 可比），但其 index 仍计入 coverage 检查（空集也是有效的 index set）。
+
+正式评估输出 JSON 示例：
+```json
+"empty_subbatch_skips": { "valid": 0, "invalid": 0 }
+```
+
+单元测试 fixture 示例（预检拒绝后的边界对象，不代表正式评估结果）：
+```json
+"empty_subbatch_skips": { "valid": 0, "invalid": 3 },
+"note": "batch_size=2, mixed_ratio=0.99, 3 个尾批 invalid 子批为空（预期行为）"
+```
+
+#### 6. 确定性
+
+同一 checkpoint 的确定性测试使用 synthetic/fixed fixture，或复用已落盘的单次官方 test 结果；输出 JSON 去掉时间戳字段后 sha256 应相同。不得为了确定性测试反复查看官方 test split 并据此调参。
+
+### 输出格式
+
+单 seed 单 stage 输出到 `experiments/cifar10_seed<SEED>/test_summary_stage_<a|b|c>.json`。
+
+**路径必须包含 stage**：`§实现步骤 5` 要求每 seed 跑 Stage A/B/C 共 9 份，若沿用不带 stage 的 `test_summary.json`，同一 seed 的三个 stage 会写到同一路径互相覆盖，最后只剩一份，而 `checkpoint.stage` 字段还让它看起来是一份合法结果。`--aggregate` 只收 Stage C 的三份产出主结果。
+
+字段结构：
+
+```json
+{
+  "schema_version": 1,
+  "seed": 20260824,
+  "mapping_version": "cifar10-animal-vehicle-v1",
+  "device": "cuda",
+  "eval_batch_size": 256,
+  "checkpoint": {
+    "stage": "C",
+    "path": "checkpoints/v2/cifar10_seed20260824/stage_c/best.ckpt",
+    "sha256": "...",
+    "integrity_check": "verified",
+    "epoch": 18
+  },
+  "keypair": {
+    "A_sha256": "...",
+    "b_sha256": "...",
+    "rng_scheme": "numpy.default_rng(seed + 100)",
+    "rng_version": 1,
+    "rng_scheme_source": "assumed_v1"
+  },
+  "credential_rng_seed": 20260924,
+  "training_credential_rng_seed": null,
+  "credential_rng_note": "评估派生规则 seed + 500；旧 checkpoint 未记录训练 seed",
+  "lwe": { "n": 128, "m": 256, "sigma": 1.0, "error_threshold": 48.0 },
+  "dataset": {
+    "dataset_name": "CIFAR10",
+    "split": "test",
+    "train_flag": false,
+    "size": 10000
+  },
+  "leakage_check": {
+    "level": "split_identity_and_metadata_only",
+    "split_identity_verified": true,
+    "train_size": 45000,
+    "val_size": 5000,
+    "split_hash": "27bc2a48...",
+    "split_hash_matches_summary": true,
+    "note": "不使用跨 split 整数索引交集作为无泄漏证明"
+  },
+  "authorized": {
+    "protected_accuracy": 0.0,
+    "protected_macro_f1": 0.0,
+    "protected_per_class_accuracy": [],
+    "protected_confusion": [],
+    "protected_total": 10000
+  },
+  "unauthorized": {
+    "public_accuracy": 0.0,
+    "public_balanced_accuracy": 0.0,
+    "public_macro_f1": 0.0,
+    "public_confusion": [],
+    "public_total": 10000
+  },
+  "capability": {
+    "protected_coarse_accuracy": 0.0,
+    "capability_gap_fine": 0.0,
+    "unauthorized_fine_random_guess_baseline": {
+      "value": 0.2,
+      "is_analytic": true
+    }
+  },
+  "gate": {
+    "far": 0.0,
+    "frr": 0.0,
+    "valid_samples": 10000,
+    "invalid_samples": 10000,
+    "distinct_valid_credentials": 1,
+    "distinct_invalid_credentials": 10000,
+    "sampling_strategy": "all_valid=np.repeat(secret); all_invalid=rejection_sampling",
+    "min_margin": { "all": 0.0, "valid": 0.0, "invalid": 0.0 },
+    "error_norm_stats": { "valid": {}, "invalid": {} },
+    "reason_code_histogram": { "valid": {}, "invalid": {} }
+  },
+  "mixed_batch": {
+    "mixed_ratio": 0.5,
+    "routing_mismatches": 0,
+    "index_coverage_complete": true,
+    "reference_routing_logits_allclose": true,
+    "assert_close_atol": 1e-5,
+    "assert_close_rtol": 1e-4,
+    "empty_subbatch_skips": { "valid": 0, "invalid": 0 },
+    "protected_delta": 0.0,
+    "public_delta": 0.0
+  },
+  "latency": {
+    "measured": false,
+    "batch_size": null,
+    "note": "仅在 --measure-latency 开启时填充；见「延迟测量协议」"
+  }
+}
+```
+
+省略 `--summary` 时，`provenance_check` 必须为 `"partial"`，且无法从 summary 得到的字段统一写为
+`null`（例如 `leakage_check.split_hash` 与 `split_hash_matches_summary`），不得填入占位字符串或
+`false` 来伪造一次明确的不匹配。
+
+`latency` 默认 `{"measured": false}`，只有显式开启 `--measure-latency` 时才填充完整结构（见验收章节的延迟测量协议）。默认关闭的理由：延迟受服务器负载影响，与准确率指标不同，不应混入每次评估的必产字段。
+
+主结果为三个 seed 的 Stage C，各一份；若执行预注册消融，则每个 seed 的 Stage A、Stage B 也各一份，
+共 6 份，文件名包含 stage 以避免覆盖。若只运行单个 seed 的 A/B，必须在 worklog 中标注为非完整消融。
+`experiments/cifar10_multiseed_test_summary.json` 只聚合三个 Stage C 主结果。**mean/std 结构与现有 `cifar10_multiseed_summary.json` 完全一致**（`{"values": [...], "mean": ..., "std": ...}`），这样 validation 表和 test 表可以用同一套画表代码。
+
+### CLI 接口
+
+```bash
+# 单 checkpoint 评估
+python scripts/eval_cifar10_test.py \
+  --checkpoint checkpoints/v2/cifar10_seed20260824/stage_c/best.ckpt \
+  --data-root data/cifar10 \
+  --output experiments/cifar10_seed20260824/test_summary_stage_c.json \
+  --summary experiments/cifar10_seed20260824/summary.json \
+  --device auto --batch-size 256 --mixed-ratio 0.5
+
+# 多 seed 汇总
+python scripts/eval_cifar10_test.py --aggregate \
+  experiments/cifar10_seed20260824/test_summary_stage_c.json \
+  experiments/cifar10_seed20260825/test_summary_stage_c.json \
+  experiments/cifar10_seed20260826/test_summary_stage_c.json \
+  --output experiments/cifar10_multiseed_test_summary.json
+```
+
+| 参数 | 说明 |
+|---|---|
+| `--checkpoint` | 必需（非 aggregate 模式）。checkpoint 路径 |
+| `--data-root` | CIFAR-10 数据根目录，默认取 checkpoint 内 `config.data.root` |
+| `--output` | 输出 JSON 路径 |
+| `--summary` | 技术上可选；正式结果必须提供。提供时严格校验顶层 `split_hash`、`keypair.A_sha256`、`keypair.b_sha256` 与 checkpoint/重建值一致，缺失或不一致立即失败 |
+| `--expected-checkpoint-sha256` | 正式结果必需。加载前将 checkpoint SHA-256 与该摘要比对；不一致立即失败 |
+| `--checkpoint-manifest` | 批量评估时指向可信 manifest JSON 文件；与 `--expected-checkpoint-sha256` 互斥 |
+| `--expected-manifest-sha256` | 使用 manifest 时必需；先校验 manifest 本身，再校验 checkpoint |
+| `--device` | `auto` / `cpu` / `cuda`，语义与训练脚本 `_select_device` 一致 |
+| `--batch-size` | 默认 256（评估无梯度，可比训练大） |
+| `--mixed-ratio` | 混合 batch 的 valid 比例，默认 0.5；必须位于 `(0, 1)`，全 valid/invalid 不使用此参数 |
+| `--download-data` | 显式开启才允许下载，默认关闭 |
+| `--measure-latency` | 默认关闭。开启后按延迟测量协议填充 `latency` 段 |
+| `--aggregate` | 接受恰好三个不同 seed 的 Stage C `test_summary_stage_c.json`，产出 multiseed 汇总 |
+| `--force-overwrite` | 默认关闭。输出文件已存在时默认失败；仅显式开启后允许覆盖，并在日志中记录原因 |
+
+**--aggregate 模式校验**：
+1. 必须接受恰好 3 个输入 JSON 文件（不能多也不能少）
+2. 每个文件的 `checkpoint.stage` 必须为 `"C"`
+3. 三个文件的 `seed` 必须互不相同
+4. 三个文件的 `eval_batch_size` 和 `mapping_version` 必须完全一致
+5. 任一校验失败立即退出，并输出清晰的错误信息
+
+不一致时的错误示例：
+```
+Error: --aggregate requires exactly 3 Stage C results, got 2
+Error: Duplicate seed 20260824 found in aggregate inputs
+Error: Inconsistent eval_batch_size across inputs: [256, 256, 512]
+Error: Inconsistent mapping_version: got 'cifar10-animal-vehicle-v1' and 'cifar10-animal-vehicle-v2'
+Error: Found non-Stage-C checkpoint in aggregate input: stage='B' in file xyz.json
+```
+
+`--mixed-ratio` 在加载数据前预检尾批约束（见「尾批与 mixed_ratio 预检」），不合法立即报错。单 checkpoint 或
+`--aggregate` 的输出路径已存在且未指定 `--force-overwrite` 时，也必须在访问 test split 前失败，避免无意覆盖既有评估结果。
+
+`--aggregate` 是为了避免手工拼汇总文件——手工拼容易在 mean/std 上出错，而这个数字是要进论文的。
+
+### 验收指标
+
+**实现正确性门槛**（不达标即视为 evaluator 或模型实现有 bug，必须修复）：
+
+| 项 | 门槛 | 依据 |
+|---|---|---|
+| `gate.far` / `gate.frr` | 观测值严格 == 0.0 | 实现正确性判据：神经 LWE 验证器与 `V_ref` 的判决必须逐样本一致。**不是密码学安全声明** |
+| `gate.reason_code_histogram` | valid 全 0 码，invalid 全 1 码，无其他码 | 出现 2-5 码说明输入规范化有 bug |
+| `mixed_batch.routing_mismatches` | 严格 == 0 | 逐样本路由正确性 |
+| `mixed_batch.index_coverage_complete` | `true` | 无样本丢失或重复计入 |
+| `mixed_batch.reference_routing_logits_allclose` | `true`（atol=1e-5, rtol=1e-4） | 无 batch 级串扰 |
+| 单元测试 | 全 pass，新模块行覆盖率 ≥ 90% | 对齐 Phase 2 标准 |
+| 确定性 | **fixture-based** 两次运行输出哈希一致 | 见 §6：不得为确定性测试反复评估官方 test split |
+
+**科学预期指标**（记录并在 worklog 说明，偏离不构成 evaluator 失败）：
+
+| 项 | 预期 | 依据 |
+|---|---|---|
+| Stage C `protected_accuracy` | ≥ 0.88 | seed 20260824 validation reference: 0.9006，容许 2 个百分点泛化差 |
+| Stage C `public_balanced_accuracy` | ≥ 0.94 | seed 20260824 validation reference: 0.9563，同上 |
+| `capability.protected_coarse_accuracy` vs `unauthorized.public_accuracy` | 差值 ≤ 0.03 | 门控不应损害粗粒度能力。偏离说明 Stage C 联合训练需回查，不是 evaluator bug |
+
+**Stage A/B 可各跑一份**作为预注册消融对照，但不设门槛；主结果只使用三个 seed 的 Stage C best checkpoint：
+
+- Stage A 的 `public_*` 预期很低（validation 中 `public_accuracy` 仅 0.489，因为此时 public head 尚未训练，`beta_ce = beta_kd = 0`），这符合设计预期
+- Stage B 的 `protected_accuracy` 预期接近 Stage A（public_fc 单独训练，主干冻结）
+
+这两个阶段的数字在论文中必须明确标注为中间阶段，不能与 Stage C 并列比较。
+
+### 延迟测量协议（可选，`--measure-latency`）
+
+延迟不设验收门槛——它受服务器负载影响，只作为"门控引入多少开销"的报告性指标。默认关闭。
+
+**测量方法**：
+
+- 固定 batch size = 256（标准化测量配置）
+- 每条路径 warm-up 20 次，正式测量 100 次
+- CUDA 上测量前后调用 `torch.cuda.synchronize()`
+- 分别测量 all-valid、all-invalid、mixed 三种路由
+- 报告 mean、median、p95、std
+
+测量循环始终使用独立固定的 batch size=256，与主评估的 `--batch-size` 无关；开始前将同一批 images 放到目标 device，
+credentials 在 warm-up 前预生成并固定。
+主 latency 不计入 credential 生成、NumPy 转 Tensor、CPU 到 GPU 搬运、数据加载和预处理。
+all-valid、all-invalid、mixed 三种路由必须复用同一批 images；mixed 使用固定的 valid mask 和 credential，
+不得在每次测量中重新进行 rejection sampling。若需要报告端到端耗时，必须单独标注为
+`scope: "end_to_end"`，不能与主指标混用。
+
+**范围界定**：主指标只测模型 forward + 路由，**不含** credential 生成、数据搬运和预处理。JSON 中用 `scope: "forward_and_routing"` 显式标注；若额外测端到端，另存 `scope: "end_to_end"` 一组，不与主指标混用。
+
+开启时 `latency` 段结构（`batch_size` 是独立的 latency batch，不等于主评估的 `eval_batch_size`）：
+
+```json
+"latency": {
+  "measured": true,
+  "scope": "forward_and_routing",
+  "batch_size": 256,
+  "warmup_iters": 20,
+  "measure_iters": 100,
+  "cuda_synchronized": true,
+  "all_valid": { "mean_ms": 0.0, "median_ms": 0.0, "p95_ms": 0.0, "std_ms": 0.0 },
+  "all_invalid": { "mean_ms": 0.0, "median_ms": 0.0, "p95_ms": 0.0, "std_ms": 0.0 },
+  "mixed": { "mean_ms": 0.0, "median_ms": 0.0, "p95_ms": 0.0, "std_ms": 0.0 }
+}
+```
+
+### 实现步骤
+
+1. **累计器**：`GateBehaviorAccumulator` + `ProtectedProjectionAccumulator`。纯 tensor 累计，无 IO，输入校验风格对齐 `EvaluationMetricAccumulator._validate_batch`
+2. **`TestSplitEvaluator`**：keypair 重建校验（含断言 0 向后兼容）→ credential RNG 固定播种 → mixed_ratio 尾批预检 → 三遍 test split（all-valid / all-invalid / mixed，mixed 遍附带 reference routing 比对）→ 汇总 dict。不做文件写入
+3. **`scripts/eval_cifar10_test.py`**：CLI 解析 + checkpoint 加载（`weights_only=False`）+ JSON 落盘 + `--aggregate` 分支 + `--measure-latency` 分支
+
+   落盘时 `protected_total` / `public_total` 必须转 `int`：`EvaluationMetricAccumulator.compute()` 返回的是 `float`（`src/can/v2/training/metrics.py:75-76`），直接序列化会在论文表格里出现 `10000.0`。`--aggregate` 分支同时校验各 seed 的 `eval_batch_size` 与 `mapping_version` 一致，任一不一致即失败退出。
+4. **`tests/v2/test_test_evaluator.py`**：用 synthetic 数据（照 `scripts/train_gated_resnet.py:_synthetic_dataset` 的路子，完全离线）覆盖：
+   - keypair 不匹配 → 抛错且不写文件
+   - **rng scheme 字段缺失 → 按 v1 继续，输出 `rng_scheme_source="assumed_v1"`**（现有 9 个 checkpoint 走的就是这条路径）
+   - **rng scheme 字段存在且 != 1 → 抛错**
+   - `mapping_version` 不匹配 → 抛错
+   - `split_hash` 与 summary 不一致 → 抛错
+   - FAR/FRR 计算正确（构造已知 valid/invalid 分布）
+   - 混合 batch 路由一致性（`routing_mismatches == 0`、索引覆盖完整）
+   - **reference routing 逐样本 logits 在 atol=1e-5 / rtol=1e-4 下相等**
+   - **`--mixed-ratio` 预检拒绝在尾批下不足 2 个 valid 的比例**（如 10000/256 尾批 16、ratio=0.05）
+   - `protected_macro_f1` / `protected_per_class_accuracy` 从 confusion 导出的数值正确
+   - 空路由边界（全 valid 时 `public_logits` 为 `[0, 2]`；全 invalid 时 `protected_logits` 为 `[0, 10]`）
+   - fixture 上两次运行输出（去时间戳后）哈希一致
+5. **服务器执行**：当前唯一正式运行是 3 份 Stage C test_summary 与 1 份 Stage C multiseed 汇总。
+   Stage A/B 使用同一单 checkpoint evaluator 的可行性保留，但 A/B/C 统一汇总协议尚未实现，
+   必须在 Stage C 正式结果之后另行冻结。每个预注册 checkpoint 在官方 test split 上只正式评估一次；
+   这不意味着整个 test split 只能被访问一次，而是禁止对同一 checkpoint 反复取结果后调参。
+6. **更新 `PROJECT_WORKLOG.md`**：记录全部指标（含未达标项）、每次 test 评估的时间与 checkpoint sha256
+
+### 风险和限制
+
+| 风险 | 缓解 |
+|---|---|
+| keypair 重建依赖 `seed + 100` 这个魔数与训练脚本耦合 | 断言 1 逐元素比对 checkpoint 内的 A/b，一旦训练脚本改了 rng 派生规则，评估立即失败而非静默用错 keypair |
+| 现有 checkpoint 缺 rng scheme 字段，断言 0 无法强校验 | 缺失时按 v1 处理并标注 `assumed_v1`；实际保护由断言 1 提供。后续训练脚本应补写该字段 |
+| `--summary` 技术上可选，不提供时 provenance 不完整 | 断言 1/3/4 仍然生效并标注 `provenance_check: "partial"`，相关字段写 `null`；正式论文结果和多 seed 汇总必须提供，缺字段或哈希不一致直接失败 |
+| checkpoint 完整性摘要缺少可信基准 | 正式结果要求 `--expected-checkpoint-sha256` 或受信任 manifest；只计算并记录摘要不视为完整性校验 |
+| test split 只评估一次的纪律无法用代码强制 | 输出 JSON 记录 checkpoint sha256；`PROJECT_WORKLOG.md` 必须记录每次 test 评估的时间与 checkpoint 哈希，反复评估会留痕。确定性测试改用 fixture，不消耗 test split |
+| `capability_gap_fine` 的基线是解析值，不是实测 | 字段名为 `unauthorized_fine_random_guess_baseline` 并标注 `is_analytic: true`；明确它是当前 public head 输出空间下的随机猜测基线，**不是对任意攻击者的能力上界**，论文中同样标注 |
+| FRR 的独立 credential 数只有 1 | 输出 `distinct_valid_credentials: 1` 与采样策略；FRR=0 只表述"该 credential 稳定通过"，不作分布性推断 |
+| toy LWE 下 FAR=0 过于容易达到，不代表真实安全性 | 与 Phase 2 一致：明确声明 toy 参数、静态可重用 credential，不解决 replay 与白盒攻击。FAR/FRR 定位为实现正确性判据而非安全指标 |
+| 跨 split 整数索引比较会给出虚假的"无泄漏"结论 | `leakage_check` 只校验 split 身份（dataset_name / train_flag / size / split_hash），不把索引交集当证明 |
+
+**明确不在本方案范围内**：
+- 无 Gate 的同构 ResNet-18 baseline 训练（Phase 2 验收提到的对照，需要单独跑）
+- 可执行白盒绕过 PoC 与 replay 防御实现；`TM-WB` 的解析边界结论 C-009 仍必须披露
+- CIFAR-100 / ImageNet 扩展（Phase 4/5）
+
+### 待确认问题
+
+1. **粗粒度投射（`protected_coarse_accuracy`）是否保留**。倾向保留：否则 stage_c 的 0.9006 vs 0.9563 在论文中会被直接质疑"门控没起作用"。当前方案已把它隔离在独立的 `capability` 段，不干扰与现有 `summary.json` 的字段对应关系。
+2. **Stage A/B test 对照**。放在三个 Stage C 正式结果之后；先冻结跨阶段汇总协议，
+   并明确 Stage A/B 是中间阶段而非最终模型。
 
 ---

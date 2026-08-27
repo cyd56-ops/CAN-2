@@ -5,5 +5,9 @@
 计划内容:
 - functional_test.py: fail-closed 与差分测试验证
 - capability_tiering.py: protected/public 能力分级测量
-- performance.py: latency 与吞吐量测量
+ - performance.py: latency 与吞吐量测量
 """
+
+from .test_evaluator import TestSplitEvaluator
+
+__all__ = ["TestSplitEvaluator"]
