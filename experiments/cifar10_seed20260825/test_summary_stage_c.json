@@ -1,0 +1,283 @@
+{
+  "authorized": {
+    "protected_accuracy": 0.9104,
+    "protected_macro_f1": 0.9106968641281128,
+    "protected_per_class_accuracy": [
+      0.948,
+      0.946,
+      0.875,
+      0.848,
+      0.922,
+      0.833,
+      0.914,
+      0.935,
+      0.946,
+      0.937
+    ],
+    "protected_confusion": [
+      [
+        948,
+        1,
+        13,
+        7,
+        4,
+        0,
+        1,
+        2,
+        19,
+        5
+      ],
+      [
+        14,
+        946,
+        2,
+        3,
+        2,
+        0,
+        0,
+        0,
+        13,
+        20
+      ],
+      [
+        38,
+        0,
+        875,
+        19,
+        22,
+        11,
+        15,
+        13,
+        5,
+        2
+      ],
+      [
+        15,
+        2,
+        21,
+        848,
+        21,
+        54,
+        11,
+        22,
+        2,
+        4
+      ],
+      [
+        8,
+        1,
+        15,
+        24,
+        922,
+        8,
+        7,
+        13,
+        2,
+        0
+      ],
+      [
+        2,
+        0,
+        22,
+        105,
+        25,
+        833,
+        1,
+        12,
+        0,
+        0
+      ],
+      [
+        11,
+        1,
+        24,
+        35,
+        9,
+        1,
+        914,
+        3,
+        1,
+        1
+      ],
+      [
+        5,
+        0,
+        5,
+        16,
+        22,
+        14,
+        1,
+        935,
+        1,
+        1
+      ],
+      [
+        35,
+        5,
+        4,
+        3,
+        0,
+        0,
+        0,
+        1,
+        946,
+        6
+      ],
+      [
+        23,
+        22,
+        0,
+        6,
+        0,
+        0,
+        0,
+        1,
+        11,
+        937
+      ]
+    ],
+    "protected_total": 10000
+  },
+  "unauthorized": {
+    "public_accuracy": 0.9658,
+    "public_macro_f1": 0.9646203517913818,
+    "public_balanced_accuracy": 0.968,
+    "public_confusion": [
+      [
+        3916,
+        84
+      ],
+      [
+        258,
+        5742
+      ]
+    ],
+    "public_total": 10000
+  },
+  "capability": {
+    "protected_coarse_accuracy": 0.9849,
+    "capability_gap_fine": 0.7103999999999999,
+    "unauthorized_fine_random_guess_baseline": {
+      "value": 0.2,
+      "is_analytic": true
+    }
+  },
+  "gate": {
+    "far": 0.0,
+    "frr": 0.0,
+    "error_norm_stats": {
+      "valid": {
+        "mean": 15.828851698303223,
+        "std": 3.8116442861318354e-08,
+        "min": 15.828850746154785,
+        "max": 15.828851699829102
+      },
+      "invalid": {
+        "mean": 200.5141299484253,
+        "std": 14.950434761253526,
+        "min": 141.29275512695312,
+        "max": 266.2059631347656
+      }
+    },
+    "min_margin": {
+      "valid": 32.1711483001709,
+      "invalid": 93.29275512695312,
+      "all": 32.1711483001709
+    },
+    "reason_code_histogram": {
+      "valid": {
+        "0": 10000
+      },
+      "invalid": {
+        "1": 10000
+      }
+    },
+    "valid_samples": 10000,
+    "invalid_samples": 10000,
+    "distinct_valid_credentials": 1,
+    "distinct_invalid_credentials": 10000
+  },
+  "mixed_batch": {
+    "mixed_ratio": 0.5,
+    "batches": 40,
+    "routing_mismatches": 0,
+    "index_coverage_complete": true,
+    "reference_routing_logits_allclose": true,
+    "assert_close_atol": 0.0005,
+    "assert_close_rtol": 0.002,
+    "prediction_indices_exact": true,
+    "max_abs_difference": 0.000537872314453125,
+    "max_relative_difference": 0.0032641205471009016,
+    "empty_subbatch_skips": {
+      "valid": 0,
+      "invalid": 0
+    }
+  },
+  "latency": {
+    "measured": true,
+    "scope": "forward_and_routing",
+    "batch_size": 256,
+    "all_valid": {
+      "mean_ms": 23.763439655303955,
+      "median_ms": 23.751914501190186,
+      "p95_ms": 24.083192460238934,
+      "std_ms": 0.19000187472990154
+    },
+    "all_invalid": {
+      "mean_ms": 16.134820394217968,
+      "median_ms": 16.08760468661785,
+      "p95_ms": 16.52336772531271,
+      "std_ms": 0.15218744683995264
+    },
+    "mixed": {
+      "mean_ms": 20.107526816427708,
+      "median_ms": 20.074205473065376,
+      "p95_ms": 20.338722318410873,
+      "std_ms": 0.12254330965637805
+    }
+  },
+  "schema_version": 1,
+  "seed": 20260825,
+  "mapping_version": "cifar10-animal-vehicle-v1",
+  "device": "cuda",
+  "checkpoint": {
+    "path": "checkpoints/v2/cifar10_seed20260825/stage_c/best.ckpt",
+    "sha256": "1449a288fe140afe8873862cfc8948232ed7b6e75050e4ae696385c74c668824",
+    "integrity_check": "verified",
+    "stage": "C",
+    "epoch": 11
+  },
+  "keypair": {
+    "A_sha256": "a44309bb78411a0ca257f7f0bfd034da85f01780ff102613a19d09b278766bc4",
+    "b_sha256": "475c9254cbcdfb9933ac777dd96053271058597a5ce9afff02c41d2afa1e8200",
+    "rng_scheme": "numpy.default_rng(seed + 100)",
+    "rng_version": 1,
+    "rng_scheme_source": "assumed_v1"
+  },
+  "credential_rng_seed": 20261325,
+  "credential_rng_note": "评估使用显式派生 seed + 500；不构成统计或密码学独立性证明",
+  "training_credential_rng_seed": null,
+  "lwe": {
+    "n": 128,
+    "m": 256,
+    "sigma": 1.0,
+    "error_threshold": 48.0
+  },
+  "lwe_provenance": "partial_legacy_defaults",
+  "dataset": {
+    "dataset_name": "CIFAR10",
+    "split": "test",
+    "train_flag": false,
+    "size": 10000
+  },
+  "leakage_check": {
+    "level": "split_identity_and_metadata_only",
+    "split_identity_verified": true,
+    "train_size": 45000,
+    "val_size": 5000,
+    "split_hash": "6a0f9df7dd1c4a066aea6e832b6bbd8b2b13cc83b9381d20ba8f49bc99c78b10",
+    "split_hash_matches_summary": true
+  },
+  "eval_batch_size": 256,
+  "provenance_check": "complete"
+}

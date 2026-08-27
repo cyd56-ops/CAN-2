@@ -40,5 +40,6 @@
     "public_total": 5000.0,
     "public_balanced_accuracy": 0.9641598463058472,
     "public_macro_f1": 0.961592972278595
-  }
+  },
+  "split_hash": "8e2d420569422c9f4eac462b0e1ed8d93549ea8840121287371f0d13ba3bab37"
 }
