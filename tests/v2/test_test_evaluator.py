@@ -9,7 +9,10 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset
 
 from src.can.v2.crypto.lwe import LWEParams, generate_keypair
-from src.can.v2.experiments.test_evaluator import TestSplitEvaluator as Evaluator, _Confusion
+from src.can.v2.experiments.test_evaluator import (
+    TestSplitEvaluator as Evaluator,
+    _Confusion,
+)
 from src.can.v2.models import GatedResNet18
 from src.can.v2.training.data import CredentialGenerator
 
@@ -59,7 +62,14 @@ def test_aggregate_requires_three_distinct_stage_c(tmp_path: Path):
 
     records = []
     for seed in (1, 2):
-        records.append({"seed": seed, "checkpoint": {"stage": "C"}, "eval_batch_size": 2, "mapping_version": "v1"})
+        records.append(
+            {
+                "seed": seed,
+                "checkpoint": {"stage": "C"},
+                "eval_batch_size": 2,
+                "mapping_version": "v1",
+            }
+        )
     paths = []
     for idx, record in enumerate(records):
         path = tmp_path / f"r{idx}.json"
@@ -67,6 +77,67 @@ def test_aggregate_requires_three_distinct_stage_c(tmp_path: Path):
         paths.append(str(path))
     with pytest.raises(ValueError):
         cli._aggregate(paths, tmp_path / "out.json", False)
+
+
+def test_aggregate_includes_phase3_metrics_and_quality_gates(tmp_path: Path):
+    """aggregate 应汇总能力、Gate、路由、latency 与质量门。"""
+    import scripts.eval_cifar10_test as cli
+
+    paths = []
+    for seed, value in ((1, 0.8), (2, 0.9), (3, 1.0)):
+        record = {
+            "seed": seed,
+            "checkpoint": {
+                "stage": "C",
+                "sha256": str(seed),
+                "integrity_check": "verified",
+            },
+            "provenance_check": "complete",
+            "eval_batch_size": 256,
+            "mapping_version": "v1",
+            "authorized": {"protected_accuracy": value},
+            "unauthorized": {"public_accuracy": value},
+            "capability": {
+                "protected_coarse_accuracy": value,
+                "capability_gap_fine": value - 0.2,
+            },
+            "gate": {
+                "far": 0.0,
+                "frr": 0.0,
+                "min_margin": {"valid": 1.0, "invalid": 2.0, "all": 1.0},
+                "error_norm_stats": {"valid": {"mean": 1.0}, "invalid": {"mean": 2.0}},
+            },
+            "mixed_batch": {
+                "routing_mismatches": 0,
+                "index_coverage_complete": True,
+                "reference_routing_logits_allclose": True,
+                "prediction_indices_exact": True,
+                "max_abs_difference": 0.0,
+                "max_relative_difference": 0.0,
+                "empty_subbatch_skips": {"valid": 0, "invalid": 0},
+            },
+            "latency": {
+                "batch_size": 256,
+                "all_valid": {"mean_ms": value, "median_ms": value, "p95_ms": value},
+                "all_invalid": {"mean_ms": value, "median_ms": value, "p95_ms": value},
+                "mixed": {"mean_ms": value, "median_ms": value, "p95_ms": value},
+            },
+        }
+        path = tmp_path / f"r{seed}.json"
+        path.write_text(json.dumps(record), encoding="utf-8")
+        paths.append(str(path))
+
+    output = tmp_path / "aggregate.json"
+    cli._aggregate(paths, output, False)
+    result = json.loads(output.read_text(encoding="utf-8"))
+
+    assert result["schema_version"] == 2
+    assert result["metrics"]["capability.protected_coarse_accuracy"][
+        "mean"
+    ] == pytest.approx(0.9)
+    assert result["metrics"]["gate.min_margin.valid"]["mean"] == 1.0
+    assert result["metrics"]["latency.all_valid.mean_ms"]["mean"] == pytest.approx(0.9)
+    assert all(item["all_passed"] for item in result["quality_gates"].values())
 
 
 def test_evaluator_reports_capability_gate_and_mixed_metrics():
@@ -82,7 +153,9 @@ def test_evaluator_reports_capability_gate_and_mixed_metrics():
     coarse = torch.tensor([0, 1, 0, 1], dtype=torch.long)
     loader = DataLoader(TensorDataset(images, fine, coarse), batch_size=4)
 
-    result = Evaluator(model, generator, params, torch.device("cpu"), 0.5).evaluate(loader)
+    result = Evaluator(model, generator, params, torch.device("cpu"), 0.5).evaluate(
+        loader
+    )
 
     assert result["gate"]["far"] == 0.0
     assert result["gate"]["frr"] == 0.0

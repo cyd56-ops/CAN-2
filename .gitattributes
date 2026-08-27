@@ -1,0 +1,2 @@
+experiments/**/*.json text eol=lf
+experiments/*sha256.txt text eol=lf

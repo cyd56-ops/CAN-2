@@ -3,10 +3,10 @@
 ## 当前研究阶段
 
 **阶段**: V2 - Gate Layer 在计算图中间架构  
-**状态**: Phase 2 真实 CIFAR-10 多 seed 训练完成 - 进入 Phase 3 evaluator
+**状态**: Phase 3 Stage C 官方 test split 三 seed 评估完成并核验
 **最后更新**: 2026-08-27
 
-**Phase 3 进度**: evaluator 核心模块、单 checkpoint CLI、Manifest/摘要校验、多 seed aggregate、latency 测量、完整能力/Gate 指标与 7 项离线专项测试已实现；真实 test split 评估仍待执行。
+**Phase 3 进度**: evaluator 核心模块、单 checkpoint CLI、Manifest/摘要校验、完整多 seed aggregate、latency 测量与能力/Gate/mixed-routing 指标已实现；三个 Stage C best checkpoint 的官方 test split 正式评估已完成并通过结果核验。Phase 3.6 服务层 response envelope 尚待设计。
 
 **2026-08-27 服务器预运行记录**：seed `20260824` 的首次正式命令在尾批 reference-routing
 `assert_close` 处中止，未生成结果 JSON。观测到 CUDA float32 最大绝对差约 `3.74e-4`，原固定
@@ -345,24 +345,46 @@ Gate Layer 当前无可训练参数，不添加 `L_gate` 或 gate regularization
 
 ---
 
-### Phase 3: 评估实验（CIFAR-10）[IN PROGRESS]
+### Phase 3: 评估实验（CIFAR-10）[STAGE C EVALUATION COMPLETED]
 
 **目标**：在模型层验证 Gate Layer 的功能正确性、能力分级、路由隔离和运行代价。
 
 **数据集**：CIFAR-10（10 类 → 2 类）
 
-**前置状态**：Phase 2 已在服务器 RTX A4000（16 GB）完成真实 CIFAR-10 三阶段训练，seed `20260824`、`20260825`、`20260826` 均已完成，并分别生成 Stage A/B/C checkpoint 和摘要文件。三个 seed 的最终均值/标准差待汇总文件核验后补录。
+**前置状态**：Phase 2 已在服务器 RTX A4000（16 GB）完成真实 CIFAR-10 三阶段训练，seed `20260824`、`20260825`、`20260826` 均已完成，并分别生成 Stage A/B/C checkpoint 和摘要文件。
 
-**当前任务**：先由 Claude 完成 Phase 3 evaluator 的 pre-run 代码审阅；通过后，在服务器加载三个
-Stage C best checkpoint，运行官方 test split 评估并汇总 `mean ± std`。代码审阅与服务器正式运行
-之间不得根据 test split 调整模型、阈值、checkpoint 或指标定义。
+**正式评估状态**：三个 Stage C best checkpoint 已在服务器完成官方 test split 评估；本地已核对
+单 seed JSON、混淆矩阵、路由质量门和多 seed `mean ± std`。未根据 test split 修改模型、阈值、
+checkpoint 或指标定义；仅扩展聚合器以收录单 seed 文件中已冻结的 capability、Gate、mixed-routing
+和 latency 指标。
 
 **当前实现**：
 
 - `src/can/v2/experiments/test_evaluator.py`：模型层指标、mixed batch 路由校验和 latency；
 - `scripts/eval_cifar10_test.py`：单 checkpoint CLI、summary/manifest/SHA-256 校验与 Stage C 三 seed 聚合；
-- `tests/v2/test_test_evaluator.py`：5 项离线专项测试；
+- `tests/v2/test_test_evaluator.py`：8 项离线专项测试；
 - 当前 aggregate 只接受 Stage C，尚不能直接生成 Stage A/B/C 统一聚合报告。
+
+#### 3.0 Stage C 正式结果（2026-08-27）
+
+三个 seed 的完整性、provenance、索引覆盖、reference-routing logits 和预测 indices 质量门均通过；
+FAR/FRR、routing mismatch 和 empty subbatch 计数均为 0。
+
+| 指标 | 三 seed mean ± population std |
+|---|---:|
+| Protected accuracy | `0.89157 ± 0.01366` |
+| Public accuracy | `0.96427 ± 0.00141` |
+| Public balanced accuracy | `0.96503 ± 0.00220` |
+| Protected coarse accuracy | `0.98243 ± 0.00436` |
+| Fine capability gap | `0.69157 ± 0.01366` |
+
+Latency（batch size 256，forward + routing）：all-valid `23.7488 ± 0.0982 ms`，all-invalid
+`16.0328 ± 0.0801 ms`，mixed `20.1395 ± 0.0545 ms`。相对 all-valid，all-invalid 约快
+`32.49%`，mixed 约快 `15.20%`。
+
+均值 Protected accuracy 达到预期 `>= 0.88`；seed `20260826` 为 `0.8784`，低于逐 seed
+参考线 `0.0016`，记录为科学结果的轻微偏差，不视为 evaluator 故障。正式结果仍保留旧 checkpoint
+的 `partial_legacy_defaults` LWE provenance 与未知 training credential RNG seed 限制。
 
 #### 3.1 功能正确性实验
 
@@ -613,27 +635,27 @@ C-003 当前仅在模型层 satisfied；其完整 `TM-API` 服务边界依赖 C-
   - [x] 离线训练测试 40/40、完整 V2 测试 146/146、Phase 2 training 覆盖率约 86%、完整 V2 覆盖率 90%
   - [x] CPU 三阶段 smoke 通过；空 DataLoader 和不合法 smoke 配置已 fail fast
 - [x] **Phase 2 真实 CIFAR-10 三阶段训练**：三个 seed 均完成 Stage A/B/C checkpoint 与摘要
-- [x] **Phase 3 evaluator 实现**：核心模块、CLI、manifest/SHA-256 校验、Stage C 三 seed aggregate、latency 与 5 项离线测试
+- [x] **Phase 3 evaluator 实现**：核心模块、CLI、manifest/SHA-256 校验、Stage C 三 seed aggregate、latency 与 8 项离线测试
+- [x] **Phase 3 Stage C 正式评估与结果核验**：三个 seed 官方 test split 结果、质量门、混淆矩阵和 mean/std 均已核对
+- [x] **Phase 3 aggregate schema v2**：补齐 capability、Gate、mixed-routing、latency 与跨 seed 质量门
 - [x] **威胁模型与 claim/evidence 台账**：TM-API/TM-WB/TM-NA 与 C-001 至 C-014 已记录
 - [x] **文档同步后的回归测试**（2026-08-27）：设置 `PYTHONPATH=.` 后运行 `pytest tests/v2/ -q`，151 passed
+- [x] **aggregate schema v2 回归测试**（2026-08-27）：设置 `PYTHONPATH=.` 后运行 `pytest tests/v2/ -q`，154 passed
 
 ### 进行中
-- [ ] **Phase 3 evaluator pre-run 审阅与 CIFAR-10 官方 test split 评估执行**
+- [ ] **Claude 验收 aggregate schema v2 与工作日志结果记录**
 
 ### 下一步（唯一下一步）
 
-**先由 Claude 对 Phase 3 evaluator、CLI、测试和服务器运行命令完成 pre-run 审阅；审阅通过后，
-在服务器加载三个 seed 的 Stage C best checkpoint，运行官方 test split 评估并汇总 `mean ± std`。**
+**由 Claude 验收 aggregate schema v2、8 项 evaluator 专项测试和本节正式结果记录；验收通过后，
+先冻结 Phase 3.6 服务层 response envelope 的设计方案，再由用户指定实现者。**
 
-审核重点：
-1. 三个 seed 的 checkpoint、summary 和配置对应关系
-2. valid/invalid credential 路由与 fail-closed 深层调用计数
-3. `InferenceOutput` indices 与 test labels 的严格对齐
-4. test split protected/public 指标、latency 和多 seed mean ± std
-5. 每次 test 评估的时间、checkpoint SHA-256 与代码/配置版本
-6. 跨 Stage FAR/FRR 仅作为冻结配置回归检查，不解释为安全指标
-
-**紧随其后**：冻结并实现 Stage A/B/C 统一汇总协议，以及 Phase 3.6 服务层 response envelope。
+验收重点：
+1. schema v2 是否完整覆盖 capability、Gate、mixed-routing 和 latency；
+2. 聚合 mean/std 是否与三个单 seed JSON 一致；
+3. 质量门是否保留每个 seed 的原始值且未掩盖失败；
+4. LF 规范化 SHA-256 规则是否跨 Windows/Linux 一致；
+5. Stage A/B/C 统一聚合仍为后续任务，不得误称已完成。
 
 **测试环境备注**：直接运行 `pytest tests/v2/ -q` 未设置 `PYTHONPATH` 时在收集阶段报
 `ModuleNotFoundError: No module named 'src'`；按仓库导入方式设置 `PYTHONPATH=.` 后完整测试通过。
@@ -785,9 +807,9 @@ pytest tests/v2/test_gate_layer.py -v --cov=src/can/v2/layers --cov-config=.cove
 
 #### CIFAR-10 实验（Phase 2-3 原型验证）
 - 训练状态：Phase 2 真实 CIFAR-10 三阶段训练已完成，三个 seed（20260824/20260825/20260826）均有独立 checkpoint
-- 训练结果：各 seed 的 validation 摘要已保存；多 seed 均值/标准差待汇总文件核验
-- Protected/Public accuracy：训练 validation 指标已产生；官方 test split 指标待 Phase 3 evaluator
-- Logits 等价性与 latency：Phase 3 评估实验测量
+- 训练结果：各 seed 的 validation 摘要与官方 test split 结果均已保存；多 seed 汇总已核验
+- Protected/Public accuracy：官方 test split 分别为 `0.89157 ± 0.01366` / `0.96427 ± 0.00141`
+- Logits 等价性与 latency：三个 seed 的 reference-routing allclose 和 prediction indices exact 均通过；latency 已测量
 - 选择规则：只使用 validation 指标选择 checkpoint，冻结后再评估官方 test set
 
 #### CIFAR-100 实验（Phase 4 能力分级扩展）

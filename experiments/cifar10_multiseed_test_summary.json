@@ -1,10 +1,67 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "seeds": [
     20260824,
     20260825,
     20260826
   ],
+  "metadata": {
+    "eval_batch_size": 256,
+    "mapping_version": "cifar10-animal-vehicle-v1",
+    "latency_batch_size": 256,
+    "checkpoint_sha256": [
+      "492a1ea2d6543f4692c089285fcced15cb450a18e69490cbb6b74726c8a79c57",
+      "1449a288fe140afe8873862cfc8948232ed7b6e75050e4ae696385c74c668824",
+      "b9d60ef19f3e4ef95ee995330b533689e57e8f10d08f789e436d752b258326ba"
+    ]
+  },
+  "quality_gates": {
+    "checkpoint.integrity_check": {
+      "values": [
+        "verified",
+        "verified",
+        "verified"
+      ],
+      "expected": "verified",
+      "all_passed": true
+    },
+    "provenance_check": {
+      "values": [
+        "complete",
+        "complete",
+        "complete"
+      ],
+      "expected": "complete",
+      "all_passed": true
+    },
+    "mixed_batch.index_coverage_complete": {
+      "values": [
+        true,
+        true,
+        true
+      ],
+      "expected": true,
+      "all_passed": true
+    },
+    "mixed_batch.reference_routing_logits_allclose": {
+      "values": [
+        true,
+        true,
+        true
+      ],
+      "expected": true,
+      "all_passed": true
+    },
+    "mixed_batch.prediction_indices_exact": {
+      "values": [
+        true,
+        true,
+        true
+      ],
+      "expected": true,
+      "all_passed": true
+    }
+  },
   "metrics": {
     "authorized.protected_accuracy": {
       "values": [
@@ -68,6 +125,213 @@
       ],
       "mean": 10000.0,
       "std": 0.0
+    },
+    "capability.protected_coarse_accuracy": {
+      "values": [
+        0.9861,
+        0.9849,
+        0.9763
+      ],
+      "mean": 0.9824333333333334,
+      "std": 0.0043645032808887945
+    },
+    "capability.capability_gap_fine": {
+      "values": [
+        0.6859,
+        0.7103999999999999,
+        0.6783999999999999
+      ],
+      "mean": 0.6915666666666667,
+      "std": 0.013664633995179759
+    },
+    "gate.far": {
+      "values": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "mean": 0.0,
+      "std": 0.0
+    },
+    "gate.frr": {
+      "values": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "mean": 0.0,
+      "std": 0.0
+    },
+    "gate.min_margin.valid": {
+      "values": [
+        32.584147453308105,
+        32.1711483001709,
+        32.72366428375244
+      ],
+      "mean": 32.49298667907715,
+      "std": 0.2345935394067231
+    },
+    "gate.min_margin.invalid": {
+      "values": [
+        101.70195007324219,
+        93.29275512695312,
+        98.6846923828125
+      ],
+      "mean": 97.89313252766927,
+      "std": 3.478367928054684
+    },
+    "gate.min_margin.all": {
+      "values": [
+        32.584147453308105,
+        32.1711483001709,
+        32.72366428375244
+      ],
+      "mean": 32.49298667907715,
+      "std": 0.2345935394067231
+    },
+    "gate.error_norm_stats.valid.mean": {
+      "values": [
+        15.415852546691895,
+        15.828851698303223,
+        15.276335716247559
+      ],
+      "mean": 15.507013320414226,
+      "std": 0.23459353870894012
+    },
+    "gate.error_norm_stats.invalid.mean": {
+      "values": [
+        201.74099836730957,
+        200.5141299484253,
+        200.88233584136964
+      ],
+      "mean": 201.0458213857015,
+      "std": 0.5140344811508334
+    },
+    "mixed_batch.routing_mismatches": {
+      "values": [
+        0,
+        0,
+        0
+      ],
+      "mean": 0.0,
+      "std": 0.0
+    },
+    "mixed_batch.max_abs_difference": {
+      "values": [
+        0.0003744065761566162,
+        0.000537872314453125,
+        0.0005155801773071289
+      ],
+      "mean": 0.0004759530226389567,
+      "std": 7.237861304523184e-05
+    },
+    "mixed_batch.max_relative_difference": {
+      "values": [
+        0.001044264528900385,
+        0.0032641205471009016,
+        0.0041535091586411
+      ],
+      "mean": 0.002820631411547462,
+      "std": 0.0013075071706389278
+    },
+    "mixed_batch.empty_subbatch_skips.valid": {
+      "values": [
+        0,
+        0,
+        0
+      ],
+      "mean": 0.0,
+      "std": 0.0
+    },
+    "mixed_batch.empty_subbatch_skips.invalid": {
+      "values": [
+        0,
+        0,
+        0
+      ],
+      "mean": 0.0,
+      "std": 0.0
+    },
+    "latency.all_valid.mean_ms": {
+      "values": [
+        23.621879257261753,
+        23.763439655303955,
+        23.861040398478508
+      ],
+      "mean": 23.74878643701474,
+      "std": 0.09818537050463515
+    },
+    "latency.all_valid.median_ms": {
+      "values": [
+        23.595619946718216,
+        23.751914501190186,
+        23.807602003216743
+      ],
+      "mean": 23.718378817041714,
+      "std": 0.08973137560822195
+    },
+    "latency.all_valid.p95_ms": {
+      "values": [
+        23.803814128041267,
+        24.083192460238934,
+        24.098380096256733
+      ],
+      "mean": 23.995128894845646,
+      "std": 0.13542198509353942
+    },
+    "latency.all_invalid.mean_ms": {
+      "values": [
+        15.93904111534357,
+        16.134820394217968,
+        16.024599000811577
+      ],
+      "mean": 16.03282017012437,
+      "std": 0.08013768247126103
+    },
+    "latency.all_invalid.median_ms": {
+      "values": [
+        15.90987853705883,
+        16.08760468661785,
+        15.995103865861893
+      ],
+      "mean": 15.997529029846191,
+      "std": 0.07257665889495479
+    },
+    "latency.all_invalid.p95_ms": {
+      "values": [
+        16.24268628656864,
+        16.52336772531271,
+        16.23421013355255
+      ],
+      "mean": 16.333421381811302,
+      "std": 0.13435691608462008
+    },
+    "latency.mixed.mean_ms": {
+      "values": [
+        20.09482327848673,
+        20.107526816427708,
+        20.216175764799118
+      ],
+      "mean": 20.139508619904518,
+      "std": 0.054459362823862566
+    },
+    "latency.mixed.median_ms": {
+      "values": [
+        20.075146108865738,
+        20.074205473065376,
+        20.172638818621635
+      ],
+      "mean": 20.107330133517582,
+      "std": 0.046181810715492884
+    },
+    "latency.mixed.p95_ms": {
+      "values": [
+        20.19678968936205,
+        20.338722318410873,
+        20.432479307055473
+      ],
+      "mean": 20.322663771609466,
+      "std": 0.0968875866357429
     }
   }
 }
