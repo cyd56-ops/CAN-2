@@ -1,0 +1,44 @@
+{
+  "device": "cuda",
+  "mapping_version": "cifar10-animal-vehicle-v1",
+  "lwe": {
+    "n": 128,
+    "m": 256,
+    "sigma": 1.0,
+    "error_threshold": 48.0
+  },
+  "keypair": {
+    "A_sha256": "a44309bb78411a0ca257f7f0bfd034da85f01780ff102613a19d09b278766bc4",
+    "b_sha256": "475c9254cbcdfb9933ac777dd96053271058597a5ce9afff02c41d2afa1e8200"
+  },
+  "stage_a": {
+    "epoch": 20.0,
+    "loss": 0.3911276881681209,
+    "protected_accuracy": 0.8092,
+    "public_accuracy": 0.4034,
+    "protected_total": 5000.0,
+    "public_total": 5000.0,
+    "public_balanced_accuracy": 0.4956548511981964,
+    "public_macro_f1": 0.2946867048740387
+  },
+  "stage_b": {
+    "epoch": 60.0,
+    "loss": 0.6644977815979906,
+    "protected_accuracy": 0.8358,
+    "public_accuracy": 0.8994,
+    "protected_total": 5000.0,
+    "public_total": 5000.0,
+    "public_balanced_accuracy": 0.8962388038635254,
+    "public_macro_f1": 0.895770788192749
+  },
+  "stage_c": {
+    "epoch": 16.0,
+    "loss": 0.23553548473068792,
+    "protected_accuracy": 0.907,
+    "public_accuracy": 0.9618,
+    "protected_total": 5000.0,
+    "public_total": 5000.0,
+    "public_balanced_accuracy": 0.9549081325531006,
+    "public_macro_f1": 0.9599049687385559
+  }
+}
