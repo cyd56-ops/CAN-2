@@ -2494,7 +2494,7 @@ FAR/FRR 只表示当前 credential 采样分布和有限样本数下的经验观
 
 **第 3 条是在查 batch 级串扰**。BatchNorm 在 eval 模式下用 running stats，理论上不会串扰，但 `_forward_public` 走 `shallow_features` 而 protected 走 `gated_features`（`src/can/v2/models/gated_resnet.py:322-334`），两条路径的输入来源不同，值得实测确认而非假定。
 
-混合批次的正确性以同一批 image 的 reference routing 为准：先按 `allow` mask 拆分 valid/invalid 子批，分别执行对应路径，再与 mixed routing 的对应 logits 使用固定 `torch.testing.assert_close(atol=1e-5, rtol=1e-4)` 比较。指标差值只作为诊断字段，不作为唯一验收条件。
+混合批次的正确性以同一批 image 的 reference routing 为准：先按 `allow` mask 拆分 valid/invalid 子批，分别执行对应路径，再与 mixed routing 的对应 logits 比较。CPU float32 使用 `atol=1e-5, rtol=1e-4`；CUDA float32 因 batch shape 不同可能选择不同卷积数值路径，使用有限的 `atol=5e-4, rtol=2e-3`。两种设备都必须额外满足预测类别逐样本完全一致，并记录最大绝对/相对误差；指标差值只作为诊断字段，不作为唯一正确性判据。
 
 **reference routing 必须复用被测混合批自己的 credential 行，并从 images 重跑**：
 
@@ -2620,8 +2620,11 @@ ref_public    = model(images[~mask], creds[~mask])  # 纯 invalid 子批
     "routing_mismatches": 0,
     "index_coverage_complete": true,
     "reference_routing_logits_allclose": true,
-    "assert_close_atol": 1e-5,
-    "assert_close_rtol": 1e-4,
+    "assert_close_atol": 0.0005,
+    "assert_close_rtol": 0.002,
+    "prediction_indices_exact": true,
+    "max_abs_difference": 0.0,
+    "max_relative_difference": 0.0,
     "empty_subbatch_skips": { "valid": 0, "invalid": 0 },
     "protected_delta": 0.0,
     "public_delta": 0.0
@@ -2711,7 +2714,7 @@ Error: Found non-Stage-C checkpoint in aggregate input: stage='B' in file xyz.js
 | `gate.reason_code_histogram` | valid 全 0 码，invalid 全 1 码，无其他码 | 出现 2-5 码说明输入规范化有 bug |
 | `mixed_batch.routing_mismatches` | 严格 == 0 | 逐样本路由正确性 |
 | `mixed_batch.index_coverage_complete` | `true` | 无样本丢失或重复计入 |
-| `mixed_batch.reference_routing_logits_allclose` | `true`（atol=1e-5, rtol=1e-4） | 无 batch 级串扰 |
+| `mixed_batch.reference_routing_logits_allclose` | `true`（CPU: 1e-5/1e-4；CUDA: 5e-4/2e-3）且预测类别完全一致 | 无超出设备浮点误差范围的 batch 级串扰 |
 | 单元测试 | 全 pass，新模块行覆盖率 ≥ 90% | 对齐 Phase 2 标准 |
 | 确定性 | **fixture-based** 两次运行输出哈希一致 | 见 §6：不得为确定性测试反复评估官方 test split |
 
@@ -2782,7 +2785,7 @@ all-valid、all-invalid、mixed 三种路由必须复用同一批 images；mixed
    - `split_hash` 与 summary 不一致 → 抛错
    - FAR/FRR 计算正确（构造已知 valid/invalid 分布）
    - 混合 batch 路由一致性（`routing_mismatches == 0`、索引覆盖完整）
-   - **reference routing 逐样本 logits 在 atol=1e-5 / rtol=1e-4 下相等**
+   - **reference routing 逐样本 logits 满足设备感知容差，且 argmax 预测完全一致**
    - **`--mixed-ratio` 预检拒绝在尾批下不足 2 个 valid 的比例**（如 10000/256 尾批 16、ratio=0.05）
    - `protected_macro_f1` / `protected_per_class_accuracy` 从 confusion 导出的数值正确
    - 空路由边界（全 valid 时 `public_logits` 为 `[0, 2]`；全 invalid 时 `protected_logits` 为 `[0, 10]`）

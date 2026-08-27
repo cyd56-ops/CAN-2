@@ -93,3 +93,25 @@ def test_evaluator_reports_capability_gate_and_mixed_metrics():
     assert result["mixed_batch"]["routing_mismatches"] == 0
     assert result["mixed_batch"]["index_coverage_complete"] is True
     assert result["mixed_batch"]["reference_routing_logits_allclose"] is True
+    assert result["mixed_batch"]["prediction_indices_exact"] is True
+    assert result["mixed_batch"]["assert_close_atol"] == 1e-5
+    assert result["mixed_batch"]["assert_close_rtol"] == 1e-4
+
+
+def test_reference_logits_require_identical_predictions():
+    """即使数值在容差内，reference routing 的预测类别也必须完全一致。"""
+
+    params = LWEParams(n=8, m=16)
+    A, secret, b = generate_keypair(params, rng=np.random.default_rng(21))
+    evaluator = Evaluator(
+        GatedResNet18(A, b, params),
+        CredentialGenerator(A, secret, b, params, seed=22),
+        params,
+        torch.device("cpu"),
+    )
+    evaluator.assert_close_atol = 1.0
+    evaluator.assert_close_rtol = 1.0
+    actual = torch.tensor([[0.5001, 0.5000]])
+    reference = torch.tensor([[0.5000, 0.5001]])
+    with pytest.raises(AssertionError, match="预测类别不一致"):
+        evaluator._compare_logits(actual, reference)

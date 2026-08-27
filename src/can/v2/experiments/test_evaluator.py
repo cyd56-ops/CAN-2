@@ -107,6 +107,9 @@ class TestSplitEvaluator:
         self.device = device
         self.mixed_ratio = float(mixed_ratio)
         self._lut = torch.tensor([0, 0, 1, 1, 1, 1, 1, 1, 0, 0], dtype=torch.long)
+        # CUDA float32 卷积会因 mixed/reference 的 batch shape 不同产生微小舍入差异。
+        self.assert_close_atol = 5e-4 if device.type == "cuda" else 1e-5
+        self.assert_close_rtol = 2e-3 if device.type == "cuda" else 1e-4
 
     @staticmethod
     def _stats(values: list) -> Dict[str, Optional[float]]:
@@ -184,6 +187,8 @@ class TestSplitEvaluator:
         mismatches = 0
         empty_valid = 0
         empty_invalid = 0
+        max_abs_difference = 0.0
+        max_relative_difference = 0.0
         self.model.eval()
         with torch.inference_mode():
             for images, _, _ in loader:
@@ -213,12 +218,20 @@ class TestSplitEvaluator:
                     ref = self.model(images[valid_mask], cb.values[valid_mask.detach().cpu().numpy()])
                     if not isinstance(ref, InferenceOutput):
                         raise TypeError("reference protected 输出类型错误")
-                    torch.testing.assert_close(mixed.protected_logits, ref.protected_logits, atol=1e-5, rtol=1e-4)
+                    absolute, relative = self._compare_logits(
+                        mixed.protected_logits, ref.protected_logits
+                    )
+                    max_abs_difference = max(max_abs_difference, absolute)
+                    max_relative_difference = max(max_relative_difference, relative)
                 if bool(invalid_mask.any().item()):
                     ref = self.model(images[invalid_mask], cb.values[invalid_mask.detach().cpu().numpy()])
                     if not isinstance(ref, InferenceOutput):
                         raise TypeError("reference public 输出类型错误")
-                    torch.testing.assert_close(mixed.public_logits, ref.public_logits, atol=1e-5, rtol=1e-4)
+                    absolute, relative = self._compare_logits(
+                        mixed.public_logits, ref.public_logits
+                    )
+                    max_abs_difference = max(max_abs_difference, absolute)
+                    max_relative_difference = max(max_relative_difference, relative)
                 mixed_batches += 1
         return {
             "authorized": {
@@ -261,8 +274,11 @@ class TestSplitEvaluator:
                 "routing_mismatches": mismatches,
                 "index_coverage_complete": True,
                 "reference_routing_logits_allclose": True,
-                "assert_close_atol": 1e-5,
-                "assert_close_rtol": 1e-4,
+                "assert_close_atol": self.assert_close_atol,
+                "assert_close_rtol": self.assert_close_rtol,
+                "prediction_indices_exact": True,
+                "max_abs_difference": max_abs_difference,
+                "max_relative_difference": max_relative_difference,
                 "empty_subbatch_skips": {"valid": empty_valid, "invalid": empty_invalid},
             },
         }
@@ -272,6 +288,23 @@ class TestSplitEvaluator:
 
         finite = [abs(float(value) - float(self.params.error_threshold)) for value in values if np.isfinite(value)]
         return min(finite) if finite else None
+
+    def _compare_logits(self, actual: Tensor, reference: Tensor) -> Tuple[float, float]:
+        """校验 logits 数值接近且预测类别完全一致，并返回误差诊断。"""
+
+        torch.testing.assert_close(
+            actual,
+            reference,
+            atol=self.assert_close_atol,
+            rtol=self.assert_close_rtol,
+        )
+        if not torch.equal(actual.argmax(1), reference.argmax(1)):
+            raise AssertionError("mixed/reference routing 的预测类别不一致")
+        difference = (actual - reference).abs()
+        if difference.numel() == 0:
+            return 0.0, 0.0
+        relative = difference / reference.abs().clamp_min(1e-12)
+        return float(difference.max().item()), float(relative.max().item())
 
     def measure_latency(self, images: Tensor, warmup: int = 20, iterations: int = 100) -> Dict[str, object]:
         """使用固定输入测量三种路由的 forward 延迟（不含数据搬运）。"""

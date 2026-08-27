@@ -6,7 +6,13 @@
 **状态**: Phase 2 真实 CIFAR-10 多 seed 训练完成 - 进入 Phase 3 evaluator
 **最后更新**: 2026-08-27
 
-**Phase 3 进度**: evaluator 核心模块、单 checkpoint CLI、Manifest/摘要校验、多 seed aggregate、latency 测量、完整能力/Gate 指标与 6 项离线专项测试已实现；真实 test split 评估仍待执行。
+**Phase 3 进度**: evaluator 核心模块、单 checkpoint CLI、Manifest/摘要校验、多 seed aggregate、latency 测量、完整能力/Gate 指标与 7 项离线专项测试已实现；真实 test split 评估仍待执行。
+
+**2026-08-27 服务器预运行记录**：seed `20260824` 的首次正式命令在尾批 reference-routing
+`assert_close` 处中止，未生成结果 JSON。观测到 CUDA float32 最大绝对差约 `3.74e-4`，原固定
+`atol=1e-5/rtol=1e-4` 对不同 batch shape 的 cuDNN 数值路径过严。已改为设备感知容差
+（CPU `1e-5/1e-4`，CUDA `5e-4/2e-3`），同时增加 argmax 完全一致硬检查与最大误差记录；
+修复后允许对该 checkpoint 重跑，原因属于 evaluator 实现修复而非依据 test 指标调参。
 
 ---
 
