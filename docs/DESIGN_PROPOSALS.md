@@ -30,8 +30,8 @@
 
 ## Phase 1.1: LWE 密码原语 [COMPLETED]
 
-**状态**：[COMPLETED]  
-**完成时间**：2026-08-21  
+**状态**：[COMPLETED]
+**完成时间**：2026-08-21
 **测试结果**：✅ 38/38 通过，100% 覆盖率
 
 ### 设计目标
@@ -64,7 +64,7 @@
 ## Phase 1.2: Neural Gate Layer [COMPLETED]
 
 **状态**：[COMPLETED]（Revision 5，2026-08-23）
-**提出时间**：2026-08-23  
+**提出时间**：2026-08-23
 **修订时间**：2026-08-23（统一软门控公式、批量错误语义与 dtype/device 契约）
 **依赖**：Phase 1.1 LWE 密码原语（已完成）
 
@@ -184,7 +184,7 @@ class ReasonCode(IntEnum):
 @dataclass(frozen=True)
 class VerificationEvidence:
     """批量 LWE 验证证据（Tensor-based）
-    
+
     所有字段都是 Tensor，支持 batch、GPU 和 autograd。
     禁止使用 .item() 或返回 Python list。
     """
@@ -195,7 +195,7 @@ class VerificationEvidence:
 @dataclass(frozen=True)
 class AuthorizationDecision:
     """批量授权决策（Tensor-based）
-    
+
     所有字段都是 Tensor，支持 batch、GPU 和 autograd。
     """
     allow: Tensor          # BoolTensor[B]，是否允许访问深层
@@ -293,7 +293,7 @@ credential 请求级错误由 `GateLayer` 捕获并按 `B = shallow_features.sha
 class LWEVerifier(nn.Module):
     def __init__(self, A: np.ndarray, b: np.ndarray, params: LWEParams):
         """初始化 LWE 验证器
-        
+
         参数:
             A: [m, n]，LWE 公钥矩阵，float32
             b: [m]，LWE 公钥向量，float32
@@ -306,13 +306,13 @@ class LWEVerifier(nn.Module):
         self.error_threshold = params.error_threshold
         self.n = A.shape[1]
         self.m = A.shape[0]
-    
+
     def forward(self, credential: Tensor) -> VerificationEvidence:
         """验证 credential，返回结构化证据（无副作用，可重复调用）
-        
+
         参数:
             credential: 已规范化的 float32 Tensor[B, n]
-        
+
         返回:
             VerificationEvidence（所有字段都是 Tensor[B]）
         """
@@ -326,7 +326,7 @@ class LWEVerifier(nn.Module):
 class AuthorizationCoordinator(nn.Module):
     def __init__(self, params: LWEParams, temperature: float = 5.0):
         """初始化授权协调器
-        
+
         参数:
             params: LWE 参数（包含 error_threshold）
             temperature: 训练时软化温度（默认 5.0）
@@ -334,22 +334,22 @@ class AuthorizationCoordinator(nn.Module):
         super().__init__()
         self.error_threshold = params.error_threshold
         self.temperature = temperature
-    
+
     def forward(self, evidence: VerificationEvidence) -> AuthorizationDecision:
         """根据证据做出授权决策（唯一授权决策点）
-        
+
         训练模式：软门控，gate_signal = sigmoid((threshold - error_norm) / temperature)
         推理模式：硬判定，gate_signal = evidence.verified.float()
-        
+
         参数:
             evidence: VerificationEvidence
-        
+
         返回:
             AuthorizationDecision
         """
         # allow 的唯一来源
         allow = evidence.verified & (evidence.reason_code == ReasonCode.SUCCESS)
-        
+
         parsed = (
             (evidence.reason_code == ReasonCode.SUCCESS)
             | (evidence.reason_code == ReasonCode.LWE_VERIFICATION_FAILED)
@@ -369,7 +369,7 @@ class AuthorizationCoordinator(nn.Module):
         else:
             # 推理：硬判定
             gate_signal = allow.to(evidence.error_norm.dtype)
-        
+
         return AuthorizationDecision(
             allow=allow,
             gate_signal=gate_signal,
@@ -382,31 +382,31 @@ class AuthorizationCoordinator(nn.Module):
 class FeatureGate(nn.Module):
     def forward(self, shallow_features: Tensor, decision: AuthorizationDecision) -> Tensor:
         """应用门控到特征（保持 shape、dtype、device）
-        
+
         参数:
             shallow_features: [B, C, H, W]
             decision: AuthorizationDecision（gate_signal [B]）
-        
+
         返回:
             gated_features: [B, C, H, W]
         """
         B = shallow_features.shape[0]
-        
+
         # 验证 batch 一致性
         if decision.gate_signal.shape[0] != B:
             raise ValueError(
                 f"Batch 不一致：shallow_features {B} vs decision {decision.gate_signal.shape[0]}"
             )
-        
+
         # gate_signal [B] → 与特征相同 dtype/device 的 [B, 1, 1, 1]
         gate = decision.gate_signal.to(
             device=shallow_features.device,
             dtype=shallow_features.dtype,
         )[:, None, None, None]
-        
+
         # Element-wise 乘法
         gated_features = shallow_features * gate
-        
+
         # 保持原始的 shape、dtype、device
         return gated_features
 ```
@@ -415,7 +415,7 @@ class FeatureGate(nn.Module):
 ```python
 class GateLayer(nn.Module):
     """Gate Layer：LWE 验证 + 授权决策 + 特征门控
-    
+
     关键特性：
     - 无状态：可重复调用（训练需要）
     - 可微分：梯度通过 gated_features 回传给浅层网络
@@ -429,22 +429,22 @@ class GateLayer(nn.Module):
         self.verifier = LWEVerifier(A, b, params)
         self.coordinator = AuthorizationCoordinator(params, temperature)
         self.feature_gate = FeatureGate()
-    
+
     def forward(self, shallow_features: Tensor, credential: Union[Tensor, np.ndarray]) -> Tuple[Tensor, AuthorizationDecision]:
         """前向传播
-        
+
         参数:
             shallow_features: [B, C, H, W]
             credential: [B, n] 或 [n]
-        
+
         返回:
             gated_features: [B, C, H, W]
             decision: AuthorizationDecision
-        
+
         训练模式：
         - 完整计算，软门控
         - 梯度通过 gated_features 回传给 shallow_features
-        
+
         推理模式：
         - 硬判定，gate_signal ∈ {0, 1}
         - Phase 1.3 可根据 decision.allow 提前拒绝
@@ -460,18 +460,18 @@ class GateLayer(nn.Module):
                 device=self.verifier.A.device,
                 dtype=torch.float32,
             )
-        
+
         # 处理单 credential 广播
         if isinstance(credential, np.ndarray):
             credential = torch.from_numpy(credential)
-        
+
         if B > 0 and credential.ndim == 1:
             # [n] → [B, n] 广播到与 shallow_features 相同的 batch
             credential = credential.unsqueeze(0).expand(B, -1)
         elif B > 1 and credential.ndim == 2 and credential.shape[0] == 1:
             # [1, n] → [B, n]
             credential = credential.expand(B, -1)
-        
+
         # credential 按类型、rank、dtype、末维、batch、finite 的顺序检查；
         # 必须先拒绝整数、布尔和复数，再进行 float32 转换。
         # 请求级错误在此构造长度为 B 的拒绝 evidence。
@@ -482,13 +482,13 @@ class GateLayer(nn.Module):
 
         # 1. 验证器：产生证据（无副作用）
         evidence = self.verifier(credential)
-        
+
         # 2. 协调器：做出授权决策（唯一授权决策点）
         decision = self.coordinator(evidence)
-        
+
         # 3. 特征门控：应用决策
         gated_features = self.feature_gate(shallow_features, decision)
-        
+
         return gated_features, decision
 ```
 
@@ -1383,7 +1383,7 @@ from tqdm import tqdm
 def train_epoch(self, epoch: int, total_epochs: int):
     """训练一个 epoch"""
     self.model.train()
-    
+
     # 创建唯一的进度条
     pbar = tqdm(
         self.train_loader,
@@ -1392,21 +1392,21 @@ def train_epoch(self, epoch: int, total_epochs: int):
         leave=True,
         ncols=100,
     )
-    
+
     epoch_metrics = TrainingMetricAccumulator()
-    
+
     for batch_idx, (images, fine_labels, coarse_labels) in enumerate(pbar):
         # 训练细节由可测试的单 batch 方法负责。
         batch_metrics = self._train_batch(images, fine_labels, coarse_labels)
         epoch_metrics.update(batch_metrics, images.shape[0])
-        
+
         # 更新进度条显示（不创建新的进度条）
         pbar.set_postfix({
             'loss': f'{batch_metrics.loss:.4f}',
             'acc_p': f'{epoch_metrics.protected_accuracy:.2f}%',
             'acc_c': f'{epoch_metrics.public_accuracy:.2f}%',
         })
-    
+
     pbar.close()
     return epoch_metrics.compute()
 
@@ -1415,7 +1415,7 @@ def train(self, num_epochs: int):
     for epoch in range(1, num_epochs + 1):
         train_metrics = self.train_epoch(epoch, num_epochs)
         val_metrics = self.validate()
-        
+
         # 使用 tqdm.write 代替 print（不破坏进度条）
         tqdm.write(
             f"Epoch {epoch}: train_loss={train_metrics['loss']:.4f}, "
@@ -1449,7 +1449,7 @@ for epoch in range(1, num_epochs + 1):
     for batch in pbar:
         # 训练逻辑
         pbar.set_postfix({'loss': loss.item()})
-    
+
     # 使用 tqdm.write 输出 epoch 总结
     tqdm.write(f"Epoch {epoch} completed: loss={epoch_loss:.4f}")
 ```
@@ -2820,5 +2820,516 @@ all-valid、all-invalid、mixed 三种路由必须复用同一批 images；mixed
 1. **粗粒度投射（`protected_coarse_accuracy`）是否保留**。倾向保留：否则 stage_c 的 0.9006 vs 0.9563 在论文中会被直接质疑"门控没起作用"。当前方案已把它隔离在独立的 `capability` 段，不干扰与现有 `summary.json` 的字段对应关系。
 2. **Stage A/B test 对照**。放在三个 Stage C 正式结果之后；先冻结跨阶段汇总协议，
    并明确 Stage A/B 是中间阶段而非最终模型。
+
+---
+
+## Phase 3.6: 服务层 Response Envelope [COMPLETED - CLAUDE ACCEPTED]
+
+**状态**: [COMPLETED - CLAUDE ACCEPTED]
+**提出时间**: 2026-08-27
+**依赖**: Phase 3 Stage C 评估完成（已完成）
+**目标**: 实现 C-013，为 `TM-API` 建立明确的服务边界
+
+### 设计目标
+
+为 `TM-API` 威胁模型建立明确的服务边界，通过结构化 response envelope：
+
+1. **剥离验证证据**：不向调用方暴露 `decision`、连续 `error_norm`、`reason_code`、`verified`、`gate_signal` 或路由 `indices`
+2. **字段与 shape 同构**：每个样本返回相同字段集合；概率 Tensor 固定为 `[10]`
+3. **仅暴露预期能力结果**：返回 capability level、prediction 和固定长度 probabilities；不返回 raw logits
+4. **不主张能力等级不可观察**：调用方可从 `capability_level` 或概率语义推断路由，但不获得额外的连续距离或内部特征
+
+### 非目标
+
+- ❌ 不提供能力等级的不可区分性（调用方可从 logits 维度推断）
+- ❌ 不改变模型层的 `InferenceOutput`（evaluator 仍可访问完整证据）
+- ❌ 不处理网络传输安全、认证、日志或计费（属于更外层服务）
+- ❌ 当前不定义 HTTP/gRPC wire schema；本阶段只实现可信进程内适配层，网络协议需另行设计
+
+### 威胁模型边界
+
+#### 当前模型层暴露面（Phase 3 现状）
+
+```python
+# src/can/v2/models/gated_resnet.py:30-46
+@dataclass(frozen=True)
+class InferenceOutput:
+    protected_logits: Tensor      # [N_valid, 10]
+    protected_indices: Tensor     # [N_valid]
+    public_logits: Tensor         # [N_invalid, 2]
+    public_indices: Tensor        # [N_invalid]
+    decision: AuthorizationDecision  # 包含 gate_signal、error_norm、verified、reason_code
+```
+
+**泄露内容**：
+- `decision.evidence.error_norm`: 连续距离（构成距离预言机，见 C-011）
+- `decision.gate_signal`: 训练软值或推理硬值
+- `decision.evidence.verified`: 逐样本验证结果
+- `decision.evidence.reason_code`: 失败原因枚举
+- `protected_indices` / `public_indices`: 明确的路由证据
+
+**当前合法访问者**：
+- ✅ `TestSplitEvaluator`（测试仪器）
+- ✅ `Trainer`（训练循环）
+- ❌ **服务层调用方**（`TM-API` 外部）
+
+#### 服务层边界（Phase 3.6 目标）
+
+```
+┌─────────────────────────────────────────────────────┐
+│  External caller (TM-API untrusted)                 │
+└──────────────────┬──────────────────────────────────┘
+                   │ HTTP/gRPC/in-process call
+                   ▼
+┌─────────────────────────────────────────────────────┐
+│  Service Layer (Phase 3.6 新增)                     │
+│  - 接收 (image, credential)                         │
+│  - 调用 model.forward() → InferenceOutput           │
+│  - **剥离 decision 和 indices**                      │
+│  - 返回同构 ResponseEnvelope                        │
+└──────────────────┬──────────────────────────────────┘
+                   │ InferenceOutput (internal only)
+                   ▼
+┌─────────────────────────────────────────────────────┐
+│  Model Layer (Phase 1-3 已实现)                     │
+│  - GatedResNet18.forward()                          │
+│  - 返回完整 InferenceOutput 含 decision             │
+└─────────────────────────────────────────────────────┘
+```
+
+### 接口定义
+
+#### ResponseEnvelope 数据类
+
+```python
+from dataclasses import dataclass
+from typing import Literal
+import math
+import torch
+from torch import Tensor
+
+
+@dataclass(frozen=True)
+class ResponseEnvelope:
+    """服务层同构响应信封，每样本一条记录。
+
+    参数:
+        probabilities: 固定长度 10 的不可变概率元组。
+            - protected: 10 个位置均为细粒度类别概率；
+            - public: 位置 0/1 分别为 vehicle/animal 概率，位置 2..9 固定为 0。
+        prediction: argmax 预测类别。
+        capability_level: 字面量标签，"protected" 或 "public"。
+
+    不变式:
+        - 所有样本返回相同字段集合与序列长度
+        - 不持有 Tensor、GPU storage 或原始模型输出引用
+        - 不包含 decision、error_norm、indices 或 gate_signal
+        - capability_level 是明确的能力标签（不主张不可观察）
+    """
+    probabilities: tuple[float, ...]  # len == 10
+    prediction: int
+    capability_level: Literal["protected", "public"]
+
+    def __post_init__(self) -> None:
+        """验证公开响应自身的不变量。"""
+        if self.capability_level not in ("protected", "public"):
+            raise ValueError("capability_level 不受支持")
+        if not isinstance(self.probabilities, tuple):
+            raise TypeError("probabilities 必须是 tuple")
+        if len(self.probabilities) != 10:
+            raise ValueError("probabilities 长度必须为 10")
+        if not all(isinstance(value, float) and math.isfinite(value) and value >= 0.0 for value in self.probabilities):
+            raise ValueError("probabilities 必须是非负有限值")
+        if not math.isclose(sum(self.probabilities), 1.0, rel_tol=1e-5, abs_tol=1e-6):
+            raise ValueError("probabilities 之和必须为 1")
+        upper = 10 if self.capability_level == "protected" else 2
+        if isinstance(self.prediction, bool) or not isinstance(self.prediction, int):
+            raise TypeError("prediction 必须是整数")
+        if not 0 <= self.prediction < upper:
+            raise ValueError("prediction 超出能力类别范围")
+        if self.capability_level == "public" and any(self.probabilities[2:]):
+            raise ValueError("public probabilities 的后 8 位必须为 0")
+```
+
+#### 字段语义表
+
+| 字段 | 类型 | Shape | 语义 | Valid 路由 | Invalid 路由 |
+|---|---|---|---|---|---|
+| `probabilities` | `tuple[float, ...]` | `len=10` | 分类概率 | 10 类 softmax | 前 2 位为 2 类 softmax，后 8 位为 0 |
+| `prediction` | int | scalar | argmax 类别 | 0-9 | 0-1 |
+| `capability_level` | str | - | 能力标签 | `"protected"` | `"public"` |
+
+**设计约束**：
+1. **字段与 shape 同构性**：所有字段在 valid/invalid 下均存在且类型、序列长度一致；public 概率使用固定零填充
+2. **无额外内部路由证据**：除预期的 `capability_level` 外，不包含 `indices`、`gate_signal`、`error_norm`、`verified`、`reason_code`
+3. **明确能力标签**：`capability_level` 让调用方知道当前能力等级，但不泄露"为何判定"
+4. **不可观察性的弱主张**：`capability_level` 和输出语义明确暴露能力等级，不主张完全不可区分
+5. **禁止伪造细粒度语义**：public 的位置 2..9 必须精确为 0，且 public prediction 只能为 0/1；调用方必须按 `capability_level` 解释 label namespace
+
+### 架构设计
+
+#### 核心转换函数
+
+```python
+def to_response_envelope(
+    output: InferenceOutput,
+    batch_size: int,
+) -> list[ResponseEnvelope]:
+    """将模型层 InferenceOutput 转换为服务层同构 envelope 列表。
+
+    参数:
+        output: 模型推理输出，包含稀疏 logits 和路由 indices。
+        batch_size: 原始 batch 大小（用于验证索引覆盖）。
+
+    返回:
+        长度为 batch_size 的 ResponseEnvelope 列表，按原 batch 顺序排列。
+
+    异常:
+        ValueError: 若 protected_indices 和 public_indices 未完全覆盖 [0, batch_size)。
+    """
+    if not isinstance(output, InferenceOutput):
+        raise TypeError("output 必须是 InferenceOutput")
+    if isinstance(batch_size, bool) or not isinstance(batch_size, int) or batch_size < 0:
+        raise ValueError("batch_size 必须是非负整数")
+
+    # 1. 先验证 logits/indices 的类型、shape、device 和有限性，避免 zip 静默截断。
+    for logits, indices, classes in (
+        (output.protected_logits, output.protected_indices, 10),
+        (output.public_logits, output.public_indices, 2),
+    ):
+        if not isinstance(logits, Tensor) or logits.ndim != 2 or logits.shape[1] != classes:
+            raise ValueError("路由 logits 的 shape 不符合能力 head 契约")
+        if logits.dtype != torch.float32 or not torch.isfinite(logits).all():
+            raise ValueError("路由 logits 必须是有限 float32 Tensor")
+        if not isinstance(indices, Tensor) or indices.ndim != 1 or indices.dtype != torch.long:
+            raise ValueError("路由 indices 必须是一维 LongTensor")
+        if logits.shape[0] != indices.shape[0] or logits.device != indices.device:
+            raise ValueError("路由 logits 与 indices 的行数或 device 不一致")
+
+    devices = {
+        output.protected_logits.device,
+        output.protected_indices.device,
+        output.public_logits.device,
+        output.public_indices.device,
+    }
+    if len(devices) != 1:
+        raise ValueError("所有路由 logits/indices 必须位于同一 device")
+
+    # 2. 验证索引完整性
+    all_indices = torch.cat([output.protected_indices, output.public_indices])
+    if len(all_indices) != batch_size or set(all_indices.tolist()) != set(range(batch_size)):
+        raise ValueError(f"路由索引未完全覆盖 batch: expected {batch_size}, got {len(all_indices)}")
+
+    # 2. 初始化结果列表
+    envelopes = [None] * batch_size
+
+    # 3. 填充 protected 路由
+    for idx, logits in zip(output.protected_indices.tolist(), output.protected_logits):
+        probs = torch.softmax(logits, dim=0)
+        padded_probs = torch.zeros(10, dtype=probs.dtype, device=probs.device)
+        padded_probs.copy_(probs)
+        pred = logits.argmax(dim=0)
+        envelopes[idx] = ResponseEnvelope(
+            probabilities=tuple(float(value) for value in padded_probs.detach().cpu().tolist()),
+            prediction=int(pred.item()),
+            capability_level="protected",
+        )
+
+    # 4. 填充 public 路由
+    for idx, logits in zip(output.public_indices.tolist(), output.public_logits):
+        public_probs = torch.softmax(logits, dim=0)
+        probs = torch.zeros(10, dtype=public_probs.dtype, device=public_probs.device)
+        probs[:2] = public_probs
+        pred = logits.argmax(dim=0)
+        envelopes[idx] = ResponseEnvelope(
+            probabilities=tuple(float(value) for value in probs.detach().cpu().tolist()),
+            prediction=int(pred.item()),
+            capability_level="public",
+        )
+
+    # 5. 验证无 None 残留
+    if any(e is None for e in envelopes):
+        raise RuntimeError("内部错误：部分样本未被路由覆盖")
+
+    return envelopes
+```
+
+#### InferenceService 服务层入口
+
+```python
+class InferenceService:
+    """Phase 3.6 服务层入口，封装模型调用并返回脱敏 envelope。"""
+
+    def __init__(
+        self,
+        model: GatedResNet18,
+        device: torch.device,
+        max_batch_size: int = 256,
+    ):
+        """初始化服务。
+
+        参数:
+            model: 已加载的 GatedResNet18 模型。
+            device: 推理设备。
+            max_batch_size: 单次请求允许的最大 batch；必须为正整数。
+        """
+        if not isinstance(model, GatedResNet18):
+            raise TypeError("model 必须是 GatedResNet18")
+        if not isinstance(device, torch.device):
+            raise TypeError("device 必须是 torch.device")
+        if isinstance(max_batch_size, bool) or not isinstance(max_batch_size, int) or max_batch_size <= 0:
+            raise ValueError("max_batch_size 必须是正整数")
+        self.model = model.eval()
+        self.device = device
+        self.max_batch_size = max_batch_size
+
+    @torch.no_grad()
+    def infer(
+        self,
+        images: Tensor,  # [B, 3, 32, 32]
+        credentials: Tensor,  # [B, n]，真实 credential，不是 ID
+    ) -> list[ResponseEnvelope]:
+        """执行推理并返回同构 envelope 列表。
+
+        参数:
+            images: 输入图像 batch。
+            credentials: 每个样本的真实 LWE credential；服务层不根据 valid/invalid 标志生成凭据。
+
+        返回:
+            长度为 B 的 ResponseEnvelope 列表。
+
+        异常:
+            ValueError: 输入 shape、dtype、device 或 batch 对齐不满足契约。
+        """
+        if not isinstance(images, Tensor) or images.ndim != 4 or images.shape[1:] != (3, 32, 32):
+            raise ValueError("images 必须是 shape [B, 3, 32, 32] 的 Tensor")
+        if images.dtype != torch.float32 or not torch.isfinite(images).all():
+            raise ValueError("images 必须是有限的 float32 Tensor")
+        if not isinstance(credentials, Tensor) or credentials.ndim != 2:
+            raise ValueError("credentials 必须是二维 Tensor[B, n]")
+        batch_size = images.shape[0]
+        if batch_size == 0 or batch_size > self.max_batch_size:
+            raise ValueError("batch_size 必须位于 [1, max_batch_size]")
+        if credentials.shape[0] != batch_size:
+            raise ValueError("credentials 行数必须与 batch_size 一致")
+        if credentials.shape[1] != self.model.gate_layer.verifier.n:
+            raise ValueError("credentials 维度与模型 LWE 参数不一致")
+        if credentials.dtype != torch.float32 or not torch.isfinite(credentials).all():
+            raise ValueError("credentials 必须是有限的 float32 Tensor")
+
+        # 仅执行真实 credential 的设备迁移；CredentialGenerator 仅保留给训练/测试采样。
+        credentials = credentials.to(self.device)
+
+        # 模型推理（获取完整 InferenceOutput）
+        images = images.to(self.device)
+        output = self.model(images, credentials)
+
+        # 转换为 envelope（剥离 decision 和 indices）
+        return to_response_envelope(output, batch_size)
+```
+
+**输入与失败契约**：
+
+- `images` 与 `credentials` 都视为不可信输入；类型、shape、dtype、有限性、batch 对齐和上限必须在调用模型前验证。
+- 服务入口只接受真实 `[B, n]` credential。`CredentialGenerator` 只用于可信训练/测试 fixture，不属于服务构造参数。
+- 当前采用**整批原子失败**：任一样本无法规范化、模型返回契约异常或 envelope 转换失败时，整批不返回部分成功结果。
+- 公开异常必须使用稳定的通用错误类别，不把内部 reason code、索引、距离或堆栈返回给调用方。
+- 当前返回对象只用于可信进程内适配；HTTP/gRPC 序列化、schema version、错误 wire envelope 和响应大小限制必须在网络部署前另行设计和测试。
+
+### 实现步骤
+
+1. **核心模块实现**：
+   - `src/can/v2/service/response_envelope.py`：定义 `ResponseEnvelope` 和 `to_response_envelope()`
+   - `src/can/v2/service/inference_service.py`：实现 `InferenceService` 类
+   - `src/can/v2/service/__init__.py`：导出 `ResponseEnvelope`, `InferenceService`, `to_response_envelope`
+
+2. **单元测试**（`tests/v2/test_response_envelope.py`，至少 12 项）：
+   - `test_envelope_strips_decision_and_indices`: envelope 不包含 decision/indices/error_norm/gate_signal
+   - `test_envelope_fields_are_homogeneous`: 所有样本返回相同字段集合（同构）
+   - `test_envelope_preserves_batch_order`: envelope 列表保持原 batch 顺序
+   - `test_envelope_rejects_incomplete_indices`: 若 indices 未覆盖完整 batch 则抛出 ValueError
+   - `test_envelope_probabilities_match_original_routing`: envelope probabilities 与原路由 logits 的 softmax 一致
+   - `test_public_probabilities_are_zero_padded`: public 的前 2 位和为 1，后 8 位精确为 0
+   - `test_envelope_prediction_is_argmax`: prediction 是 logits 的 argmax
+    - `test_envelope_capability_level_matches_routing`: capability_level 与实际路由一致
+   - 拒绝 logits/indices 行数不一致、错误 dtype/device、NaN/Inf、重复与越界 indices
+
+3. **服务层集成测试**（`tests/v2/test_inference_service.py`，至少 12 项）：
+    - `test_service_rejects_mismatched_credential_count`: 拒绝 credentials 行数不匹配
+   - `test_service_envelope_count_equals_batch_size`: 返回的 envelope 数量等于 batch_size
+   - `test_envelope_does_not_leak_error_norm`: envelope 不泄露连续 error_norm
+   - `test_envelope_does_not_leak_gate_signal`: envelope 不泄露 gate_signal
+   - `test_envelope_does_not_leak_reason_code`: envelope 不泄露 reason_code 失败枚举
+   - `test_all_valid_batch_returns_homogeneous_envelopes`: 全 valid batch 每样本同构
+   - `test_all_invalid_batch_returns_homogeneous_envelopes`: 全 invalid batch 每样本同构
+   - `test_mixed_batch_envelopes_are_structurally_identical`: mixed batch 的 valid/invalid envelope 字段、类型和概率长度一致
+   - 拒绝空 batch、超大 batch、错误 image/credential shape、dtype 与 NaN/Inf
+   - 模型或转换异常时整批无部分结果，且外部错误不包含内部证据
+
+4. **文档更新**：
+   - `PROJECT_WORKLOG.md`：Phase 3.6 完成状态，更新"当前状态"与"唯一下一步"
+   - `docs/RESEARCH_DESIGN.md`：更新 C-013（satisfied）、C-003（satisfied 服务层）、C-006（satisfied 服务层）、C-011（satisfied）
+   - `README.md`：添加服务层使用示例（区分外部 API 调用与内部测试仪器）
+
+5. **回归测试**：
+   - 完整 V2 测试套件通过（现有 154 + 实际新增测试数；不预先固定总数）
+   - Black / isort 格式检查通过
+    - 行覆盖率 ≥95%（含 service 模块）
+
+### 测试要求
+
+**单元测试覆盖**（至少 12 项）：
+- 剥离 decision/indices
+- 字段同构性
+- batch 顺序保持
+- 索引完整性校验
+- probabilities 路由一致性与 public 零填充
+- probabilities = softmax
+- prediction = argmax
+- capability_level 正确性
+- logits/indices 行数、shape、dtype、device 与有限性
+- 重复、缺失和越界 indices
+
+**服务层集成测试**（至少 12 项）：
+- credential 数量校验
+- envelope 数量 = batch_size
+- 不泄露 error_norm
+- 不泄露 gate_signal
+- 不泄露 reason_code
+- 全 valid batch 同构
+- 全 invalid batch 同构
+- mixed batch 结构一致
+- image/credential 类型、shape、dtype、有限性和 batch 上限
+- 空 batch 与整批原子失败
+- 外部错误不包含内部证据或堆栈
+
+**目标覆盖率**: ≥95%（envelope 转换逻辑、输入校验与服务入口）
+
+### 主张更新
+
+实现完成后，以下 Claim 状态更新：
+
+| Claim ID | 描述 | 当前状态 | Phase 3.6 后状态 |
+|---|---|---|---|
+| C-013 | 服务层 envelope 不泄露额外验证/内部路由证据 | pending；实现前须把权威台账中“任何路由证据”收紧为“除预期 capability 输出外的额外内部证据” | **satisfied（限定可信进程内适配入口的正常与错误返回）** |
+| C-003 | TM-API: invalid 不执行深层 | satisfied (模型层) | **satisfied（经该入口调用）** |
+| C-006 | TM-API: 能力分级 | test split 已完成，服务边界 pending | **satisfied（经该入口调用）** + test split |
+| C-011 | 距离预言机泄露面收敛 | declared | **satisfied（仅指该入口不返回验证距离；不等于消除模型探测面）** |
+
+### 新增限制声明
+
+**L-001**（不主张能力等级不可观察）：
+- 调用方可从 `capability_level` 与概率语义推断当前能力等级
+- 固定 `[10]` shape 只消除维度差异，不提供路由不可区分性
+- 不主张"调用方无法区分 protected 和 public 路由"
+
+**L-002**（evaluator 仍可访问完整证据）：
+- `TestSplitEvaluator` 等测试仪器直接调用 `model.forward()` 获得 `InferenceOutput`
+- 服务层 `InferenceService` 是 `TM-API` 的唯一合法外部接口
+- evaluator 属于可信测试仪器，不受 envelope 限制
+
+**L-003**（入口排他性由部署保证）：
+- Python 类型或模块可见性不能阻止同进程调用者直接访问 `model.forward()`；
+- Phase 3.6 只验证经 `InferenceService` 的返回契约，不证明整个部署环境不存在旁路；
+- 正式 TM-API 部署必须由进程/容器与网络入口隔离保证外部调用方只能访问服务入口。
+
+**L-004**（连续分类输出仍是模型探测面）：
+- probabilities 会暴露分类置信度，不属于 LWE 验证证据，但可用于一般模型探测；
+- public 路径固定返回 10 个概率槽位且后 8 位恒为 0，调用方可据此推断接口预留了 10 类结构，并可能进一步推断 protected 任务的类别规模；
+- 上述信息属于能力接口与架构 schema 的可观察性，而不是 credential 验证距离、失败原因或内部路由索引；当前 `TM-API` 明确接受这一泄露；
+- 本阶段只主张收敛验证距离、reason code 和路由 indices 的泄露面，不主张防御 model extraction 或 membership inference。
+
+**L-005**（wire schema 与兼容性尚未定义）：
+- 当前 `ResponseEnvelope` 是 Python dataclass，不承诺跨语言、跨进程或跨版本兼容性；
+- HTTP/gRPC 部署前必须另行定义 schema version、字段演进、未知字段处理、错误 envelope、响应大小限制和向后兼容测试；
+- 变长 probabilities 会直接暴露 2/10 类维度，加密但仍由调用方解密的 probabilities 也不能向调用方隐藏类别结构；若未来需要收紧，优先评估只返回 prediction 或重新设计能力专属 wire schema。
+
+### 使用示例
+
+#### 服务层调用（外部 API）
+
+```python
+from src.can.v2.service import InferenceService
+from src.can.v2.models import GatedResNet18
+import torch
+
+# 初始化服务
+service = InferenceService(model, device)
+
+# 推理
+images = torch.randn(4, 3, 32, 32)  # batch size 4
+credentials = supplied_credentials.to(torch.float32)  # 调用方提供的真实 [B, n] credential
+
+envelopes = service.infer(images, credentials)
+
+# 访问结果（同构结构）
+for i, env in enumerate(envelopes):
+    print(f"Sample {i}:")
+    print(f"  Capability: {env.capability_level}")
+    print(f"  Prediction: {env.prediction}")
+    print(f"  Confidence: {env.probabilities[env.prediction]:.4f}")
+    # ❌ 无法访问: env.decision, env.error_norm, env.gate_signal
+```
+
+#### 测试仪器调用（内部）
+
+```python
+from src.can.v2.experiments import TestSplitEvaluator
+
+# evaluator 直接访问 InferenceOutput（含完整 decision）
+evaluator = TestSplitEvaluator(model, credential_generator, params, device)
+result = evaluator.evaluate(test_loader)
+
+# 可访问所有内部证据
+print(f"FAR: {result['gate']['far']}")
+print(f"Min margin (valid): {result['gate']['min_margin']['valid']}")
+print(f"Error norm stats: {result['gate']['error_norm_stats']}")
+```
+
+### 风险和限制
+
+| 风险 | 缓解 |
+|---|---|
+| 调用方可从 capability_level 推断能力等级 | 明确不主张能力等级不可观察（L-001），固定 shape 只保证接口结构稳定 |
+| evaluator 仍可绕过 envelope 访问完整 decision | evaluator 是可信测试仪器（L-002），服务层边界仅约束可信进程内适配层的外部调用路径 |
+| 转换函数索引校验失败可能导致运行时错误 | 单元测试覆盖索引缺失、重复、超界等边界情况；fail-fast 优于静默错误 |
+| Python 进程内仍可直接访问 model | 入口排他性由正式部署的进程/容器和网络隔离保证；不由 dataclass 或命名约定保证 |
+| probabilities 提供连续模型输出 | 不返回 raw logits，并明确不主张防御一般模型探测 |
+| public 后 8 个概率槽位恒为 0 | 这会暴露统一 10 槽位 schema 和潜在 protected 类别规模；当前归类为可接受的架构可观察性，而非验证证据泄露 |
+| 未来 wire schema 的向后兼容性 | 当前 dataclass 不构成网络协议；HTTP/gRPC 部署前另行定义版本协商、字段演进、错误 envelope 与兼容性测试 |
+| 单样本异常导致 mixed batch 部分响应 | 整批原子失败，不返回部分结果或内部失败原因 |
+
+### 设计决策点
+
+**4个关键设计选择**（默认采用"推荐"方案）：
+
+1. **capability_level 字段明确标注**："protected" / "public"
+   - ✅ **推荐**：明确标注，承认能力等级可观察（L-001）
+   - ❌ 替代：移除该字段；固定 shape 虽不再暴露类别维度，但概率语义仍可能暴露能力等级
+
+2. **默认提供 probabilities 和 prediction**：
+   - ✅ **推荐**：进程内 envelope 只保留固定长度 10 的不可变 probabilities 与 prediction，不提供 raw logits
+   - ❌ 替代：默认返回 raw logits；这会扩大不必要的连续输出面
+
+3. **强制索引覆盖检查**：
+   - ✅ **推荐**：强制校验，防止内部错误
+   - ❌ 替代：信任模型输出，跳过校验
+
+4. **支持 batch credentials**：
+   - ✅ **推荐**：支持 `[B, n]` 真实 credential，每样本独立验证
+   - ❌ 替代：由服务层根据 valid/invalid 标志生成 credential；该接口仅允许训练/测试采样器使用
+
+**默认选择**：全部采用"推荐"方案，除非用户明确反对。
+
+### 后续工作
+
+Phase 3.6 完成后的下一步：
+
+1. **Phase 4**: CIFAR-100 能力分级扩展（100→20 类）
+2. **Paper writing**: 基于冻结的 test split 结果撰写论文
+3. **可选**: 外部 verifier baseline latency 对照（完成 C-007）
+4. **可选**: 独立训练 no-Gate baseline（完成 C-014）
+
+**Phase 3.6 不阻塞论文投稿**：当前 test split 结果已充分，服务层是工程完备性而非科研必需。
 
 ---

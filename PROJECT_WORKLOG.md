@@ -3,10 +3,10 @@
 ## 当前研究阶段
 
 **阶段**: V2 - Gate Layer 在计算图中间架构  
-**状态**: Phase 3 Stage C 官方 test split 三 seed 评估完成并核验
-**最后更新**: 2026-08-27
+**状态**: Phase 3.6 服务层 response envelope 完成并通过 Claude 验收
+**最后更新**: 2026-08-28
 
-**Phase 3 进度**: evaluator 核心模块、单 checkpoint CLI、Manifest/摘要校验、完整多 seed aggregate、latency 测量与能力/Gate/mixed-routing 指标已实现；三个 Stage C best checkpoint 的官方 test split 正式评估已完成并通过结果核验。Phase 3.6 服务层 response envelope 尚待设计。
+**Phase 3 进度**: evaluator、三个 Stage C best checkpoint 的官方 test split 正式评估及 Phase 3.6 可信进程内 response envelope 均已完成并通过验收。服务层包含真实 credential 输入、固定长度概率响应、稀疏路由契约校验、整批 fail-closed 和 30 项专项测试。
 
 **2026-08-27 服务器预运行记录**：seed `20260824` 的首次正式命令在尾批 reference-routing
 `assert_close` 处中止，未生成结果 JSON。观测到 CUDA float32 最大绝对差约 `3.74e-4`，原固定
@@ -448,15 +448,22 @@ capability gap、实际 public/protected forward 次数。Stage A/B 可用同一
 - 每个预注册 checkpoint 在官方 test split 上正式评估一次，输出记录时间与 checkpoint SHA-256；
 - test split 不用于修改 checkpoint、阈值、训练超参数或选择规则。
 
-#### 3.6 服务层 response envelope [PENDING，claim C-013]
+#### 3.6 服务层 response envelope [COMPLETED - CLAUDE ACCEPTED，claim C-013 satisfied]
 
-在 Stage C 正式 test split 评估之后单独设计和实现，不阻塞模型层 evaluator：
+在 Stage C 正式 test split 评估之后单独设计和实现，不阻塞模型层 evaluator。当前实现仅为可信进程内适配层：
 
 1. 剥离 `decision`、连续 `error_norm`、reason code、verified、gate signal 和路由 indices；
 2. 每个样本返回同构 envelope，字段集合和 shape 不随 valid/invalid 改变；
 3. 只允许暴露预期的 public/protected 能力结果，不声称能力等级不可观察；
 4. 增加全 valid、全 invalid、mixed batch 的序列化脱敏测试；
-5. evaluator 仍可访问原始内部证据，服务层调用方不可访问。
+5. evaluator 仍可访问原始内部证据，服务层调用方只获得脱敏 envelope。
+
+实现文件：
+- `src/can/v2/service/response_envelope.py`
+- `src/can/v2/service/inference_service.py`
+- `src/can/v2/service/__init__.py`
+- `tests/v2/test_response_envelope.py`
+- `tests/v2/test_inference_service.py`（合计 30 tests，service 行覆盖率 98%）
 
 ---
 
@@ -594,12 +601,12 @@ GPU 明文窗口、掩码恢复风险以及训练/部署流程重构。
 
 权威台账位于 `docs/RESEARCH_DESIGN.md` 第 7 节，当前包含 C-001 至 C-014。
 
-- `satisfied`：C-001、C-003、C-004、C-008、C-009；
-- `declared`：C-010、C-011；
+- `satisfied`：C-001、C-003、C-004、C-006、C-008、C-009、C-011、C-013；
+- `declared`：C-010；
 - `partial`：C-002、C-005；
-- `pending`：C-006、C-007、C-012、C-013、C-014。
+- `pending`：C-007、C-012、C-014。
 
-C-003 当前仅在模型层 satisfied；其完整 `TM-API` 服务边界依赖 C-013。
+C-003、C-006、C-011 与 C-013 的 satisfied 状态均限定于可信进程内服务入口，不扩展到 `TM-WB`、网络 wire schema 或同进程旁路。
 `stage_a_reference` 与尚不存在的 `no_gate_ablation` 禁止混用。
 
 ---
@@ -643,19 +650,18 @@ C-003 当前仅在模型层 satisfied；其完整 `TM-API` 服务边界依赖 C-
 - [x] **aggregate schema v2 回归测试**（2026-08-27）：设置 `PYTHONPATH=.` 后运行 `pytest tests/v2/ -q`，154 passed
 
 ### 进行中
-- [ ] **Claude 验收 aggregate schema v2 与工作日志结果记录**
+- [ ] **Phase 4 CIFAR-100 能力分级扩展设计审阅**
 
 ### 下一步（唯一下一步）
 
-**由 Claude 验收 aggregate schema v2、8 项 evaluator 专项测试和本节正式结果记录；验收通过后，
-先冻结 Phase 3.6 服务层 response envelope 的设计方案，再由用户指定实现者。**
+**审阅并冻结 Phase 4 CIFAR-100 能力分级扩展方案；设计通过后由用户指定实现者。当前不得在
+未冻结数据映射、训练协议、评估指标和资源预算前直接开始 Phase 4 代码实现。**
 
-验收重点：
-1. schema v2 是否完整覆盖 capability、Gate、mixed-routing 和 latency；
-2. 聚合 mean/std 是否与三个单 seed JSON 一致；
-3. 质量门是否保留每个 seed 的原始值且未掩盖失败；
-4. LF 规范化 SHA-256 规则是否跨 Windows/Linux 一致；
-5. Stage A/B/C 统一聚合仍为后续任务，不得误称已完成。
+审阅重点：CIFAR-100 fine/coarse 标签来源、100→20 映射、模型 head 参数化、三阶段训练复用、
+多 seed 评估协议、CIFAR-10 对照口径、GPU 显存与预计训练时间。
+
+**本次验证**：`PYTHONPATH=.` 下 `pytest tests/v2/ -q` 通过 `184 passed`；service 专项 `30 passed`，
+覆盖率 98%；Black、isort、compileall 和 `git diff --check` 均通过。
 
 **测试环境备注**：直接运行 `pytest tests/v2/ -q` 未设置 `PYTHONPATH` 时在收集阶段报
 `ModuleNotFoundError: No module named 'src'`；按仓库导入方式设置 `PYTHONPATH=.` 后完整测试通过。
@@ -739,7 +745,7 @@ C-003 当前仅在模型层 satisfied；其完整 `TM-API` 服务边界依赖 C-
 - **TM-WB 白盒抗性**：当前控制流门控可被直接调用内部路径或常数规模运行时篡改绕过；
 - **Replay 防御**：静态 credential 可重用，当前主线没有 challenge-response 或 nonce 状态；
 - **密码学安全性**：toy LWE-inspired 关系无安全归约，可被最小二乘伪造；
-- **生产部署安全**：研究原型，服务层 response envelope 仍待 Phase 3.6 实现；
+- **生产部署安全**：研究原型；Phase 3.6 仅实现可信进程内 response envelope，不包含网络 wire schema、认证、传输安全或部署旁路隔离；
 - **TEE/安全启动与侧信道防护**：不在当前主线；
 - **ImageNet 结果**：Phase 5 可选，尚未开始。
 
