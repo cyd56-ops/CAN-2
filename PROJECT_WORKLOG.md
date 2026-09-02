@@ -3,10 +3,30 @@
 ## 当前研究阶段
 
 **阶段**: V2 - Gate Layer 在计算图中间架构  
-**状态**: Phase 3.6 服务层 response envelope 完成并通过 Claude 验收
-**最后更新**: 2026-08-28
+**状态**: Phase 5 T1 已通过 Claude 验收，正式 GPU 实验准备中
+**最后更新**: 2026-09-01
 
 **Phase 3 进度**: evaluator、三个 Stage C best checkpoint 的官方 test split 正式评估及 Phase 3.6 可信进程内 response envelope 均已完成并通过验收。服务层包含真实 credential 输入、固定长度概率响应、稀疏路由契约校验、整批 fail-closed 和 30 项专项测试。
+
+**Phase 5 进度**：T0 CPU 最小原型和 T1 evaluator/reference/manifest/CLI/KV-cache/CPU smoke 均已通过 Claude 验收。正式 GPU 训练尚未开始；下一步是先测量 GPU 显存、tokens/s 与阶段耗时，再冻结 token/step budget、early stopping 和正式 seed 配置。
+
+**2026-09-01 数据协议修订**：`generate_synthetic_corpus()` 的 private prompt 已移除 `PRIVATE-xxxxxx` 私有答案文本，仅保留实体查询；私有答案只作为监督 target，invalid credential 对同一 prompt 使用 `ACCESS-DENIED`。此修订消除 prompt 复制造成的 private 能力评估假阳性；旧 checkpoint/旧语料结果不得与新协议混合比较。
+
+**2026-09-01 smoke 接线修复**：`run_phase5_smoke.py` 现使用 validation split 的真实 evaluator 指标构造 `PretrainMetrics` 并调用 go/no-go；当前单步 smoke 指标未达门槛（`go_no_go=false`），因此不会误执行后续阶段。输出同时记录 protected/public/refusal 指标和截断计数。
+
+**2026-09-01 KV-cache 实现**：`DecoderBlock.forward_incremental()` 增加显式 K/V cache；`GatedDecoderTransformer.generate(cache_mode="kv")` 首轮建立 prompt cache，后续仅计算新增 token，并按 protected/public 路径分别维护 cache。新增一致性测试证明 KV 与 none 模式 greedy token 完全一致，cache 长度轨迹正确。
+
+**2026-09-01 T1 收尾验证**：T1 专项测试补齐至 30 项，覆盖规范化、拒答分类、probe/recovery、KV/reference 和失败路径；全量 `tests/v2` 通过 247 项。CPU smoke 增加真实 validation 指标有限性、拒答四分类和 go/no-go 接线断言；新 private-query-v2 协议下运行成功。可交 Claude 进行 T1.10 验收。
+
+**2026-09-01 T1 smoke/稀疏路由修复**：`run_phase5_smoke.py --pipeline-fixture` 现在可显式执行 A/B/C 接线（结果标注为 fixture，不进入研究结论）。修复 `Phase5Trainer` 对训练态 full-batch logits 与推理态 sparse logits/indices 的标签和 teacher 对齐；全量测试回归通过。
+
+**2026-09-01 T1 验收问题修复**：随机 probe baseline 固定为解析 AUC 0.5；mixed reference 现在统计真实空 protected/public 子批、逐样本 logits 最大误差并输出 `logits_allclose`，该硬门槛纳入 `status`。pipeline fixture 使用 `copy.deepcopy` 的独立冻结 teacher，并贯通 A/B/C；训练器对 student 非 training 状态 fail-fast。T1 专项测试 31 项通过，full `tests/v2` 回归通过。
+
+**2026-09-01 T1 验收状态**：Claude 已验收通过。CPU 测试和 fixture 只证明工程闭环，不构成正式能力结果；私有查询数据协议已升级为 `phase5-t1-private-query-v2`，所有正式 Transformer checkpoint 必须基于该版本重新训练。
+
+**2026-09-01 GPU 准备**：新增 `scripts/benchmark_phase5_gpu.py`，只测量 T-pretrain 的 GPU 峰值显存、tokens/s 和单 step 时延，不读取 test split、不产生研究结果。脚本默认拒绝覆盖输出，要求 CUDA 可用；本地环境未运行该 benchmark。当前完整 `tests/v2`：248 passed。
+
+**2026-09-01 T1 实现记录**：修复 CPU smoke 合成样本上下文长度（`max_seq_len=256`），单步 T-pretrain 成功并生成 smoke checkpoint。新增 `reference.py`，提供 mixed batch 与逐样本 greedy generation 的确定性比较、direct-reference logits 等价性和分叉诊断；KV 模式在未实现时显式标记 `blocked`。新增 `eval_phase5.py`，可从 checkpoint metadata 重建模型并调用 evaluator；manifest 摘要校验、ROC-AUC probe 和恢复率接口已接入。CLI 默认拒绝覆盖结果，缺少可信摘要或 credential 时 fail-safe。全量 `tests/v2`：230 passed。
 
 **2026-08-27 服务器预运行记录**：seed `20260824` 的首次正式命令在尾批 reference-routing
 `assert_close` 处中止，未生成结果 JSON。观测到 CUDA float32 最大绝对差约 `3.74e-4`，原固定
@@ -69,12 +89,14 @@ Input (image, credential)
    - **Phase 1-2（架构与训练原型）**：ResNet-18 on CIFAR-10
      - 10 类 → 2 类（animal vs vehicle）
      - 目的：快速验证 Gate Layer 架构可行性
-   - **Phase 4（能力分级扩展）**：ResNet-18 on CIFAR-100
-     - 100 类 → 20 类（超类）或 10 类（更粗）
-     - 目的：展示显著的能力差距
-   - **Phase 5（可选）**：ResNet-50 on ImageNet 子集
-     - 1000 类 → 100 类或 10 类
-     - 目的：验证在大规模任务上的可行性
+   - **Phase 4（可选兼容性检查）**：ResNet-18 on CIFAR-100
+     - 100 类 → 20 类超类，仅允许一个 seed 或短训练 smoke test
+     - 目的：检查数据、head、evaluator 和 response schema，不作为能力隔离主结论
+   - **Phase 5（当前主线）**：小型 decoder-only Transformer
+      - 同 tokenizer/vocabulary/prompt 的 public early-exit 与 protected full-path
+      - 目的：验证计算图内 Gate 的能力分级、语义等价和能力泄漏边界
+   - **Phase 6（可选扩展）**：MoE、sandbox tool calling、外部 benchmark、较大底座或 ImageNet
+      - 目的：在 Phase 5 闭合后评估外部有效性，不把规模扩大本身视为安全证据
 
 ---
 
@@ -467,125 +489,117 @@ capability gap、实际 public/protected forward 次数。Stage A/B 可用同一
 
 ---
 
-### Phase 4: 扩展实验（CIFAR-100）[FUTURE]
+### Phase 4: CIFAR-100 兼容性检查 [OPTIONAL/DEFERRED]
 
-**目标**：展示显著的能力分级效果
+**定位**：CIFAR-100 不再是当前论文主线的正式能力分级实验。`100 类 protected / 20 类 public`
+仍然存在输出空间不同造成的粒度解释，不能直接解决 T 轨道的同词表、同任务格式和能力泄漏问题。
+因此不安排三 seed 正式训练、不预先宣称具体准确率，也不把 C-012 写成正向结论。
 
-**数据集**：CIFAR-100（100 类 → 20 类超类）
+如 Transformer 资源暂时不可用，或需要在实现 T 轨道前降低工程风险，可执行一次低成本 smoke test：
 
-**为什么需要 CIFAR-100？**
-- 能力差距更显著（100 类 vs 20 类，而非 10 类 vs 2 类）
-- CIFAR-100 自带 20 个超类标签，无需手动映射
-- 更能说服审稿人能力分级是有意义的
+- 使用 CIFAR-100 官方 fine/coarse labels，检查数据接口和 split hash；
+- 复用 `GatedResNet18` 的类别数参数化，检查 100/20 类 head、evaluator 和独立版本化 response schema；
+- 最多一个 seed 或短训练，仅记录 shape、路由、zero-call、direct protected 等价性和序列化结果；
+- 结果只作为兼容性/工程附录，不用于证明真实能力隔离、密码学安全或 C-012 的主结论。
 
-#### 4.1 Gated ResNet-18 on CIFAR-100
-**文件**：`src/can/v2/models/gated_resnet_cifar100.py`
-
-实现内容：
-- Protected path：100 类细粒度分类
-  - 示例：具体狗的品种（Chihuahua, German Shepherd...）
-- Public path：20 类超类分类
-  - 示例：动物大类（哺乳动物、鱼类、花卉...）
-- 能力差距预期：
-  - Protected accuracy ~75%（100 类）
-  - Public accuracy ~55%（20 类）
-
-**CIFAR-100 超类示例**：
-```python
-超类映射（20 个超类 → 100 个细粒度类）：
-- aquatic_mammals: [beaver, dolphin, otter, seal, whale]
-- fish: [aquarium_fish, flatfish, ray, shark, trout]
-- flowers: [orchid, poppy, rose, sunflower, tulip]
-- food_containers: [bottle, bowl, can, cup, plate]
-- fruit_and_vegetables: [apple, mushroom, orange, pear, sweet_pepper]
-- household_electrical_devices: [clock, keyboard, lamp, telephone, television]
-- household_furniture: [bed, chair, couch, table, wardrobe]
-- insects: [bee, beetle, butterfly, caterpillar, cockroach]
-- large_carnivores: [bear, leopard, lion, tiger, wolf]
-- large_man-made_outdoor_things: [bridge, castle, house, road, skyscraper]
-- ... (共 20 个超类)
-```
-
-#### 4.2 能力分级对比实验
-**文件**：`src/can/v2/experiments/capability_comparison.py`
-
-实验内容：
-- 对比 CIFAR-10 和 CIFAR-100 的能力差距：
-  ```
-  CIFAR-10:  10 类 (92%) → 2 类 (65%)  差距 = 27%
-  CIFAR-100: 100 类 (75%) → 20 类 (55%) 差距 = 20%（但类别数差距更大）
-  ```
-- 分析：类别数越多，能力分级越显著
-- 可视化：混淆矩阵对比（100 类 vs 20 类）
-
-#### 4.3 多级能力分级（可选）
-**文件**：`src/can/v2/models/multi_level_gated_resnet.py`
-
-实现内容：
-- 多个 Gate Layer（串联）
-- Protected path：100 类（需要高级 credential）
-- Intermediate path：20 类超类（需要中等 credential）
-- Public path：10 类粗粒度（无 credential）
-- 展示多级 Gate Layer 的可能性
-
-**架构示意**：
-```
-Input (image, credential_high, credential_mid)
-    ↓
-[Shallow Layers]
-    ↓
-[Gate Layer 1] ← credential_mid
-    ↓ (if pass)
-[Mid Layers]
-    ↓
-[Gate Layer 2] ← credential_high
-    ↓ (if pass)
-[Deep Layers] → 100 类
-    ↓ (if fail at Gate 2)
-[Mid Head] → 20 类
-    ↓ (if fail at Gate 1)
-[Public Head] → 10 类
-```
+不得在该 smoke test 中加入多级 Gate、手工新建类别映射、test split 调参或根据结果反复选择 cut。
 
 ---
 
-### Phase 5: 大规模验证（ImageNet）[OPTIONAL]
+### Phase 5: T 轨道小型 Transformer 能力分级 [IMPLEMENTATION IN PROGRESS]
 
-**目标**：验证在大规模任务上的可行性
+**研究问题**：在 `TM-API` 可信黑盒部署中，credential 驱动且位于 Transformer 计算图中间的固定
+Gate Layer，能否在保持 protected 路径语义的同时形成可复现的 public/protected 能力边界，
+并在受控访问预算下限制受保护能力泄漏或恢复？
 
-**数据集**：ImageNet（1000 类 → 100 类或 10 类）
+**范围**：
 
-**为什么需要 ImageNet？**
-- 能力差距极其显著（1000 → 100 或 1000 → 10）
-- 更接近真实应用场景（高分辨率图像，复杂场景）
-- 论文说服力最强（顶会审稿人期望的规模）
+- 先实现可在本地完整训练或微调的小型 decoder-only Transformer；不以 Qwen/Llama 或 0.6B 模型
+  替代最小原型；
+- 主数据流固定为 `tokens, credential -> shared prefix -> in-graph Gate Layer -> hard route`；
+  外部 verifier 只能作为对照；
+- T0 初版默认沿用当前固定的 toy LWE-inspired 关系门；ML-DSA reference verifier 属于独立 S 轨道，
+  不因 T 轨道结果获得密码学安全主张；
+- 在若干完整 Transformer block 末端候选 cut 中只用 validation 选择；每条生成序列只提交一次
+  route，后续 token 不得动态切换权限；
+- public 使用 early-exit LM head，protected 使用完整深层和原 LM head；两条路径共享 tokenizer、
+  vocabulary、prompt、停止规则和输出 schema；
+- 第一版只做 L0 公开能力与 L1 合成私有知识问答。L2 工具调用留作后续扩展，工具只允许 sandbox/mock
+  dispatcher，模型生成 intent 不等于授权执行。
 
-**挑战**：
-- 训练成本高（需要多 GPU，数天训练）
-- 需要更大的模型（ResNet-50 或 ResNet-101）
-- 粗粒度标签需要手动定义（ImageNet 无自带超类）
-- 数据集大（1.28M 训练图像，224×224）
+#### 5.1 T0 设计冻结（当前唯一下一步）
 
-**收益评估**：
-- ✅ 极强说服力（顶会论文的标准）
-- ✅ 真实应用场景
-- ❌ 研究原型阶段可能过早（先验证 CIFAR-100）
+在创建代码前必须冻结并审阅：
 
-**建议**：
-- 先完成 CIFAR-10 原型验证
-- 再完成 CIFAR-100 能力分级展示
-- 如果两者都成功，再考虑 ImageNet（论文投稿前）
+- 模型层数、宽度、词表、上下文长度、候选 Gate cut 和每请求一次的路由语义；
+- 公开/私有/拒答数据生成规则、实体不重叠约束、train/validation/test split、seed、摘要和 hash；
+- 未授权 private query 的稳定拒答或公开范围回答目标，不得用随机退化作为安全目标；
+- protected direct-reference、public utility、private refusal rate、probe AUC、恢复率、
+  zero-call、延迟和吞吐等指标；
+- 所有 cut、epoch、checkpoint 和超参数只由 validation 选择，test 只评估一次；
+- 独立版本化的 Transformer response schema，不能复用 CIFAR response envelope 的固定 10/2 类槽位。
+
+当前不得直接开始 Transformer 代码实现，须先完成 T0 freeze record 并由用户指定实现者。
+
+#### 5.2 训练与评估阶段
+
+- **Stage A**：冻结底座，仅训练 early-exit head，使其具备公开任务能力；
+- **Stage B**：使用原模型作为冻结 teacher，仅在公开能力分布上蒸馏 early-exit；
+- **Stage C**：混合 valid/invalid credential 联合训练；如使用抑制损失，目标必须是冻结的拒答、
+  公开范围回答或禁止 tool intent，不能把随机退化当作能力保护；
+- 训练后冻结最终 checkpoint，protected 结果与同一 checkpoint 的 direct full-path 比较；
+- 分别在 `TM-API`、`TM-REP` 和 `TM-CP` 下进行 API 观察、表示探针和受限恢复实验；`TM-WB` 不主张
+  抗性；
+- 输出 public utility、protected utility、private refusal rate、表示 probe AUC、恢复率随预算
+  曲线、路由调用计数、zero-call、延迟/吞吐和多 seed 区间。
+
+#### 5.3 Phase 5 验收门
+
+- valid credential 只执行 protected route；invalid credential 不执行 protected route；
+- protected 输出与同一冻结 checkpoint 的 direct reference 满足预先定义的等价性；
+- public 路径在公开任务达到 validation 冻结的 utility 门槛，并在 private query 上满足拒答/公开范围语义；
+- test split 只评估一次，失败或容易恢复的结果必须作为负面结果记录，不改写成密码学安全结论；
+- 至少完成 P0 对照：同模型 early-exit/full、粒度/容量对照、前缀数据隔离基线；P1 对照按资源补充。
+
+Phase 5 不声称 toy LWE/ML-DSA 不可伪造、Replay 防御、白盒不可绕过、checkpoint 机密性或生产访问控制。
+
+#### 5.4 T0 CPU 最小原型实现 checkpoint [COMPLETED / CLAUDE ACCEPTED]
+
+**完成时间**：2026-09-01
+**验收状态**：Claude 已验收（2026-09-01）
+
+- 新增固定 260 项 byte-level tokenizer、实体隔离的 public/private/refusal 合成数据和 entity-triplet mixed sampler；
+- 新增 6-block 默认配置的小型 decoder-only Transformer，Gate 判决只依赖 credential，protected 使用门控 hidden state，public early-exit 使用未门控共享表示；
+- 推理区分 protected、public 与格式错误 rejected，invalid 路径对 protected blocks 保持 zero-call；
+- 新增每序列一次硬路由的确定性 greedy generation，并以 mixed/逐样本结果一致性测试守护索引隔离；当前实现为无 KV-cache 的重计算参考路径，KV-cache 优化及逐步 cache 对照尚未实现；
+- 新增 T-pretrain/Stage A/B/C 损失、冻结 teacher、mixed batch 约束、entity sampler、原子 checkpoint、teacher identity、LWE identity 和 Python/NumPy/Torch/CUDA/credential RNG 恢复；
+- 新增 `tests/v2/test_phase5_transformer.py`，覆盖 tokenizer、数据、路由、direct full-path、generation、loss、训练 step 和 checkpoint 恢复。
+
+尚未实现：正式 validation/evaluator、规范化 exact-match/refusal 统计、probe AUC、TM-CP 恢复曲线、manifest/CLI、KV-cache、T-pretrain go/no-go 驱动器、GPU smoke 和多 seed 正式训练。当前 checkpoint 只能证明 T0 CPU 架构与基础训练路径可执行，不能支持 C-015 至 C-019 的正向结论。
+
+---
+
+### Phase 6: 外部有效性扩展 [OPTIONAL]
+
+只有 Phase 5 最小原型闭合并完成泄漏/恢复分析后，才重新评估：
+
+- MoE 专家池准入、`allowed_mask` 和受约束 top-1 task router；
+- sandbox tool calling、外部 benchmark 或更大开源底座；
+- ImageNet 等大规模视觉任务（如仍有明确研究问题、数据许可和资源预算）。
+
+Phase 6 不是当前主线，不预设需要 ImageNet，也不把规模扩大本身当作安全证据。
 
 ---
 
 ### Phase W: 权重级绑定 [SEPARATE RESEARCH TRACK]
 
-Phase W 不是 Phase 4/5 的既定增强，也不排入当前主线。若启动，必须先单独评审方案。
+Phase W 不是 Phase 4/5/6 的既定增强，也不排入当前主线。若启动，必须先单独评审方案。
 
-候选方向是用 credential 派生的材料对 protected 权重做可逆掩码或置换。其可主张范围仅为：
+候选方向是用独立内容密钥对 protected 权重做可逆加密或掩码。其可主张范围仅能在单独评审和实验
+后确定，当前只记录为候选：
 
-- checkpoint at-rest 机密性；
-- 首次能力提取需要一次合法 credential。
+- checkpoint at-rest 机密性（TM-CP）；
+- 授权提交与内容密钥释放之间的绑定是否可行。
 
 在普通 PyTorch 软件执行模型中，protected 计算要求解掩码权重出现在攻击者可读地址空间，
 因此该方案不能建立 `TM-WB` 运行时抗性。攻击者取得一次合法 credential 后仍可 dump 明文权重。
@@ -604,7 +618,7 @@ GPU 明文窗口、掩码恢复风险以及训练/部署流程重构。
 - `satisfied`：C-001、C-003、C-004、C-006、C-008、C-009、C-011、C-013；
 - `declared`：C-010；
 - `partial`：C-002、C-005；
-- `pending`：C-007、C-012、C-014。
+- `pending`：C-007、C-012、C-014；其中 C-012 已降级为 optional，不属于当前主线。
 
 C-003、C-006、C-011 与 C-013 的 satisfied 状态均限定于可信进程内服务入口，不扩展到 `TM-WB`、网络 wire schema 或同进程旁路。
 `stage_a_reference` 与尚不存在的 `no_gate_ablation` 禁止混用。
@@ -650,18 +664,21 @@ C-003、C-006、C-011 与 C-013 的 satisfied 状态均限定于可信进程内�
 - [x] **aggregate schema v2 回归测试**（2026-08-27）：设置 `PYTHONPATH=.` 后运行 `pytest tests/v2/ -q`，154 passed
 
 ### 进行中
-- [ ] **Phase 4 CIFAR-100 能力分级扩展设计审阅**
+- [x] **Phase 4 正式主实验降级为 optional**：仅保留低成本 CIFAR-100 兼容性 smoke test，不作为当前论文主线
+- [x] **Phase 5 T0：小型 Transformer 能力分级方案设计审阅与修订**
+- [x] **Phase 5 T0：小型 Transformer CPU 最小原型代码实现并通过 Claude 验收**
+- [ ] **Phase 5 T1：evaluator、CLI、KV-cache 与正式 smoke 准备（实现中）**
 
 ### 下一步（唯一下一步）
 
-**审阅并冻结 Phase 4 CIFAR-100 能力分级扩展方案；设计通过后由用户指定实现者。当前不得在
-未冻结数据映射、训练协议、评估指标和资源预算前直接开始 Phase 4 代码实现。**
+**实现并在用户确认的服务器 GPU 上运行 Phase 5 GPU smoke benchmark，记录显存、tokens/s 和单阶段耗时；基于测量值冻结正式训练 token/step budget、early stopping、三 seed 与 resolved config，随后先执行一个 seed 的 validation-only 验证。**
 
-审阅重点：CIFAR-100 fine/coarse 标签来源、100→20 映射、模型 head 参数化、三阶段训练复用、
-多 seed 评估协议、CIFAR-10 对照口径、GPU 显存与预计训练时间。
+审阅重点：计算图内 Gate 位置和每请求一次的硬路由、同 tokenizer/vocabulary/prompt/停止规则、
+公开与私有/拒答数据生成及实体隔离、Stage A/B/C 训练协议、TM-API/TM-REP/TM-CP 访问条件、
+protected direct-reference 等价性、public utility、private refusal rate、probe AUC、恢复曲线、
+P0 对照、GPU 显存和最小原型资源预算。
 
-**本次验证**：`PYTHONPATH=.` 下 `pytest tests/v2/ -q` 通过 `184 passed`；service 专项 `30 passed`，
-覆盖率 98%；Black、isort、compileall 和 `git diff --check` 均通过。
+**本次验证（2026-09-01）**：更新 private prompt 数据协议后，CPU smoke（seed `20260901`，T-pretrain 单步）成功；`PYTHONPATH=.` 下 `pytest tests/v2/ -q` 通过 `230 passed`，T1 专项测试 13 项通过；Black、isort、compileall 和 `git diff --check` 均通过。
 
 **测试环境备注**：直接运行 `pytest tests/v2/ -q` 未设置 `PYTHONPATH` 时在收集阶段报
 `ModuleNotFoundError: No module named 'src'`；按仓库导入方式设置 `PYTHONPATH=.` 后完整测试通过。
@@ -670,46 +687,31 @@ C-003、C-006、C-011 与 C-013 的 satisfied 状态均限定于可信进程内�
 
 ## 开放问题
 
-1. **Coarse labels 如何定义？**
-   - CIFAR-10 → CIFAR-2（animal vs vehicle）
-   - 映射规则：
-     ```
-     vehicle (0): {airplane, automobile, ship, truck}  # 类别 0,1,8,9
-     animal (1):  {bird, cat, deer, dog, frog, horse}  # 类别 2,3,4,5,6,7
-     ```
-   - ✅ **已决定**：使用语义聚类（animal/vehicle）
-   - **CIFAR-100**：使用自带的 20 个超类（无需手动映射）
+1. **T0 最小 Transformer 规格如何冻结？**
+   - decoder-only 层数、宽度、参数量、词表、上下文长度和候选 Gate cut；
+   - 每条生成序列只提交一次 credential route，后续 token 是否完全复用该决定；
+   - 最小原型的本地显存、吞吐和训练时长 smoke benchmark。
 
-2. **Gate Layer 的神经编译细节？**
-   - 如何将 LWE 验证嵌入可微分计算？
-   - **关键问题**：
-     - A, b 如何存储？（nn.Parameter 冻结 or nn.Buffer？）
-     - 验证逻辑如何微分？（训练时需要软 threshold）
-     - 如何确保推理时的精确验证？（硬 threshold，与 V_ref 一致）
-   - **初步方案**：
-     - A, b 存储为 `nn.Buffer`（不参与梯度更新）
-     - 训练时：`gate = sigmoid((threshold - error) / temperature)`（软化）
-     - 推理时：`gate = (error < threshold).float()`（精确）
+2. **公开/私有能力数据如何构造并避免污染？**
+   - 使用项目自建合成实体/关系和 sandbox 数据，train/validation/test 实体不重叠；
+   - 记录生成 seed、数据摘要、split hash 和许可证；
+   - 为未授权 private query 冻结稳定拒答或公开范围回答，不把随机退化当作保护目标。
 
-3. **训练收敛性？**
-   - 软路由和硬路由的切换是否影响性能？
-   - 需要在 Phase 2 中实验验证
+3. **能力边界如何评估？**
+   - protected direct-reference 等价性、public utility、private refusal rate、tool schema validity；
+   - TM-API、TM-REP、TM-CP 下的 probe AUC、有限预算恢复率和多 seed 区间；
+   - P0 对照是否完成：同模型 early-exit/full、粒度/容量对照、前缀数据隔离基线。
 
-4. **数据集选择策略？** [NEW]
-   - **Phase 1-3（架构、训练与 CIFAR-10 评估原型）**：CIFAR-10（10→2 类）
-     - 优势：快速迭代；正式耗时以当前硬件 smoke benchmark 为准
-     - 劣势：能力差距不够显著
-   - **Phase 4（能力分级扩展）**：CIFAR-100（100→20 类）
-     - 优势：能力差距显著，有自带超类
-     - 劣势：训练时间需要在 Phase 4 资源评估后确定
-   - **Phase 5（可选）**：ImageNet（1000→100 类）
-     - 优势：最强说服力
-     - 劣势：成本高，需要多 GPU
+4. **Phase 4 是否需要执行兼容性 smoke test？**
+   - 默认不执行 CIFAR-100 三 seed 正式实验；
+   - 若 Transformer 资源暂不可用，可执行一个 seed 或短训练，只检查 fine/coarse labels、head
+     参数化、evaluator、zero-call 和版本化 response schema；
+   - smoke test 结果不用于 C-012 正向结论或“真实能力隔离”主张。
 
-5. **多级能力分级的必要性？**
-   - 是否需要展示 3 级能力分级（100→20→10 类）？
-   - 还是 2 级分级（100→20 类）已经足够？
-   - 取决于 Phase 2 的实验结果和审稿人反馈
+5. **何时扩展 Phase 6？**
+   - 只有 Phase 5 最小原型闭合并完成泄漏/恢复分析后，才评估 MoE、sandbox tool calling、
+     外部 benchmark、更大开源底座或 ImageNet；
+   - 不把多级 Gate 或更大数据集规模本身视为安全证据。
 
 ---
 
@@ -717,28 +719,32 @@ C-003、C-006、C-011 与 C-013 的 satisfied 状态均限定于可信进程内�
 
 ### 当前阶段风险
 
-1. **LWE 神经编译可行性** [NEW RISK]：
-   - LWE 验证是非线性操作（范数 + 阈值判断）
-   - 训练时的软化版本（sigmoid）是否能保持语义一致性？
-   - 推理时的硬阈值是否会导致梯度消失问题？
-   - **缓解措施**：使用 temperature 参数控制软化程度，逐步退火
+1. **T0 架构冻结风险** [NEW RISK]：
+   - early-exit LM head、Gate cut、KV cache 和每请求一次 route 的组合需要独立设计；
+   - 现有 CIFAR trainer、`InferenceOutput` 和 response envelope 不能直接平移；
+   - **缓解措施**：先冻结最小 decoder-only 原型和版本化输出 schema，再由用户指定实现者。
 
-2. **训练收敛**：软路由 → 硬路由切换可能导致性能下降
+2. **Transformer 训练收敛风险** [NEW RISK]：
+   - Stage A/B/C 的软路由、硬路由和抑制损失可能导致 protected utility 下降或 public 能力不稳定；
+   - **缓解措施**：只用 validation 选择超参数和 checkpoint，冻结 direct protected reference，
+     失败时记录负面结果，不根据 test 指标回调训练配置。
 
-3. **能力分级效果**：Public head 能力是否真的弱于 protected head
-   - **CIFAR-10 风险**：10→2 类的差距可能不够显著（都很容易）
-   - **缓解措施**：Phase 2 先建立 CIFAR-10 训练基线，Phase 4 再使用 CIFAR-100（100→20 类）验证更明显的能力分级
+3. **能力泄漏风险** [NEW RISK]：
+   - shared prefix 可能线性编码或通过公开输出泄漏 private knowledge；
+   - public 路径可能通过有限样本微调或蒸馏恢复 protected 能力；
+   - **缓解措施**：使用实体隔离的合成数据，分别在 TM-API/TM-REP/TM-CP 下报告 probe、恢复预算和
+     前缀数据隔离基线，不将“恢复率低”写成密码学安全。
 
-4. **PyTorch 与 NumPy 一致性** [NEW RISK]：
-   - Gate Layer 使用 PyTorch 实现 LWE 验证
-   - 必须与 NumPy 版本的 `V_ref` 差分测试通过
-   - 浮点精度、广播规则可能导致细微差异
+4. **路由与语义一致性风险** [NEW RISK]：
+   - valid/invalid credential、Gate decision、public refusal 和 protected direct-reference 可能
+     在批处理、生成停止或异常路径下产生不一致；
+   - **缓解措施**：每请求固定 route，验证 protected zero-call、direct 等价、拒答语义和 fail-closed；
+     toy LWE 判定继续与 `V_ref()` 做差分测试。
 
-5. **数据集规模权衡** [NEW RISK]：
-   - CIFAR-10：快但能力差距小
-   - CIFAR-100：平衡点（推荐）
-   - ImageNet：成本高，可能在原型阶段过早
-   - **策略**：渐进式实验（10→100→1000）
+5. **数据与资源风险** [NEW RISK]：
+   - 合成 private 数据污染、外部 benchmark 许可证、tokenizer 选择和 0.6B 显存估计均可能影响复现；
+   - **缓解措施**：最小原型先采用项目自建数据并记录 seed/hash，显存和吞吐以 smoke benchmark 为准，
+     MoE、tool calling、更大底座和 ImageNet 延后到 Phase 6 重新评估。
 
 ### 当前明确不主张的能力
 
@@ -747,7 +753,7 @@ C-003、C-006、C-011 与 C-013 的 satisfied 状态均限定于可信进程内�
 - **密码学安全性**：toy LWE-inspired 关系无安全归约，可被最小二乘伪造；
 - **生产部署安全**：研究原型；Phase 3.6 仅实现可信进程内 response envelope，不包含网络 wire schema、认证、传输安全或部署旁路隔离；
 - **TEE/安全启动与侧信道防护**：不在当前主线；
-- **ImageNet 结果**：Phase 5 可选，尚未开始。
+- **Phase 5/6 Transformer、MoE、tool calling 和 ImageNet 结果**：尚未开始；不得以设计方案代替实验结果。
 
 ---
 
@@ -809,7 +815,7 @@ pytest tests/v2/test_gate_layer.py -v --cov=src/can/v2/layers --cov-config=.cove
 
 ---
 
-### Gated ResNet-18 实验路线（与当前方案同步）
+### 已完成视觉路线与后续 Transformer 路线摘要
 
 #### CIFAR-10 实验（Phase 2-3 原型验证）
 - 训练状态：Phase 2 真实 CIFAR-10 三阶段训练已完成，三个 seed（20260824/20260825/20260826）均有独立 checkpoint
@@ -818,14 +824,24 @@ pytest tests/v2/test_gate_layer.py -v --cov=src/can/v2/layers --cov-config=.cove
 - Logits 等价性与 latency：三个 seed 的 reference-routing allclose 和 prediction indices exact 均通过；latency 已测量
 - 选择规则：只使用 validation 指标选择 checkpoint，冻结后再评估官方 test set
 
-#### CIFAR-100 实验（Phase 4 能力分级扩展）
-- 状态：尚未开始，依赖 CIFAR-10 Phase 2-3 验证完成
-- 任务：100 类 protected → 20 类超类 public
-- 目标：验证比 CIFAR-10 更明显的能力分级；具体准确率不预先宣称
+#### CIFAR-100 兼容性检查（Phase 4 optional）
+- 状态：未开始；不安排三 seed 正式训练，不作为 C-012 主结论
+- 可选任务：官方 fine/coarse labels、head 参数化、evaluator、zero-call 和版本化 response schema 的
+  一个 seed 或短训练 smoke test
+- 结果定位：工程兼容性/附录，不证明真实能力隔离或密码学安全
 
-#### ImageNet 实验（Phase 5 可选）
+#### 小型 Transformer 能力分级（Phase 5 主线）
+- 状态：T0 设计审阅中，尚未开始代码实现
+- 任务：同 tokenizer/vocabulary/prompt 的 public early-exit 与 protected full-path；Gate 位于计算图中间，
+  每条生成序列只提交一次 credential route
+- 数据：项目自建、实体隔离的 public/private/refusal 合成数据；L2 工具能力暂不纳入最小原型
+- 验收：protected direct-reference 等价性、public utility、private refusal rate、probe AUC、预算化
+  恢复曲线、zero-call、延迟/吞吐和 P0 对照
+- 威胁模型：分别标记 TM-API、TM-REP、TM-CP；TM-WB 不主张抗性
+
+#### MoE、工具调用、外部 benchmark 与 ImageNet（Phase 6 optional）
 - 状态：当前路线不执行
-- 触发条件：CIFAR-100 结果和资源评估完成后重新审议
+- 触发条件：Phase 5 最小原型闭合并完成泄漏/恢复分析后重新评估；规模扩大本身不是安全证据
 
 ---
 
@@ -930,15 +946,17 @@ Scope: Research prototype, white-box defense out of scope
 
 **数据集选择策略**：
 - **Phase 1-2**：CIFAR-10（架构与训练原型，10→2 类）
-- **Phase 4**：CIFAR-100（能力分级扩展，100→20 类，推荐用于论文）
-- **Phase 5**：ImageNet（可选，大规模验证，1000→100 类，成本高）
+- **Phase 4**：CIFAR-100 兼容性 smoke test（可选，100→20 类，不承担能力隔离主结论）
+- **Phase 5**：小型 decoder-only Transformer（当前主线，同 vocabulary/prompt 的能力分级与泄漏评估）
+- **Phase 6**：MoE、工具调用、外部 benchmark、较大底座或 ImageNet（可选，Phase 5 后再评估）
 
 **为什么选择这个顺序**：
 1. CIFAR-10 快速验证架构可行性（1-2 天训练）
-2. CIFAR-100 展示显著能力差距（自带超类，无需手动映射）
-3. ImageNet 仅在前两者成功后考虑（论文投稿前）
+2. Phase 4 仅作为低成本兼容性检查，不承担同词表能力分级或泄漏结论
+3. Phase 5 先闭合最小 Transformer；Phase 6 的 MoE、工具调用和 ImageNet 仅在结果与资源允许时考虑
 
 **能力差距对比**：
 - CIFAR-10：10 类(92%) → 2 类(65%)，差距 27%，但绝对类别数少
-- CIFAR-100：100 类(75%) → 20 类(55%)，差距 20%，但类别数差距 5 倍，更有说服力
-- ImageNet：1000 类(76%) → 100 类(50%)，差距最大，但训练成本高
+- CIFAR-100：仅作为可选 `100 → 20` 兼容性 smoke test，不预设准确率或能力差距结论
+- Transformer：使用同 vocabulary、同 prompt 和同输出 schema，重点报告 utility、拒答、泄漏与恢复率
+- ImageNet：归入 Phase 6 optional，不预设需要，也不把类别规模当作安全证据

@@ -125,6 +125,7 @@ class LWEVerifier(nn.Module):
         self.error_threshold = _validate_positive_finite(
             params.error_threshold, "error_threshold"
         )
+        self.params = params
         self.n = params.n
         self.m = params.m
 

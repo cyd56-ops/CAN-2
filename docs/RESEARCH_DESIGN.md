@@ -91,7 +91,9 @@ untrusted input
 
 | 标签 | 攻击者能力 | 说明 |
 | --- | --- | --- |
-| `TM-API` | 持有 API 访问权，可任意构造图像与 credential；**不持有权重**，不能修改进程内存或计算图 | Phase 1-3 的实际威胁模型 |
+| `TM-API` | 持有 API 访问权，可任意构造模型输入与 credential；**不持有权重**，不能修改进程内存或计算图 | Phase 1-3 以及 Phase 5 服务入口的黑盒威胁模型 |
+| `TM-REP` | 仅在受信评估环境中取得冻结 checkpoint 的指定中间表示样本；不能修改权重、运行时或直接调用 protected 路径 | Phase 5 表示泄漏探针的实验模型；不是对外部署接口 |
+| `TM-CP` | 取得公开分发的 checkpoint 文件，并在预注册的离线数据、步骤和计算预算内训练恢复模型；不获得训练密钥、服务端运行时或内部调用权限 | Phase 5 checkpoint 恢复实验；若可插 hook、改运行时或直接调用内部路径则升级为 `TM-WB` |
 | `TM-WB` | 持有 checkpoint 与运行时，可插 hook、改张量、直接调用内部方法 | **当前不主张任何抗性** |
 | `TM-NA` | 与攻击者无关的实现正确性或工程属性 | 不承担安全语义 |
 
@@ -117,6 +119,11 @@ untrusted input
 | C-013 | 服务层 response envelope 不向调用方泄露额外验证证据或内部路由证据 | `TM-API` | envelope 实现 + 脱敏测试：剥离 `decision`（含 `gate_signal`、`evidence.error_norm`、`reason_code`、`verified`、`indices`）；每样本一条记录，字段集合与固定概率 shape 完全一致；`capability_level`、分类 probabilities 及其固定 10 槽位属于预期公开的能力/架构可观察性，不视为额外 credential 验证证据 | unit | **satisfied（可信进程内适配入口）**：30 项 Phase 3.6 专项测试、service 98% 行覆盖率；正常与错误返回均不暴露内部证据或异常链。明确接受 10 槽位结构可观察性，不主张隐藏类别规模、模型探测面、同进程旁路或网络 wire schema 安全 |
 | C-014 | protected 路径能力显著高于同构无 Gate ResNet-18 baseline（能力分级未以牺牲绝对性能换取） | `TM-API` | 独立训练的 no-Gate 同构 baseline + test split 对照 | none | **pending（未来消融实验）**：仓库中**不存在**独立训练的 no-Gate baseline，需一次完整训练。**与 Phase 2 配置中的 `Stage C protected baseline 最大允许下降 0.03` 无关** —— 后者的 baseline 指 Stage A protected accuracy，是已实现的 fail-fast 约束 |
 | C-012 | 能力差距在类别数更多的任务上更显著 | `TM-API` | CIFAR-100（100→20）与 CIFAR-10（10→2）对照实验 | none | **pending**（Phase 4；当前不预先宣称具体数值） |
+| C-015 | Phase 5 Transformer 的 Gate 判决只依赖规范化 credential 与冻结的 LWE 公共参数；prompt、token 和 hidden state 不改变接受集合 | `TM-NA` | reference verifier 差分测试、hidden-state/文本扰动不变性测试、跨 Stage FAR/FRR 配置回归 | unit + analytic | **pending（Phase 5）**：设计已要求 hidden state 只能被 gate signal 门控，尚无实现证据；不得用 CIFAR 的 C-005 代替 |
+| C-016 | Phase 5 的 valid credential 获得达到绝对下限的 protected 能力，invalid credential 获得达到门槛的 public 能力并对 private query 稳定拒答或限定公开范围 | `TM-API` | T-pretrain go/no-go；3 seed test 的 protected/public 规范化答案 exact match、token accuracy、private refusal 与 public-scope compliance；服务 schema 测试 | exp-val + exp-test + unit | **pending（Phase 5）**：validation 门槛须在 test 前冻结；direct-reference 等价性不能替代 protected utility 绝对下限 |
+| C-017 | mixed 自回归生成中每条序列只提交一次 route，invalid 序列对 protected blocks 为 zero-call，稀疏索引与各分支 KV-cache 无串扰 | `TM-NA` | routed/reference 逐 token 对照、KV-cache 长度与索引检查、全 valid/invalid/mixed 和不同停止长度测试 | unit | **pending（Phase 5）** |
+| C-018 | 给定指定表示层、训练样本数、probe 类别和实体切分，shared prefix 对 private scope 的可探测性可由方向无关的 `max(AUC, 1-AUC)` 量化 | `TM-REP` | 预注册 probe、实体隔离 train/test、随机标签与多数类基线、3 seed AUC/置信区间 | exp-test | **pending（Phase 5）**：AUC 是泄漏测量，不等于攻击成功率或 TM-API 保证 |
+| C-019 | 在预注册 checkpoint、离线数据、优化步骤和计算预算下，public 能力对 protected 能力的恢复曲线可复现 | `TM-CP` | 每个预算点的恢复率、计算/数据预算、baseline、3 seed 区间与失败运行 | exp-test | **pending（Phase 5）**：只描述受限恢复实验，不声称 checkpoint 机密性或 TM-WB 抗性 |
 
 > **术语约束**：本项目的 Gate Layer 应表述为**固定的 toy LWE-inspired 关系验证门** ——
 > 它判定调用方是否持有满足 `‖b − As‖ < τ` 的向量。**不得**称为"密码学验证门"或
@@ -135,6 +142,8 @@ untrusted input
 6. "baseline" 一词在本项目有两个互不相关的含义，禁止混用：
    `stage_a_reference`（Stage A protected accuracy，Phase 2 已实现的 fail-fast 约束）
    与 `no_gate_ablation`（独立训练的无 Gate 同构模型，C-014，尚不存在）。
+7. Phase 5 的 C-015 至 C-019 均为新路线的 `pending` 主张；不得用 CIFAR 的 C-005/C-006 或设计文档本身将其标记为 satisfied。
+8. `TM-CP` 只适用于预注册、受限的离线 checkpoint 恢复实验；一旦允许修改运行时、插 hook 或直接执行 protected 路径，必须按 `TM-WB` 报告并明确当前不主张抗性。
 
 ## 8. Related work and paper positioning
 

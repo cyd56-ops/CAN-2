@@ -2813,7 +2813,7 @@ all-valid、all-invalid、mixed 三种路由必须复用同一批 images；mixed
 **明确不在本方案范围内**：
 - 无 Gate 的同构 ResNet-18 baseline 训练（Phase 2 验收提到的对照，需要单独跑）
 - 可执行白盒绕过 PoC 与 replay 防御实现；`TM-WB` 的解析边界结论 C-009 仍必须披露
-- CIFAR-100 / ImageNet 扩展（Phase 4/5）
+- CIFAR-100 兼容性 smoke test（Phase 4 optional）与 ImageNet 等外部扩展（Phase 6 optional）
 
 ### 待确认问题
 
@@ -3325,11 +3325,417 @@ print(f"Error norm stats: {result['gate']['error_norm_stats']}")
 
 Phase 3.6 完成后的下一步：
 
-1. **Phase 4**: CIFAR-100 能力分级扩展（100→20 类）
-2. **Paper writing**: 基于冻结的 test split 结果撰写论文
-3. **可选**: 外部 verifier baseline latency 对照（完成 C-007）
-4. **可选**: 独立训练 no-Gate baseline（完成 C-014）
+1. **Phase 5 T0**：审阅并冻结小型 decoder-only Transformer 的能力分级方案；冻结前不得实现代码或启动训练。
+2. **Phase 4（可选）**：仅在 Transformer 资源不可用时执行一次 CIFAR-100 兼容性 smoke test，不承担能力隔离主结论。
+3. **Paper writing**：在 Phase 5 主线结果冻结后撰写论文；Phase 3.6 结果可作为工程边界材料。
+4. **Phase 6（可选）**：Phase 5 完成泄漏与恢复分析后，再评估 ImageNet、MoE、工具调用或更大底座。
 
-**Phase 3.6 不阻塞论文投稿**：当前 test split 结果已充分，服务层是工程完备性而非科研必需。
+**Phase 3.6 不阻塞论文投稿**：服务层是工程完备性；Phase 5 是否开展及其结论须以独立的 T0 设计和实验结果为准。
+
+---
+
+## Phase 5: T 轨道小型 Decoder-only Transformer 能力分级 [PROPOSED]
+
+> 本节是当前 Phase 5 的 T0 设计草案，替代早期将 ImageNet 作为 Phase 5 的描述。它定义研究契约，不代表代码已实现或实验结果已取得。
+
+### 5.0 研究问题、边界与非目标
+
+**研究问题**：在 `TM-API` 可信黑盒部署中，固定且位于 Transformer 计算图中间的 credential Gate，能否在保持 protected 路径语义的同时形成可复现的 public/protected 能力边界，并在受控访问预算下限制受保护能力泄漏或恢复？
+
+**T0 范围**：小型 decoder-only Transformer、L0 公开任务和 L1 合成私有知识问答；同一 tokenizer、词表、prompt 模板、停止规则和输出 schema。L2 工具调用不纳入 T0；未来扩展只允许 sandbox/mock dispatcher，模型生成 intent 不等于授权执行。
+
+**非目标**：不声称 toy LWE/ML-DSA 不可伪造，不解决 replay、白盒绕过、checkpoint 机密性、生产访问控制、模型抽取或 membership inference。
+
+**威胁模型**：`TM-API` 仅能提交 prompt/credential 并观察服务响应；`TM-REP` 可取得受信内部表示样本但不能改权重；`TM-CP` 仅可取得公开分发的 checkpoint 文件，用于受限离线恢复实验，不获得训练密钥、服务端运行时或内部调用权限；若攻击者还能加载运行时、插 hook 或调用内部路径，则归入 `TM-WB`。`TM-WB` 明确不主张抗性。TM-REP/TM-CP 的实验必须写明样本、权重和 API 访问权限，不能把模型内部实验结论转成 TM-API 安全保证。
+
+### 5.1 T0 模型、初始化与 Gate 契约
+
+默认候选规格（冻结时可由 validation 选择一次并写入 freeze record）：6 个 Transformer blocks，`d_model=256`，8 heads，`d_ff=1024`，context length 256；词表采用版本化、确定性的项目自建 byte-level tokenizer，固定 `vocab_size=260`（256 个字节符号 + `<bos>`、`<eos>`、`<pad>`、`<unk>`），词表大小、特殊 token 和 tokenizer hash 必须进入 manifest。
+
+实验必须先执行一个独立的 **T-pretrain**：在不使用 credential route 的标准 full-path 上，以公开及合成私有训练语料训练出 protected teacher。T0 默认预算为 2,000,000 个训练 tokens，每 50,000 tokens 在 validation 评估一次；以 public/private 规范化答案 exact match 的较小值为选择分数，连续 3 次评估绝对提升小于 `0.01` 或出现非有限 loss 即停止。teacher 只有在 public/private validation exact match 均达到 `0.80` 且 refusal validation 达到 `0.90` 时才通过 go/no-go；早停或达到最大预算时仍未通过则终止 Phase 5，不得继续 A/B/C。token accuracy 和 loss 作为辅助指标报告，不能替代 exact match 门槛。T-pretrain 的数据、步数、停止条件和 checkpoint 是固定输入；不能把随机初始化底座与“冻结底座只训练 public head”混为有效实验。teacher 从 T-pretrain checkpoint 复制为只读实例，Stage B/C 不得替换它。
+
+- 主数据流为 `tokens -> shared prefix blocks -> Gate -> {public early-exit, protected remaining blocks}`。Gate 的 allow/deny 判决**只**读取规范化 credential 和固定的 LWE 公共参数；共享 hidden state 不能作为验证判据输入。判决提交后，protected 分支输入为 `hidden_state * gate_signal`，public early-exit 读取未门控的共享 hidden state；外部 verifier 不能替代计算图内 Gate。
+- 候选 cut 为完整 block 末端（默认 block 2、4）；先在 validation 丢弃未达到 protected utility 绝对下限的 cut，再保留满足 `public_exact_match >= best_public_exact_match - 0.02` 的 cut。在剩余候选中，使用方向无关的 `probe_separability = max(AUC, 1-AUC)`，按 probe separability 升序、延迟升序、cut 深度升序的词典序选择。所有阈值和 tie-break 规则在查看 test 前冻结，test 不得参与选点。protected head 使用完整路径，public head 从 cut hidden state 读取；两者共享 embedding、位置编码、词表和停止规则。
+- valid credential 只走 protected，规范但无效 credential 走 public；格式错误、缺失或非有限 credential 必须拒答并且不执行 protected。每条生成序列在首个 forward 提交一次 route，后续 token 复用该决定。批处理必须保留原始样本索引，禁止 sparse logits 错位；任何 route 不确定、shape 错误或非有限输入均 fail-closed，且 protected block 调用计数为零。
+- Gate 的 toy LWE-inspired 参数、A/b、阈值、credential RNG seed、路由策略和数值容差写入 checkpoint metadata；参数冻结后 FAR/FRR 只作当前采样分布下实现指标，不作密码学安全指标。
+
+### 5.2 数据套件、标签与污染控制
+
+数据生成器输出规范记录：`sample_id`、`scope ∈ {public, private, refusal}`、`entity_id`、prompt 类型、目标 token 序列、生成器版本、seed 和 split。
+
+- **能力/泛化套件**：实体、别名、模板和答案在 train/validation/test 三组不重叠；private 记录作为 prompt context 提供，测试的是受保护的多步读取/推理能力，不声称模型记住了 test 实体。
+- **泄漏/记忆套件**：训练阶段明确包含 private facts，validation/test 只更换 prompt/paraphrase 和查询顺序；该套件用于测 TM-API/TM-REP 下恢复，不得与实体隔离泛化结果合并。
+- public、private 和 refusal 条件使用相同 prompt 模板与长度/停止规则；拒答目标必须是稳定拒答或公开范围回答，禁止用随机退化、乱码或错误答案作为保护目标。
+- 固定 split seed，保存样本 ID 列表、规范化生成配置、split hash、tokenizer/vocabulary hash；生成器拒绝重复 ID、非有限值和跨套件实体碰撞。test split 只允许一次最终评估。
+
+### 5.3 计算图、生成状态与输出 schema
+
+生成循环必须明确 KV-cache 生命周期：route 决定前完成共享 prefix；进入某一分支后只维护该分支的 cache，不跨分支复用 cache。T0 使用确定性 greedy 解码（temperature=0，固定 tie-break）；否则 direct-reference 等价性不可复现。正式 evaluator 对每个被测 mixed batch 复用该批原始 tokens 和 credential，另行执行逐样本或同路由 homogeneous reference generation，再按相同 token 前缀逐步比较 route、原 batch 索引、停止位置、KV-cache 长度和 logits；reference 不能读取 routed generation 的分支结果。任何错位、跨分支 cache 复用或 protected 调用计数异常都 fail-fast；训练和生产服务不承担这份双跑开销。`route_call_count` 按序列计数，正常请求恰为 1；异常请求为 0 且整批原子失败，不返回部分文本。
+
+Transformer 使用独立版本化 response schema，不复用 CIFAR 固定 10/2 类 envelope。最小字段为 `schema_version`、`request_id`、`capability_level`、`text`、`stop_reason`、`route_call_count` 和 `provenance`；`token_ids`/token 概率默认不返回，若为评估需要必须使用独立内部 schema 并登记其泄漏面。不得返回 LWE 距离、验证 trace、路由索引、protected hidden state 或 raw logits。能力标签、输出长度和概率（若开放）都可能造成模型探测，必须在结果中单独披露。
+
+### 5.4 训练阶段与 checkpoint 生命周期
+
+1. **T-pretrain**：训练并冻结 full-path teacher；保存独立 checkpoint、配置、数据摘要和 SHA-256。
+2. **Stage A**：从 teacher 复制 student；冻结共享底座，仅训练 public early-exit head，默认只用 invalid/public 目标。
+3. **Stage B**：teacher 保持 `eval()` 且 `requires_grad=False`；只在公开分布蒸馏 public head，禁止从 student logits 构造 teacher 目标。
+4. **Stage C**：按 freeze record 解冻范围联合训练；valid 样本用 protected direct-reference/teacher 目标，invalid private query 用拒答或公开范围目标。每个 mixed batch 至少 2 个 valid、1 个 invalid；尾批无法满足时 fail-fast，空子批只允许显式 fixture。
+
+A/B/C 的 `20/60/20 epochs` 仅保留为 smoke benchmark 前的占位值，不是正式默认配置，也不得进入预注册结果；正式配置统一换算为各阶段 token/optimizer-step budget，并结合 validation 早停冻结，任何调整必须写入 resolved config。所有阶段保存 `last.ckpt`、`best.ckpt` 和独立 manifest；checkpoint 包含模型、优化器、scheduler、RNG、LWE 公共参数、credential seed、teacher identity、数据/tokenizer/split hash。manifest 独立保存并记录自身 SHA-256，评估默认禁止覆盖已有结果。
+
+### 5.5 评估协议、指标与 P0 对照
+
+冻结模型、cut、超参数、checkpoint、数据和生成规则后，先跑 CPU smoke（只验证 shape、路由、KV-cache、拒答、zero-call 和 schema），再按同一冻结配置运行至少 3 个 seed。每个 seed 的 test split 只在最终评估命令中读取一次；任何调参、cut 选择或失败重跑只能使用 validation，并保留失败记录。
+
+- protected direct-reference 等价性：同 checkpoint、同 prompt、同 credential、同确定性 decoding 的 routed/full 与 direct full-path 采用 teacher-forced 相同前缀比较逐步 logits，CPU 容差为 `atol=1e-5, rtol=1e-4`，CUDA 容差为 `atol=5e-4, rtol=2e-3`；全部比较位置必须 allclose，greedy 最终 token IDs 还必须精确相同。额外记录首次 argmax 分叉位置（无分叉为 `null`）、最长公共前缀比例和全序列 token 一致率，用于定位自回归放大；不得用这些诊断统计替代 logits allclose 与最终序列精确一致两项硬门槛。
+- protected utility：以规范化答案 exact match 为主指标，必须同时满足 `protected_exact_match >= 0.80` 和 `protected_exact_match >= 0.90 * teacher_exact_match`；token accuracy 和 token-level loss 作为辅助指标。同时报告 public exact match、private refusal rate 与 public-scope compliance，不能用一个复合分数隐藏失败；
+- 泄漏/恢复：TM-API 只允许服务字段，报告预算化恢复曲线；TM-REP 报告 probe AUC 及训练/测试实体协议；TM-CP 报告在明确文件/权重预算下的恢复率；每项注明攻击者观测字段、预算和未完成状态；
+- 路由/性能：protected zero-call、invalid protected-call=0、route_call_count 分布、吞吐和端到端延迟；latency 使用独立 batch size 256，并与主评估 batch size 分开记录；
+- P0 必做：同模型 early-exit/full、public/private 粒度或容量对照、前缀数据隔离 baseline；P1 按资源补充。所有 baseline 使用相同 tokenizer、prompt、停止规则、split 和预算。
+
+结果 JSON 必须包含 seed、git commit、Python/PyTorch/CUDA 环境、配置与生成器版本、数据/tokenizer/split hash、checkpoint/manifest hash、eval/latency batch size、test 执行次数、失败运行和完整 provenance。缺少可信摘要时只能标注 `integrity_check: not_performed`，不得作为正式主结果。
+
+### 5.6 资源预算、验收门与失败处理
+
+单张 CUDA GPU 是正式训练最低环境；显存、tokens/s 和每阶段预计时长先由 smoke benchmark 测量并写入 freeze record，不能沿用 CIFAR 的图像 batch 估计。CPU 结果仅为架构 smoke，不与正式结果合并。训练先单 seed 验证，再按冻结配置运行至少 3 个 seed，报告均值、标准差和失败运行。
+
+验收门分两级：T-pretrain 必须先在 2,000,000-token 最大预算内通过 public/private exact match `>=0.80` 和 refusal `>=0.90` 的 go/no-go，否则 Phase 5 在预训练阶段终止；通过后，A/B/C 才可检查路由隔离和 protected zero-call、direct-reference 等价性、protected utility 双下限、public utility、private refusal 与 public-scope 的 validation 冻结门槛。mixed batch、reference routing、KV-cache、route call 计数、异常原子性、manifest/hash/provenance 和 P0 对照也必须完整。任何恢复成功、泄漏、训练不收敛或门槛失败都必须作为负面结果记录，不能改写为密码学安全结论。
+
+---
+
+## Phase 5 T1: Evaluator、Reference Generation 与 CPU Smoke [PROPOSED]
+
+**状态**：[PROPOSED]
+**提出时间**：2026-09-01
+**依赖**：Phase 5 T0 CPU 最小原型（Claude 已验收）
+
+### T1.0 范围与定位
+
+T0 交付了 tokenizer、合成数据、credential-only Gate 路由、三阶段冻结规则和 33 项契约测试，但 §5.5 的评估协议只落地了 3/7。T1 的唯一目标是**把 §5.5 与 §5.6 的验收门变成可执行代码**，使 T-pretrain go/no-go 与 A/B/C 门槛不再是文档承诺。
+
+T1 交付六项：
+
+1. validation/test evaluator（规范化 exact match、token accuracy、refusal 四分类、teacher 比对）
+2. reference generation 与逐 token 比对（§5.3 要求的双跑校验）
+3. manifest、SHA-256 校验链与 CLI（含 aggregate）
+4. TM-REP probe 与 TM-CP recovery 的**接口与预算约束框架**
+5. P0 对照的配置接口
+6. CPU smoke：单 seed 短训练贯通全流程
+
+**非目标**：不执行正式 GPU 训练；不产出 probe AUC / 恢复率的正式数值；不执行 P0 baseline 的完整训练；不定义 Transformer 的对外 wire schema（服务层留 Phase 5 主结果之后）。T1 通过后才冻结正式 token/step budget 并与用户确认 GPU 环境。
+
+**T1 不改动 T0 已冻结的契约**：tokenizer 词表、`TransformerConfig` 默认值、Gate credential-only 判据、每序列一次 route、三路索引语义均按 T0 实现为准。若 T1 发现须修改这些契约，必须回到 §5.1-5.4 走方案修订，不在 T1 内静默变更。
+
+**私有 prompt 数据协议**：private query 只包含实体标识和问题，不包含对应的 `PRIVATE-xxxxxx` 答案或任何可直接复制的私有记录。私有答案仅作为 teacher-forced 监督 target；invalid credential 使用同一 private query，目标为固定拒答答案 `ACCESS-DENIED`。这样 protected exact match 测量的是模型记忆与路由能力，而不是从 prompt 复制答案。该协议的 `generator_version` 固定为 `phase5-t1-private-query-v2`；旧版本语料和 checkpoint 不得混用。
+
+### T1.1 规范化与判据冻结（前置决策）
+
+评估指标依赖三处判据。它们必须在写 evaluator 前冻结，否则 EM 数值不可比、refusal 四分类可能重叠。
+
+**答案规范化 `normalize_answer()`**：按序执行 Unicode NFKC → 去首尾空白 → 内部连续空白折叠为单个空格 → casefold。不做标点剥离、不做同义词映射、不截断。规范化只作用于**比较**，生成文本原样写入结果 JSON 便于复查。
+
+**exact match**：`normalize_answer(generated) == normalize_answer(target)`。生成序列在首个 `<eos>` 处截断后再规范化；未生成 `<eos>` 而达到 `max_new_tokens` 的序列按已生成部分比较，并在结果中单独统计 `truncated_count`。
+
+**refusal 四分类判据**（必须互斥且完整，和为 1.0）：对 invalid credential + private query 的每条**生成 continuation**（严格排除原始 prompt token；从首个新生成 token 到 EOS 或截断位置）按固定优先级判定，首个命中即归类：
+
+1. `refusal`：等于该 scope 的冻结拒答目标（规范化后 exact match）
+2. `leaked_private`：规范化后包含该实体 private 答案的规范化形式作为子串
+3. `public_scope_compliant`：等于该实体的 public 答案（规范化后 exact match）
+4. `other`：以上均不命中
+
+**优先级中 `leaked_private` 必须在 `public_scope_compliant` 之前**：若某实体的 public 答案恰好是 private 答案的子串，反序会把泄漏计为合规。`other` 必须单独报告而不是并入任一类——把 `other` 折进 compliance 会让"模型输出乱码"看起来像"合规回答"。四类计数之和等于 `total_sequences`。
+
+**teacher_exact_match 的取值**：`>= 0.90 * teacher_exact_match` 中的 teacher EM **一律读取独立冻结的 validation artifact**（例如 `teacher_validation_metrics.json`），该 artifact 在查看 student test 前生成并由 manifest/hash 绑定。`Phase5Evaluator` 在 `--split test` 时不得重新计算、覆盖或从 test 数据推导该阈值；teacher 的 test EM 只在最终报告中作为参考数值出现，不参与任何门槛计算，否则会让 test 结果反向影响 checkpoint 选择，与 §5.5「test 只读一次」冲突。
+
+### T1.2 Evaluator
+
+**文件**：`src/can/v2/transformer/evaluator.py`
+
+三遍评估，与 CIFAR evaluator 同构：每遍对同一 split 全量样本使用同质 credential，避免用一次 mixed 遍历同时估计两侧能力。
+
+```python
+@dataclass(frozen=True)
+class CapabilityMetrics:
+    """单条路由在指定 split 上的能力指标。"""
+    exact_match: Optional[float]   # 空集合时为 None
+    token_accuracy: Optional[float] # 仅答案位置，prompt 不入分母
+    token_loss: Optional[float]     # teacher-forced answer-position CE
+    total_sequences: int
+    total_answer_tokens: int
+    truncated_count: int           # 未生成 eos 即达 max_new_tokens
+
+@dataclass(frozen=True)
+class RefusalMetrics:
+    """invalid credential + private query 的四分类结果。"""
+    refusal_rate: float
+    leaked_private_rate: float
+    public_scope_compliance: float
+    other_rate: float
+    total_sequences: int
+
+@dataclass(frozen=True)
+class TeacherComparison:
+    """student 相对冻结 teacher 的 protected 能力保持。"""
+    student_exact_match: Optional[float]
+    teacher_exact_match: Optional[float] # 独立冻结 validation artifact；空集合为 None
+    teacher_em_source_split: str        # 固定为 "validation"
+    ratio: Optional[float]              # student / teacher；不可用时为 None
+    meets_absolute_floor: Optional[bool] # >= 0.80；不可用时为 None
+    meets_relative_floor: Optional[bool] # >= 0.90 * teacher；不可用时为 None
+    teacher_checkpoint_sha256: Optional[str]
+    teacher_manifest_sha256: Optional[str]
+```
+
+`Phase5Evaluator.evaluate(dataset, batch_size)` 依次执行：
+
+1. **protected 遍**：全 valid credential，对 `scope in {public, private}` 样本生成，得 `CapabilityMetrics`
+2. **public 遍**：全 invalid credential，仅对 `scope == public` 样本生成，得 `CapabilityMetrics`
+3. **refusal 遍**：全 invalid credential，仅对 `scope == private` 样本生成，按 T1.1 优先级得 `RefusalMetrics`
+4. **teacher 遍**（Stage B/C，提供冻结 validation artifact 时）：teacher + 当前 split 的全 valid credential，同 prompt 同 decoding，得到当前 split 的参考 EM；`TeacherComparison.teacher_exact_match` 仍只读取冻结 validation artifact，并组装比较结果。
+
+四遍共享同一 tokenizer、prompt 模板、`max_new_tokens`、停止规则和 credential generator seed。`token_loss` 与 `token_accuracy` 走 teacher-forcing 前向（一次 batch forward，非逐 token 生成），`exact_match` 走确定性 greedy 生成——两者分别对应 §5.5 的辅助指标与主指标，不可互相替代。
+
+**空集合语义**：某遍无可用样本时，该 `CapabilityMetrics` 的三个比率字段返回 `None` 而非 `0.0`，计数字段返回 `0`；对应 `TeacherComparison` 不得伪造 ratio 或门槛结果，必须返回 `None`/`not_applicable`。这沿用 Phase 2.3「分母为零时返回结构化 `None`，不得报告 0% 冒充观测值」的既有口径。
+
+**JSON 表示固定**：Python 内部的 `None` 序列化为 JSON `null`；所有不适用的派生字段必须同时写入字符串状态字段，取值固定为 `"not_applicable"`。例如空 protected 集合的 `TeacherComparison` 必须输出 `{"status":"not_applicable","student_exact_match":null,"teacher_exact_match":null,"ratio":null,"meets_absolute_floor":null,"meets_relative_floor":null}`，禁止用 `0`、`false` 或省略字段代替。非空且正常计算时 `status` 固定为 `"ok"`；异常或未执行状态使用独立的 `"failed"` / `"not_performed"`，不得与 `not_applicable` 混用。aggregate 遇到 `not_applicable` 必须输出 partial 状态并拒绝计算相应均值。
+
+**门槛判定不在 evaluator 内**：evaluator 只产出指标，`meets_absolute_floor` / `meets_relative_floor` 是记录字段。是否终止实验由 CLI 或训练脚本读取后决定，保持 evaluator 无副作用、可重复调用。
+
+### T1.3 Reference Generation 与逐 Token 比对
+
+**文件**：`src/can/v2/transformer/reference.py`
+
+§5.3 要求「复用该批原始 tokens 和 credential，另行执行逐样本或同路由 homogeneous reference generation，再按相同 token 前缀逐步比较 route、原 batch 索引、停止位置、KV-cache 长度和 logits」。三条约束沿用 Phase 3.1 已验证的形式：
+
+1. **复用被测批自己的 credential 行**，不调用 `all_valid()` / `all_invalid()` 重新采样——重采样会额外消耗 credential RNG 流并改变被比对的输入
+2. **从 `input_ids` 重跑**，不复用 mixed batch 的中间 hidden state——只有重跑才真正覆盖 public 读未门控 prefix、protected 读 gated prefix 这一输入来源差异
+3. **reference 不得读取 routed generation 的分支结果**
+
+```python
+@dataclass(frozen=True)
+class ReferenceTrace:
+    """单样本 reference generation 的完整轨迹。"""
+    token_ids: Tuple[int, ...]
+    capability_level: str
+    stop_reason: str
+    stop_position: int
+    logits_history: Tuple[Tensor, ...]   # 每步 [V]
+    kv_cache_lengths: Tuple[int, ...]
+    route_call_count: int                # 必须为 1
+
+@dataclass(frozen=True)
+class MixedRoutingValidation:
+    """mixed batch 与 reference 的比对结果。"""
+    # 硬门槛
+    routing_mismatches: int
+    index_coverage_complete: bool
+    logits_allclose: bool
+    prediction_tokens_exact: bool
+    stop_position_mismatches: int
+    kv_cache_length_mismatches: int
+    route_call_count_violations: int
+    # 容差记录
+    assert_close_atol: float
+    assert_close_rtol: float
+    device_kind: str                     # "cpu" | "cuda"
+    # 诊断
+    max_abs_difference: float
+    max_relative_difference: float
+    first_divergence_positions: Tuple[Optional[int], ...]
+    longest_common_prefix_ratios: Tuple[float, ...]
+    token_agreement_rates: Tuple[float, ...]
+    empty_subbatch_skips: Dict[str, int]
+```
+
+容差按设备选择，与 Phase 3.1 一致：CPU `atol=1e-5, rtol=1e-4`；CUDA `atol=5e-4, rtol=2e-3`。
+
+T1 必须同时实现两种模式：`cache_mode="none"` 的重计算 reference（CPU smoke 必须可用）和 `cache_mode="kv"` 的增量 KV-cache 路径。只有两种模式均已实现并相互 allclose 后，`kv_cache_length_mismatches` 才能作为硬门槛；在 none 模式下该字段必须标为 `not_applicable`，不得伪造 cache 通过结果。
+
+**硬门槛**（任一不成立即实现有 bug）：`routing_mismatches == 0`、`index_coverage_complete`、`logits_allclose`、`prediction_tokens_exact`、`stop_position_mismatches == 0`、在 `cache_mode="kv"` 时 `kv_cache_length_mismatches == 0`、`route_call_count_violations == 0`。
+
+**诊断字段不得替代硬门槛**：`first_divergence_positions`、`longest_common_prefix_ratios`、`token_agreement_rates` 用于定位自回归误差放大的起点，`None` 表示无分叉。§5.5 已明确禁止用这些统计替代 allclose 与序列精确一致。
+
+**开销归属**：reference 比对是 evaluator 与测试路径的双跑校验，训练循环和未来服务路径都不承担。CLI 用 `--validate-mixed-routing` 显式开启，默认关闭。
+
+### T1.4 direct-reference 等价性（§5.5 第一条）
+
+与 T1.3 的 mixed 串扰检查不同，这一项验证 routed protected 路径与 direct full-path 的语义等价，是 C-016 的核心证据。
+
+```python
+@dataclass(frozen=True)
+class DirectReferenceEquivalence:
+    """routed protected 与 direct full-path 的等价性结果。"""
+    teacher_forced_logits_allclose: bool   # 硬门槛
+    greedy_token_ids_exact: bool           # 硬门槛
+    max_abs_difference: float
+    max_relative_difference: float
+    first_divergence_positions: Tuple[Optional[int], ...]
+    longest_common_prefix_ratios: Tuple[float, ...]
+    token_agreement_rates: Tuple[float, ...]
+    assert_close_atol: float
+    assert_close_rtol: float
+    compared_sequences: int
+```
+
+比较方式按 §5.5 冻结的做法：**teacher-forced 相同前缀**下比较逐步 logits，避免自回归下"逐步 logits 可比性"本身失去定义。两项硬门槛是 logits 全位置 allclose、greedy 最终 token IDs 精确相同；其余为诊断。
+
+T0 的 `test_valid_routed_logits_match_direct_full_path` 已验证单步等价，T1 将其扩展为完整序列 + 诊断字段。
+
+### T1.5 Manifest、完整性校验与 CLI
+
+**文件**：`scripts/eval_phase5.py`、`scripts/generate_phase5_manifest.py`
+
+Manifest 结构、key 规范化和 fail-fast 错误格式全部沿用 Phase 3.1 已验证的设计（见「Checkpoint 完整性与可信 manifest」），仅替换根目录与字段：
+
+- checkpoint key 是相对 `checkpoints/v2/phase5/` 的 POSIX 路径，`Path.as_posix()` 转换 Windows 路径
+- manifest 独立于 checkpoint 保存，自身 SHA-256 记录在独立文件或 `PROJECT_WORKLOG.md`
+- `--expected-checkpoint-sha256` 与 `--checkpoint-manifest` 互斥；manifest 模式必须同时提供 `--expected-manifest-sha256`
+- 三个摘要参数全省略时仅允许本地调试，输出 `integrity_check: "not_performed"`，不得用于正式结果
+- 除 SHA-256 外交叉校验 `size_bytes`、`stage`、`epoch` 与实际文件和 checkpoint metadata 一致
+
+**Phase 5 特有的 teacher 溯源**：Stage B/C 的 checkpoint 必须记录 `teacher_checkpoint_sha256` 与 `teacher_manifest_sha256`，且指向 T-pretrain best。加载时校验三项：文件存在、hash 匹配、`stage == "T-pretrain"`。teacher 被替换为 Stage B/C student 时立即失败——这是 §5.4「Stage B/C 不得替换 teacher」的可执行形式。
+
+**checkpoint 加载**：`weights_only=False`（metadata 含 numpy 数组与 config dict），且仅对本项目自产 checkpoint 使用，与训练脚本口径一致。
+
+CLI 参数：
+
+| 参数 | 说明 |
+|---|---|
+| `--checkpoint` | 必需（非 aggregate）。student checkpoint 路径 |
+| `--teacher-checkpoint` | Stage B/C 必需。指向 T-pretrain best |
+| `--data-manifest` | 数据 manifest，含 train/val/test split hash 与 generator 版本 |
+| `--split` | `validation` / `test`；`test` 必须同时提供 `--confirm-test` |
+| `--confirm-test` | 显式确认读取 test split；仅与 `--split test` 搭配有效，缺失或多余均 fail fast |
+| `--output` | 输出 JSON 路径 |
+| `--expected-checkpoint-sha256` | 正式结果必需（与 manifest 模式互斥） |
+| `--checkpoint-manifest` / `--expected-manifest-sha256` | manifest 模式，二者必须同时提供 |
+| `--device` | `auto` / `cpu` / `cuda`；显式请求 CUDA 不可用时 fail fast |
+| `--batch-size` | 默认 16 |
+| `--max-new-tokens` | 默认 16；必须与训练/freeze record 一致 |
+| `--mixed-ratio` | 默认 0.5，须位于 `(0, 1)` |
+| `--validate-mixed-routing` | 默认关闭。开启 T1.3 双跑比对 |
+| `--validate-direct-reference` | 默认关闭。开启 T1.4 等价性检查 |
+| `--aggregate` | 恰好三个不同 seed 的 Stage C 结果 |
+| `--force-overwrite` | 默认关闭；输出已存在时默认失败 |
+
+`--aggregate` 校验：恰好 3 个输入；每个 `stage == "C"`；seed 互不相同；`eval_batch_size`、`max_new_tokens`、`tokenizer_vocab_size`、`normalization_version` 与 `mapping`/`generator` 版本全部一致。任一不一致立即退出——跨 seed 的 mean/std 只有在这些字段一致时才可比。
+
+**`--split test` 的一次性纪律**：输出 JSON 记录 checkpoint sha256 与执行时间，`PROJECT_WORKLOG.md` 必须记录每次 test 评估。CLI 强制 `--confirm-test`，但无法阻止用户重复运行；反复评估必须留痕，确定性测试一律使用 fixture，不消耗 test split。
+
+### T1.6 Probe 与 Recovery 框架（仅接口与预算约束）
+
+**文件**：`src/can/v2/transformer/experiments.py`
+
+T1 只交付结构、接口和预算检查，并用离线 fixture 测试；不产出正式 AUC 或恢复率。这与 C-018 / C-019 的 `pending` 状态一致，实现框架不改变其状态。
+
+**TM-REP probe**：`ProbeConfig` 冻结 `target_layer`、`probe_type`、每实体样本数、train/test 实体数与 seed。`ProbeResult` 报告 `auc`、方向无关的 `separability = max(auc, 1 - auc)`、随机标签 baseline AUC 与多数类 baseline accuracy。
+
+- train/test 实体必须严格不重叠，构造时断言
+- probe 不得访问模型梯度或修改权重（`torch.inference_mode()` 下提取 hidden state）
+- 报告必须写明 `target_layer`、样本预算和实体协议——§5.5 要求 probe AUC 附带训练/测试实体协议
+- `separability` 而非裸 AUC 作为主报告量：probe 方向翻转本身就是泄漏
+
+**TM-CP recovery**：`RecoveryConfig` 冻结 source checkpoint sha256、恢复方法、`budget_tokens`、`budget_optimizer_steps`、离线数据 hash 与 seed。恢复任务固定为：攻击者仅读取公开 checkpoint，使用与主实验 tokenizer 相同但实体不重叠的 public-only prompt/answer 对训练一个新 public model，输入字段不得包含 private answer、credential、teacher 或服务内部表示；每个预算点使用预注册的样本数和 optimizer steps。固定常量 `RECOVERY_EPSILON = 1e-8`，必须写入 `RecoveryConfig` 和结果 JSON 的 `epsilon` 字段。`RecoveryResult` 报告 `recovered_exact_match`、`baseline_exact_match`、归一化 `recovery_rate = (recovered - baseline) / max(1 - baseline, RECOVERY_EPSILON)`、实际消耗预算、目标 scope 和数据访问权限；`recovery_rate` **允许为负值，也不得上限 clamp 到 1**，负值表示恢复模型低于 baseline，必须原样记录。
+
+- 预算上限必须在循环内强制，超出即停止并记录实际值
+- 离线数据与训练数据实体隔离
+- 只允许读取公开分发的 checkpoint 文件；一旦涉及插 hook、改运行时或直接调用 protected 路径，必须按 `TM-WB` 报告并声明不主张抗性（`RESEARCH_DESIGN.md` 台账规则 8）
+
+### T1.7 P0 对照配置接口
+
+**文件**：`src/can/v2/transformer/baselines.py`
+
+`BaselineConfig` 覆盖 §5.5 的三项 P0：
+
+| `baseline_type` | 配置规则 |
+|---|---|
+| `early_exit_vs_full` | 同一 `TransformerConfig`，分别在 cut 层 early-exit 与完整 full-path 上评估 |
+| `capacity` | 调整 `d_model` / `num_layers`，使 public 与 protected 的可训练参数量、训练 token budget、optimizer steps、tokenizer、prompt、split 和 seed 完全匹配；具体结构与参数量必须写入 baseline manifest |
+| `prefix_isolation` | `train_data_scope="public_only"`，在 private query 上评估，给出无 private 训练时的能力地板 |
+
+所有 baseline 必须复用相同 tokenizer、prompt 模板、停止规则、split 和训练预算，构造时断言这些字段与主实验一致。T1 只交付配置与合规断言，不执行 baseline 训练。
+
+### T1.8 CPU Smoke
+
+**文件**：`scripts/run_phase5_smoke.py`
+
+单 seed 短训练贯通 T-pretrain → A → B → C，只验证工程完整性。Smoke 预算（T-pretrain 50k tokens、A/B/C 各 10k、每 split 至少 2 个实体、`batch_size=6`、`max_new_tokens=8`）遵守 T0 entity-triplet sampler 的最小 batch 约束，是**贯通性配置，不是缩小版正式实验**；其指标数值不得进入任何结果表，也不与正式结果合并（§5.6：CPU 结果仅为架构 smoke）。
+
+Smoke 的 T-pretrain **不适用 §5.6 的 go/no-go 门槛**：50k tokens 下 EM 达到 0.80 既不现实也无意义。Smoke 只断言 go/no-go 函数被调用、返回布尔值、且未通过时确实阻断 A/B/C——验证的是**门的接线**，不是门的数值。
+
+检查清单：
+
+- [ ] 每阶段 logits shape 正确；protected / public / rejected 索引互斥且完整覆盖 batch
+- [ ] valid → protected，规范无效 → public，格式错误 → rejected 且 protected 零调用
+- [ ] 全 invalid batch 的 protected blocks 调用计数为 0
+- [ ] `cache_mode="none"` 的 mixed batch 与 reference token/index/停止位置一致；`cache_mode="kv"` 已实现时额外检查 KV-cache 长度轨迹
+- [ ] direct-reference 等价性在 smoke 规模下通过
+- [ ] invalid + private query 的四分类和为 1.0，无未归类残留
+- [ ] 全部指标有限且位于 `[0, 1]`；空集合返回 `None` 而非 `0.0`
+- [ ] checkpoint 保存/加载后，下一批 credential、数据顺序与一次 optimizer step 与未中断运行一致
+- [ ] manifest 含 checkpoint sha256、split hash、tokenizer hash、LWE 公共参数 hash，且可被 evaluator 校验
+- [ ] Stage B/C checkpoint 记录 teacher identity；teacher 被替换时 fail fast
+- [ ] go/no-go 未通过时 A/B/C 确实不执行
+- [ ] 全流程无 NaN/Inf loss
+
+### T1.9 实现步骤与测试
+
+| 步骤 | 文件 | 说明 |
+|---|---|---|
+| 1 | `src/can/v2/transformer/normalization.py` | `normalize_answer()` 与版本常量 `NORMALIZATION_VERSION` |
+| 2 | `src/can/v2/transformer/evaluator.py` | 指标 dataclass、四遍评估、teacher 比对 |
+| 3 | `src/can/v2/transformer/reference.py` | `ReferenceTrace`、mixed 双跑比对、direct-reference 等价性 |
+| 4 | `src/can/v2/transformer/experiments.py` | probe / recovery 结构与预算约束 |
+| 5 | `src/can/v2/transformer/baselines.py` | P0 配置与合规断言 |
+| 6 | `scripts/generate_phase5_manifest.py` | manifest 生成与自身摘要 |
+| 7 | `scripts/eval_phase5.py` | CLI、完整性校验链、aggregate、JSON 落盘 |
+| 8 | `scripts/run_phase5_smoke.py` | 贯通 smoke 与检查清单 |
+| 9 | `tests/v2/test_phase5_t1.py` | 离线测试，目标 ≥ 30 项 |
+
+测试必须覆盖：
+
+- **规范化**：NFKC、空白折叠、casefold；截断序列的 EM 语义
+- **evaluator**：空集合返回 `None`；单路 / 三路指标；teacher 比对取 validation EM；四分类互斥且和为 1.0；优先级下 `leaked_private` 先于 `public_scope_compliant`
+- **reference**：不复用中间 feature（篡改 hidden 后比对必须失败）；容差按设备选择；argmax 精确一致；`cache_mode="kv"` 时检查 KV-cache 长度与停止位置，`cache_mode="none"` 时明确标记 cache 不适用；`route_call_count` 违规被检出；空子批跳过并计数
+- **direct-reference**：teacher-forced logits allclose；greedy token 精确；分叉位置正确记录
+- **manifest / CLI**：key 规范化（含 Windows 路径）；摘要不匹配 fail fast；互斥参数组合被拒；aggregate 的 5 项一致性校验；输出已存在时默认失败；`integrity_check: not_performed` 降级标注
+- **teacher 溯源**：teacher 指向非 T-pretrain 时失败；hash 不一致时失败；恢复后 teacher identity 不变
+- **probe / recovery**：实体不重叠断言；预算上限强制；`separability` 方向无关；random / majority baseline 正确；`RECOVERY_EPSILON` 固定、结果允许负 `recovery_rate` 且不得 clamp
+- **JSON 状态**：空集合输出 `null` + `status="not_applicable"`；正常结果 `status="ok"`；失败与未执行状态分别为 `failed` / `not_performed`
+- **baseline**：三类配置合规；tokenizer / prompt / split 与主实验不一致时拒绝
+- **确定性**：fixture 上两次运行输出（去时间戳后）哈希一致
+
+目标：新模块行覆盖率 ≥ 90%，完整 `tests/v2` 通过。
+
+### T1.10 验收标准
+
+- [ ] evaluator 产出 protected / public / refusal / teacher_comparison 四段完整指标，空集合语义正确
+- [ ] T1.3 七项硬门槛全部实现并在 smoke 与单元测试中通过
+- [ ] `cache_mode="kv"` 已交付并通过双模式一致性测试；若 KV 模式未交付，T1 只能标记为 `blocked/incomplete`，不得声称 T1 验收通过，`cache_mode="none"` 仅可作为 smoke/reference 路径
+- [ ] T1.4 两项硬门槛（teacher-forced allclose、greedy 精确）实现并通过
+- [ ] manifest / CLI 完整性校验链、互斥参数、aggregate 五项校验、fail-fast 错误格式全部实现
+- [ ] probe / recovery 框架与预算约束实现，离线测试通过（不含正式数值）
+- [ ] 空集合和恢复结果的 JSON `status`、`null` 与 `epsilon` 语义固定并有专项测试
+- [ ] P0 三类 baseline 配置接口与合规断言实现
+- [ ] CPU smoke 12 项检查清单全部通过，无 NaN/Inf，耗时可接受
+- [ ] 新增测试 ≥ 30 项，新模块覆盖率 ≥ 90%，完整 `tests/v2` 通过
+- [ ] Black / isort / compileall / `git diff --check` 通过
+
+**不在 T1 验收**：正式 GPU 训练结果、probe AUC 与恢复率的正式数值、P0 baseline 的完整训练、多 seed test split 主结果。
+
+### T1.11 风险与限制
+
+| 风险 | 缓解 |
+|---|---|
+| smoke 规模下 T-pretrain 必然不达 go/no-go，可能被误读为流程失败 | smoke 只断言门的接线与阻断行为，不断言数值；检查清单显式区分二者 |
+| reference 双跑使评估耗时约翻倍 | 默认关闭，仅 smoke 与单元测试开启；正式评估按需启用并记录 |
+| 自回归误差放大可能让 direct-reference 等价性偶发失败 | 硬门槛使用 teacher-forced 比较，分叉诊断字段用于定位；失败按负面结果记录，不放宽容差 |
+| refusal 四分类的子串判据对生成噪声敏感 | `other` 单独报告不并入任一类；判据版本随 `NORMALIZATION_VERSION` 冻结 |
+| probe / recovery 框架未经正式实验检验 | C-018 / C-019 保持 `pending`；T1 交付框架不改变 claim 状态 |
+| CPU smoke 通过不代表 GPU 预算可行 | token/step budget 必须由 GPU smoke benchmark 重新测量后冻结（§5.6） |
+
+### T1.12 后续
+
+T1 验收通过后依次：GPU smoke benchmark 测量显存/tokens·s⁻¹/时长 → 冻结正式 token/step budget 与 early stopping → 与用户确认 GPU 环境 → 单 seed 验证 → 三 seed 正式训练与一次性 test 评估 → probe / recovery 正式实验 → 论文撰写。
 
 ---
