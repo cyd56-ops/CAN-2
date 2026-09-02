@@ -10,12 +10,15 @@ from src.can.v2.transformer import (
     ProbeConfig,
     RecoveryConfig,
     TransformerConfig,
-    compute_recovery_rate,
-    normalize_answer,
     classify_refusal,
+    compute_recovery_rate,
+    freeze_record_sha256,
+    load_freeze_record,
+    normalize_answer,
+    run_probe,
     validate_direct_reference,
     validate_generation_reference,
-    run_probe,
+    validate_runtime_against_freeze,
 )
 
 
@@ -173,3 +176,33 @@ def test_probe_rejects_single_class_training() -> None:
             [0, 1],
             ProbeConfig(target_layer=1),
         )
+
+
+def test_freeze_record_load_and_runtime_validation(tmp_path) -> None:
+    """freeze record 可读取并拒绝运行时不一致配置。"""
+    path = tmp_path / "freeze.json"
+    path.write_text(
+        '{"freeze_version":"v1","generator_version":"phase5-t1-private-query-v2","batch_size":144,"cache_mode":"kv"}',
+        encoding="utf-8",
+    )
+    record = load_freeze_record(path)
+    validate_runtime_against_freeze(record, batch_size=144, cache_mode="kv")
+    assert len(freeze_record_sha256(path)) == 64
+    with pytest.raises(ValueError):
+        validate_runtime_against_freeze(record, batch_size=192)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "{}",
+        '{"freeze_version":"v1","generator_version":"x","batch_size":5,"cache_mode":"kv"}',
+        '{"freeze_version":"v1","generator_version":"x","batch_size":6,"cache_mode":"bad"}',
+    ],
+)
+def test_freeze_record_rejects_invalid_payloads(tmp_path, payload: str) -> None:
+    """freeze record 缺字段或非法值必须 fail-fast。"""
+    path = tmp_path / "bad.json"
+    path.write_text(payload, encoding="utf-8")
+    with pytest.raises(ValueError):
+        load_freeze_record(path)

@@ -22,6 +22,11 @@ from .experiments import (
     compute_recovery_rate,
     run_probe,
 )
+from .freeze import (
+    freeze_record_sha256,
+    load_freeze_record,
+    validate_runtime_against_freeze,
+)
 from .manifest import (
     build_checkpoint_manifest,
     sha256_file,
@@ -92,6 +97,9 @@ __all__ = [
     "classify_refusal",
     "compute_recovery_rate",
     "run_probe",
+    "freeze_record_sha256",
+    "load_freeze_record",
+    "validate_runtime_against_freeze",
     "normalize_answer",
     "BaselineConfig",
     "build_checkpoint_manifest",

@@ -26,6 +26,8 @@
 
 **2026-09-01 GPU 准备**：新增 `scripts/benchmark_phase5_gpu.py`，只测量 T-pretrain 的 GPU 峰值显存、tokens/s 和单 step 时延，不读取 test split、不产生研究结果。脚本默认拒绝覆盖输出，要求 CUDA 可用；本地环境未运行该 benchmark。当前完整 `tests/v2`：248 passed。
 
+**2026-09-02 freeze record 接入**：新增 `src/can/v2/transformer/freeze.py`，统一加载、校验并计算 `freeze_record.json` SHA-256；`eval_phase5.py` 新增 `--freeze-record`、`--batch-size`、`--cache-mode`，启动时校验运行参数与冻结记录并将 freeze 路径及摘要写入结果。服务器正式 freeze record 路径为 `experiments/phase5_freeze_v1/freeze_record.json`，SHA-256 为 `8bd5694ca67a250b726e7de1a53164166ada24e27975b2c4c9f6fe0f35cf4b28`。完整 JSON 内容未同步到本地，未在此处猜测或重写字段。
+
 **2026-09-01 T1 实现记录**：修复 CPU smoke 合成样本上下文长度（`max_seq_len=256`），单步 T-pretrain 成功并生成 smoke checkpoint。新增 `reference.py`，提供 mixed batch 与逐样本 greedy generation 的确定性比较、direct-reference logits 等价性和分叉诊断；KV 模式在未实现时显式标记 `blocked`。新增 `eval_phase5.py`，可从 checkpoint metadata 重建模型并调用 evaluator；manifest 摘要校验、ROC-AUC probe 和恢复率接口已接入。CLI 默认拒绝覆盖结果，缺少可信摘要或 credential 时 fail-safe。全量 `tests/v2`：230 passed。
 
 **2026-08-27 服务器预运行记录**：seed `20260824` 的首次正式命令在尾批 reference-routing

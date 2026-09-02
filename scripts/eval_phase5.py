@@ -18,7 +18,10 @@ from src.can.v2.transformer import (
     Phase5Evaluator,
     SyntheticKnowledgeDataset,
     TransformerConfig,
+    freeze_record_sha256,
     generate_synthetic_corpus,
+    load_freeze_record,
+    validate_runtime_against_freeze,
 )
 from src.can.v2.transformer.manifest import (
     sha256_file,
@@ -50,7 +53,25 @@ def main() -> int:
     parser.add_argument("--manifest-key")
     parser.add_argument("--confirm-test", action="store_true")
     parser.add_argument("--force-overwrite", action="store_true")
+    parser.add_argument("--freeze-record", type=Path)
+    parser.add_argument("--batch-size", type=int)
+    parser.add_argument("--cache-mode", choices=("none", "kv"))
     args = parser.parse_args()
+    freeze = None
+    freeze_sha = None
+    if args.freeze_record:
+        try:
+            freeze = load_freeze_record(args.freeze_record)
+            freeze_sha = freeze_record_sha256(args.freeze_record)
+            validate_runtime_against_freeze(
+                freeze,
+                batch_size=args.batch_size,
+                max_new_tokens=args.max_new_tokens,
+                cache_mode=args.cache_mode,
+                generator_version="phase5-t1-private-query-v2",
+            )
+        except (OSError, ValueError) as exc:
+            parser.error(str(exc))
     if args.split == "test" and not args.confirm_test:
         parser.error("--split test 必须同时提供 --confirm-test")
     if args.split != "test" and args.confirm_test:
@@ -133,6 +154,8 @@ def main() -> int:
         "integrity_check": integrity,
         "checkpoint": {"path": str(args.checkpoint), "sha256": actual},
         "manifest_sha256": manifest_sha,
+        "freeze_record": str(args.freeze_record) if args.freeze_record else None,
+        "freeze_record_sha256": freeze_sha,
         "summary_path": str(args.summary) if args.summary else None,
         "confirm_test": bool(args.confirm_test),
         "capability": asdict(metrics["protected"]) if args.credential_file else None,
