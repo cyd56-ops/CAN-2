@@ -54,8 +54,13 @@ def _parse_args() -> argparse.Namespace:
 def _build_loader(seed: int, batch_size: int) -> DataLoader:
     """构造固定新数据协议的训练 DataLoader。"""
 
+    # 至少准备一个完整 batch 的 entity triplet；高 batch benchmark 不能因数据不足失败。
+    train_entities = max(24, (batch_size + 2) // 3)
     corpus = generate_synthetic_corpus(
-        seed, train_entities=24, validation_entities=2, test_entities=2
+        seed,
+        train_entities=train_entities,
+        validation_entities=2,
+        test_entities=2,
     )
     dataset = SyntheticKnowledgeDataset(
         corpus["train"], ByteTokenizer(), max_length=256
