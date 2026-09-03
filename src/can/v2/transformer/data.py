@@ -114,6 +114,66 @@ def generate_synthetic_corpus(
     return corpus
 
 
+def build_memorization_validation(
+    train_examples: Sequence[KnowledgeExample], entity_count: int
+) -> List[KnowledgeExample]:
+    """从训练实体构造未见模板的私有记忆 validation 套件。
+
+    参数:
+        train_examples: 含 public/private/refusal triplet 的训练样本。
+        entity_count: 按 entity ID 排序后选取的验证实体数量。
+
+    返回:
+        保留答案映射、但替换查询模板且标记为 validation 的样本。
+    """
+
+    if isinstance(entity_count, bool) or not isinstance(entity_count, int):
+        raise TypeError("entity_count 必须是整数")
+    by_entity: Dict[str, Dict[str, KnowledgeExample]] = {}
+    for example in train_examples:
+        if not isinstance(example, KnowledgeExample):
+            raise TypeError("train_examples 必须只包含 KnowledgeExample")
+        by_entity.setdefault(example.entity_id, {})[example.scope] = example
+    if entity_count <= 0 or entity_count > len(by_entity):
+        raise ValueError("entity_count 必须位于现有训练实体范围内")
+    if any(
+        set(rows) != {"public", "private", "refusal"} for rows in by_entity.values()
+    ):
+        raise ValueError("每个训练实体必须包含完整 triplet")
+
+    validation: List[KnowledgeExample] = []
+    for entity_id in sorted(by_entity)[:entity_count]:
+        rows = by_entity[entity_id]
+        public_code = rows["public"].answer.strip()
+        public_prompt = (
+            f"Context: {entity_id} has public code {public_code}. "
+            f"Query: Return the public code assigned to {entity_id}. Response:"
+        )
+        private_prompt = (
+            f"Query: Return the private code assigned to {entity_id}. Response:"
+        )
+        for scope, prompt in (
+            ("public", public_prompt),
+            ("private", private_prompt),
+            ("refusal", private_prompt),
+        ):
+            source = rows[scope]
+            validation.append(
+                KnowledgeExample(
+                    sample_id=f"validation-memory-{entity_id}-{scope}",
+                    scope=scope,
+                    entity_id=entity_id,
+                    prompt_type="code_lookup_paraphrase_v1",
+                    prompt=prompt,
+                    answer=source.answer,
+                    split="validation",
+                    seed=source.seed,
+                    generator_version=source.generator_version,
+                )
+            )
+    return validation
+
+
 def _validate_entity_disjoint(corpus: Mapping[str, Sequence[KnowledgeExample]]) -> None:
     """验证三个 split 的实体集合完全不重叠。"""
 
@@ -315,5 +375,6 @@ __all__ = [
     "EntityTripletBatchSampler",
     "SyntheticKnowledgeDataset",
     "collate_causal_lm_batch",
+    "build_memorization_validation",
     "generate_synthetic_corpus",
 ]

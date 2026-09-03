@@ -83,6 +83,7 @@ class Phase5Evaluator:
         teacher_validation_em: Optional[float] = None,
         teacher_checkpoint_sha256: Optional[str] = None,
         teacher_manifest_sha256: Optional[str] = None,
+        cache_mode: str = "none",
     ) -> None:
         """初始化评估器并冻结 teacher validation EM 来源。"""
 
@@ -107,6 +108,8 @@ class Phase5Evaluator:
             and not 0.0 <= float(teacher_validation_em) <= 1.0
         ):
             raise ValueError("teacher_validation_em 必须位于 [0, 1]")
+        if cache_mode not in {"none", "kv"}:
+            raise ValueError("cache_mode 必须为 none 或 kv")
         self.model = model.to(device).eval()
         self.tokenizer = tokenizer
         self.device = device
@@ -116,6 +119,7 @@ class Phase5Evaluator:
         self.teacher_validation_em = teacher_validation_em
         self.teacher_checkpoint_sha256 = teacher_checkpoint_sha256
         self.teacher_manifest_sha256 = teacher_manifest_sha256
+        self.cache_mode = cache_mode
 
     def evaluate(self, dataset: SyntheticKnowledgeDataset) -> Dict[str, object]:
         """对单一 split 生成 protected/public/refusal 指标。"""
@@ -168,7 +172,10 @@ class Phase5Evaluator:
                 )
                 credential = self._credential(valid)
                 generated = self.model.generate(
-                    prompt_tensor, credential, max_new_tokens=self.max_new_tokens
+                    prompt_tensor,
+                    credential,
+                    max_new_tokens=self.max_new_tokens,
+                    cache_mode=self.cache_mode,
                 )
                 continuation = _generation_continuation(
                     generated.token_ids[0], len(prompt), self.tokenizer.eos_token_id
@@ -239,6 +246,7 @@ class Phase5Evaluator:
                 torch.tensor([prompt], dtype=torch.long, device=self.device),
                 self._credential(False),
                 max_new_tokens=self.max_new_tokens,
+                cache_mode=self.cache_mode,
             )
             continuation = _generation_continuation(
                 generated.token_ids[0], len(prompt), self.tokenizer.eos_token_id

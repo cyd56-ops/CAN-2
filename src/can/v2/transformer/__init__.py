@@ -5,6 +5,7 @@ from .data import (
     EntityTripletBatchSampler,
     KnowledgeExample,
     SyntheticKnowledgeDataset,
+    build_memorization_validation,
     collate_causal_lm_batch,
     generate_synthetic_corpus,
 )
@@ -88,6 +89,7 @@ __all__ = [
     "TransformerInferenceOutput",
     "TransformerTrainingOutput",
     "causal_distillation_loss",
+    "build_memorization_validation",
     "collate_causal_lm_batch",
     "configure_stage",
     "freeze_teacher",

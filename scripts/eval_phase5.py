@@ -3,12 +3,17 @@
 import argparse
 import hashlib
 import json
+import sys
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 import numpy as np
 import torch
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from src.can.v2.crypto.lwe import LWEParams
 from src.can.v2.training.data import CredentialGenerator
@@ -78,6 +83,11 @@ def main() -> int:
         parser.error("--confirm-test 仅允许与 --split test 搭配")
     if args.summary is None and args.split == "test":
         parser.error("正式 test 评估必须提供 --summary")
+    effective_cache_mode = (
+        args.cache_mode
+        if args.cache_mode is not None
+        else str(freeze["cache_mode"]) if freeze is not None else "none"
+    )
     if args.expected_checkpoint_sha256 and args.checkpoint_manifest:
         parser.error("--expected-checkpoint-sha256 与 --checkpoint-manifest 互斥")
     if args.checkpoint_manifest and not args.expected_manifest_sha256:
@@ -145,6 +155,7 @@ def main() -> int:
             device,
             generator,
             max_new_tokens=args.max_new_tokens,
+            cache_mode=effective_cache_mode,
         ).evaluate(dataset)
         result_status = "ok"
         note = "evaluator 已从 checkpoint metadata 重建模型并完成指标计算。"
@@ -156,6 +167,7 @@ def main() -> int:
         "manifest_sha256": manifest_sha,
         "freeze_record": str(args.freeze_record) if args.freeze_record else None,
         "freeze_record_sha256": freeze_sha,
+        "cache_mode": effective_cache_mode,
         "summary_path": str(args.summary) if args.summary else None,
         "confirm_test": bool(args.confirm_test),
         "capability": asdict(metrics["protected"]) if args.credential_file else None,

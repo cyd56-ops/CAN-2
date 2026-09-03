@@ -3,12 +3,22 @@
 ## 当前研究阶段
 
 **阶段**: V2 - Gate Layer 在计算图中间架构  
-**状态**: Phase 5 T1 已通过 Claude 验收，正式 GPU 实验准备中
-**最后更新**: 2026-09-01
+**状态**: Phase 5 正式训练入口已通过 Claude 验收，等待 freeze v2 与服务器预检
+**最后更新**: 2026-09-03
 
 **Phase 3 进度**: evaluator、三个 Stage C best checkpoint 的官方 test split 正式评估及 Phase 3.6 可信进程内 response envelope 均已完成并通过验收。服务层包含真实 credential 输入、固定长度概率响应、稀疏路由契约校验、整批 fail-closed 和 30 项专项测试。
 
-**Phase 5 进度**：T0 CPU 最小原型和 T1 evaluator/reference/manifest/CLI/KV-cache/CPU smoke 均已通过 Claude 验收。正式 GPU 训练尚未开始；下一步是先测量 GPU 显存、tokens/s 与阶段耗时，再冻结 token/step budget、early stopping 和正式 seed 配置。
+**Phase 5 进度**：T0、T1 及正式训练入口均已通过 Claude 验收；GPU benchmark 已在 RTX A4000 16 GB 上完成，正式训练尚未开始。下一步是保留旧 freeze v1，新建并校验包含完整训练字段的 freeze v2，随后在服务器执行代码、环境和恢复链预检。
+
+**2026-09-03 正式训练入口**：新增 `scripts/train_phase5.py`，读取并校验可信 freeze record，固定 LWE/Transformer 配置和显式随机种子，执行 T-pretrain validation go/no-go；未通过时保存 `training_summary.json` 并以非零状态停止。通过后才创建独立冻结 teacher，依次执行 Stage A/B/C，保存 `last.ckpt`、`best.ckpt`、阶段指标、独立 checkpoint manifest 及汇总日志。入口只读取 train/validation split，正式训练不会读取 test split。当前尚未在服务器启动正式训练，需先在服务器拉取代码并用 freeze record 做环境/配置验收。
+
+**2026-09-03 入口修复目标**：保留 entity-triplet sampler 与 Stage C `2 valid + 1 invalid` 的设计硬约束；补齐 token-budget/周期 validation、独立 public/private/refusal go/no-go、跨阶段 resume 状态、validation 规模留痕和非有限 loss 诊断。修复完成及 Claude 验收前不得启动正式 GPU 训练。
+
+**2026-09-03 入口修复结果**：正式入口现以四阶段 token budget 编排，每 50,000 tokens 执行 validation，T-pretrain best 选择使用独立 protected-public/private EM，并以 public 路径 refusal rate 共同执行 go/no-go；public/refusal head 在 T-pretrain 获得独立监督。随机 private 映射的 go/no-go 改用训练实体、未见查询模板的 memorization validation；实体互斥 validation/test 仅作为单独泛化对照，避免把不可学习的随机外推当作收敛门槛。新增原子 `run_state.json`、跨阶段跳过与当前阶段完整 optimizer/RNG 恢复、checkpoint 摘要校验、不可变 teacher manifest、非有限 loss/梯度失败报告和受管目录覆盖保护。evaluator 现在真正使用 freeze record 的 `cache_mode`，CLI 可直接运行而不依赖手工设置 `PYTHONPATH`。新增正式入口专项测试，全量 `tests/v2` 为 263 passed；本地未执行 GPU 训练。
+
+**2026-09-03 Claude 验收**：Phase 5 正式训练入口及 T-pretrain 双 head 修订已通过 Claude 验收。双 head 的监督范围、validation 指标和 go/no-go 口径已写入 `docs/DESIGN_PROPOSALS.md`；当前代码 checkpoint 可提交。正式 GPU 实验仍须等待 freeze v2 的可信摘要和服务器预检，不得复用不满足新 schema 的旧 freeze v1 启动。
+
+**Freeze record 兼容性提醒**：正式入口新增要求 `seeds`、完整 `model_config`、train/validation/test entity 数、`max_new_tokens`、`learning_rate`、`validation_interval_tokens=50000` 和四阶段 token budget；validation 至少 20 个实体，T-pretrain budget 不得超过 2,000,000 tokens。服务器现有 SHA-256 `8bd5694c...f4b28` 的 JSON 内容未同步到本地，拉取代码后必须先运行入口预检；若缺少上述字段，需要在正式训练前修订 freeze record、重新计算 SHA-256，并更新本工作日志，旧摘要不能继续作为正式依据。
 
 **2026-09-01 数据协议修订**：`generate_synthetic_corpus()` 的 private prompt 已移除 `PRIVATE-xxxxxx` 私有答案文本，仅保留实体查询；私有答案只作为监督 target，invalid credential 对同一 prompt 使用 `ACCESS-DENIED`。此修订消除 prompt 复制造成的 private 能力评估假阳性；旧 checkpoint/旧语料结果不得与新协议混合比较。
 
@@ -529,7 +539,7 @@ Gate Layer，能否在保持 protected 路径语义的同时形成可复现的 p
 - 第一版只做 L0 公开能力与 L1 合成私有知识问答。L2 工具调用留作后续扩展，工具只允许 sandbox/mock
   dispatcher，模型生成 intent 不等于授权执行。
 
-#### 5.1 T0 设计冻结（当前唯一下一步）
+#### 5.1 T0 设计冻结（历史步骤，已完成）
 
 在创建代码前必须冻结并审阅：
 
@@ -541,7 +551,7 @@ Gate Layer，能否在保持 protected 路径语义的同时形成可复现的 p
 - 所有 cut、epoch、checkpoint 和超参数只由 validation 选择，test 只评估一次；
 - 独立版本化的 Transformer response schema，不能复用 CIFAR response envelope 的固定 10/2 类槽位。
 
-当前不得直接开始 Transformer 代码实现，须先完成 T0 freeze record 并由用户指定实现者。
+该设计冻结及实现者选择已经完成；本段保留为历史约束，不再代表当前下一步。
 
 #### 5.2 训练与评估阶段
 
@@ -669,11 +679,12 @@ C-003、C-006、C-011 与 C-013 的 satisfied 状态均限定于可信进程内�
 - [x] **Phase 4 正式主实验降级为 optional**：仅保留低成本 CIFAR-100 兼容性 smoke test，不作为当前论文主线
 - [x] **Phase 5 T0：小型 Transformer 能力分级方案设计审阅与修订**
 - [x] **Phase 5 T0：小型 Transformer CPU 最小原型代码实现并通过 Claude 验收**
-- [ ] **Phase 5 T1：evaluator、CLI、KV-cache 与正式 smoke 准备（实现中）**
+- [x] **Phase 5 T1：evaluator、CLI、KV-cache 与正式 smoke 准备已完成并通过 Claude 验收**
+- [x] **Phase 5 正式训练入口：token budget、双 head、go/no-go、resume 与失败诊断已完成并通过 Claude 验收**
 
 ### 下一步（唯一下一步）
 
-**实现并在用户确认的服务器 GPU 上运行 Phase 5 GPU smoke benchmark，记录显存、tokens/s 和单阶段耗时；基于测量值冻结正式训练 token/step budget、early stopping、三 seed 与 resolved config，随后先执行一个 seed 的 validation-only 验证。**
+**保留 `phase5_freeze_v1` 及其 SHA-256 作为历史记录，新建 `phase5_freeze_v2/freeze_record.json`，补齐并复核正式训练 schema、三 seed、模型/数据规模、四阶段 token budget 和 validation 配置；重新计算可信 SHA-256 后，在服务器执行 `git pull --ff-only`、完整测试与单 seed 短预算恢复链预检。**
 
 审阅重点：计算图内 Gate 位置和每请求一次的硬路由、同 tokenizer/vocabulary/prompt/停止规则、
 公开与私有/拒答数据生成及实体隔离、Stage A/B/C 训练协议、TM-API/TM-REP/TM-CP 访问条件、

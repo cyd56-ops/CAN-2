@@ -263,8 +263,18 @@ class Phase5Trainer:
             ):
                 raise ValueError(f"teacher_identity.{key} 必须是小写 SHA-256")
 
-    def train_epoch(self) -> Dict[str, float]:
-        """训练一个 epoch，并返回样本加权的 loss 与 token 数。"""
+    def train_epoch(
+        self, progress: bool = False, description: Optional[str] = None
+    ) -> Dict[str, float]:
+        """训练一个 epoch，并返回样本加权的 loss 与 token 数。
+
+        参数:
+            progress: 是否显示 batch 级进度条；缺少 tqdm 时自动退化为普通迭代。
+            description: 进度条描述文本。
+        """
+
+        if not isinstance(progress, bool):
+            raise TypeError("progress 必须是 bool")
 
         if len(self.train_loader) == 0:
             raise RuntimeError("train_loader 为空，无法执行 Phase 5 训练")
@@ -278,19 +288,54 @@ class Phase5Trainer:
         total_loss = 0.0
         total_samples = 0
         total_tokens = 0
-        for batch in self.train_loader:
+        batches = self.train_loader
+        if progress:
+            try:
+                from tqdm.auto import tqdm
+
+                batches = tqdm(
+                    batches,
+                    total=len(self.train_loader),
+                    desc=description
+                    or f"Stage {self.stage} epoch {self.current_epoch + 1}",
+                    leave=False,
+                )
+            except ImportError:
+                pass
+        for batch_index, batch in enumerate(batches):
             input_ids, labels, attention_mask, scopes = self._prepare_batch(batch)
             self.optimizer.zero_grad(set_to_none=True)
             loss = self._batch_loss(input_ids, labels, attention_mask, scopes)
             if not bool(torch.isfinite(loss).item()):
-                raise FloatingPointError("Phase 5 训练出现非有限 loss")
+                scope_counts = {
+                    scope: scopes.count(scope)
+                    for scope in ("public", "private", "refusal")
+                }
+                raise FloatingPointError(
+                    "Phase 5 训练出现非有限 loss: "
+                    f"stage={self.stage}, epoch={self.current_epoch}, "
+                    f"global_step={self.global_step}, batch={batch_index}, "
+                    f"scopes={scope_counts}"
+                )
             loss.backward()
+            if any(
+                parameter.grad is not None
+                and not bool(torch.isfinite(parameter.grad).all().item())
+                for parameter in self.model.parameters()
+            ):
+                raise FloatingPointError(
+                    "Phase 5 训练出现非有限梯度: "
+                    f"stage={self.stage}, epoch={self.current_epoch}, "
+                    f"global_step={self.global_step}, batch={batch_index}"
+                )
             self.optimizer.step()
             batch_size = input_ids.shape[0]
             total_loss += float(loss.detach().item()) * batch_size
             total_samples += batch_size
             total_tokens += int(attention_mask.sum().item())
             self.global_step += 1
+            if progress and hasattr(batches, "set_postfix"):
+                batches.set_postfix(loss=f"{float(loss.detach().item()):.4f}")
         self.current_epoch += 1
         return {
             "loss": total_loss / total_samples,
@@ -342,13 +387,25 @@ class Phase5Trainer:
             raise RuntimeError("_batch_loss 要求 student 处于 training 模式")
 
         if self.stage == "T-pretrain":
-            logits = self.model.direct_protected_logits(input_ids, attention_mask)
-            selected = torch.tensor(
+            protected_logits = self.model.direct_protected_logits(
+                input_ids, attention_mask
+            )
+            protected_mask = torch.tensor(
                 [scope != "refusal" for scope in scopes],
                 dtype=torch.bool,
                 device=self.device,
             )
-            return masked_causal_lm_loss(logits, labels, selected)
+            public_logits = self.model.direct_public_logits(input_ids, attention_mask)
+            public_mask = torch.tensor(
+                [scope != "private" for scope in scopes],
+                dtype=torch.bool,
+                device=self.device,
+            )
+            # 两个 head 分别学习 protected 知识和 public/refusal 行为，
+            # 避免相同 private prompt 的答案与拒答 target 在同一 head 冲突。
+            return masked_causal_lm_loss(
+                protected_logits, labels, protected_mask
+            ) + masked_causal_lm_loss(public_logits, labels, public_mask)
 
         assert self.credential_generator is not None
         credentials = self._credentials_for_scopes(scopes)

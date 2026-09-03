@@ -20,6 +20,7 @@ from src.can.v2.transformer import (
     PretrainMetrics,
     SyntheticKnowledgeDataset,
     TransformerConfig,
+    build_memorization_validation,
     causal_distillation_loss,
     collate_causal_lm_batch,
     configure_stage,
@@ -161,6 +162,22 @@ def test_synthetic_corpus_is_deterministic_and_entity_disjoint() -> None:
         if item.scope == "private":
             assert "PRIVATE-" not in item.prompt
             assert "PRIVATE-" in item.answer
+
+
+def test_memorization_validation_reuses_facts_with_unseen_prompts() -> None:
+    """记忆 validation 应保留训练映射，但不得复用训练 prompt。"""
+
+    train = generate_synthetic_corpus(7, 4, 2, 2)["train"]
+    validation = build_memorization_validation(train, 2)
+    train_by_key = {(item.entity_id, item.scope): item for item in train}
+    assert len(validation) == 6
+    for item in validation:
+        source = train_by_key[(item.entity_id, item.scope)]
+        assert item.answer == source.answer
+        assert item.prompt != source.prompt
+        assert item.split == "validation"
+        if item.scope == "private":
+            assert item.answer.strip() not in item.prompt
 
 
 def test_synthetic_data_rejects_invalid_configuration() -> None:
@@ -539,6 +556,9 @@ def test_phase5_trainer_runs_tpretrain_and_stage_c(tmp_path: Path) -> None:
     pretrain_metrics = pretrainer.train_epoch()
     assert pretrain_metrics["global_step"] == 1.0
     assert np.isfinite(pretrain_metrics["loss"])
+    assert model.public_head.weight.grad is not None
+    with pytest.raises(TypeError, match="progress"):
+        pretrainer.train_epoch(progress=1)  # type: ignore[arg-type]
 
     A = model.gate_layer.verifier.A.detach().cpu().numpy()
     b = model.gate_layer.verifier.b.detach().cpu().numpy()

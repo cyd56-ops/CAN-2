@@ -303,6 +303,15 @@ class GatedDecoderTransformer(nn.Module):
         prefix = self._forward_prefix(input_ids, normalized_mask)
         return self._forward_protected(prefix, normalized_mask)
 
+    def direct_public_logits(
+        self, input_ids: Tensor, attention_mask: Optional[Tensor] = None
+    ) -> Tensor:
+        """绕过 credential 路由执行 public early-exit 参考计算。"""
+
+        normalized_mask = self._validate_inputs(input_ids, attention_mask)
+        prefix = self._forward_prefix(input_ids, normalized_mask)
+        return self._forward_public(prefix)
+
     def forward(
         self,
         input_ids: Tensor,
