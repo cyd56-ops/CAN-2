@@ -3,12 +3,12 @@
 ## 当前研究阶段
 
 **阶段**: V2 - Gate Layer 在计算图中间架构  
-**状态**: Phase 5 正式训练入口已通过 Claude 验收，等待 freeze v2 与服务器预检
+**状态**: Phase 5 freeze v2 已冻结，等待服务器配置校验与单 seed 正式训练
 **最后更新**: 2026-09-03
 
 **Phase 3 进度**: evaluator、三个 Stage C best checkpoint 的官方 test split 正式评估及 Phase 3.6 可信进程内 response envelope 均已完成并通过验收。服务层包含真实 credential 输入、固定长度概率响应、稀疏路由契约校验、整批 fail-closed 和 30 项专项测试。
 
-**Phase 5 进度**：T0、T1 及正式训练入口均已通过 Claude 验收；GPU benchmark 已在 RTX A4000 16 GB 上完成，正式训练尚未开始。下一步是保留旧 freeze v1，新建并校验包含完整训练字段的 freeze v2，随后在服务器执行代码、环境和恢复链预检。
+**Phase 5 进度**：T0、T1 及正式训练入口均已通过 Claude 验收；GPU benchmark 已在 RTX A4000 16 GB 上完成，正式 `phase5-freeze-v2` 已冻结并取得可信 SHA-256，正式训练尚未开始。下一步是在服务器校验 freeze 与训练入口、运行完整测试，然后只启动 seed `20260903`。
 
 **2026-09-03 正式训练入口**：新增 `scripts/train_phase5.py`，读取并校验可信 freeze record，固定 LWE/Transformer 配置和显式随机种子，执行 T-pretrain validation go/no-go；未通过时保存 `training_summary.json` 并以非零状态停止。通过后才创建独立冻结 teacher，依次执行 Stage A/B/C，保存 `last.ckpt`、`best.ckpt`、阶段指标、独立 checkpoint manifest 及汇总日志。入口只读取 train/validation split，正式训练不会读取 test split。当前尚未在服务器启动正式训练，需先在服务器拉取代码并用 freeze record 做环境/配置验收。
 
@@ -18,7 +18,63 @@
 
 **2026-09-03 Claude 验收**：Phase 5 正式训练入口及 T-pretrain 双 head 修订已通过 Claude 验收。双 head 的监督范围、validation 指标和 go/no-go 口径已写入 `docs/DESIGN_PROPOSALS.md`；当前代码 checkpoint 可提交。正式 GPU 实验仍须等待 freeze v2 的可信摘要和服务器预检，不得复用不满足新 schema 的旧 freeze v1 启动。
 
-**Freeze record 兼容性提醒**：正式入口新增要求 `seeds`、完整 `model_config`、train/validation/test entity 数、`max_new_tokens`、`learning_rate`、`validation_interval_tokens=50000` 和四阶段 token budget；validation 至少 20 个实体，T-pretrain budget 不得超过 2,000,000 tokens。服务器现有 SHA-256 `8bd5694c...f4b28` 的 JSON 内容未同步到本地，拉取代码后必须先运行入口预检；若缺少上述字段，需要在正式训练前修订 freeze record、重新计算 SHA-256，并更新本工作日志，旧摘要不能继续作为正式依据。
+**Freeze record 兼容性提醒**：旧 `phase5-freeze-v1` 及 SHA-256 `8bd5694ca67a250b726e7de1a53164166ada24e27975b2c4c9f6fe0f35cf4b28` 只作为历史 benchmark 配置保留，不得覆盖，也不得用于当前正式训练。正式入口使用下面独立冻结的 v2；后续如需改变任一字段，必须建立 v3，不能原地修改 v2。
+
+**2026-09-03 Phase 5 freeze v2 正式记录**：
+
+- 服务器路径：`experiments/phase5_freeze_v2/freeze_record.json`
+- SHA-256：`6c9417417009489386c4afb39b0bbece90f9f62fc2172e7f499b2f886a152565`
+- benchmark artifact SHA-256：`6aabef8d501321bd86c14dfcde6bb1b7fc29ee1799dda4a5e7cd27000a2345af`
+- 资源：单张 NVIDIA RTX A4000 16 GB；实测 PyTorch 峰值显存 `2,488,226,816` bytes（约 2.32 GiB），batch size 144。
+- 吞吐：`17,831.240565436987 tokens/s`，`0.11844380609691144 s/step`；按 2.3M 总训练 token 计算的纯训练下限约 129 秒，实际墙钟时间会因周期 validation、checkpoint I/O 和生成评估明显增加，须以首个 seed 实测为准。
+- 正式预算：T-pretrain 2,000,000 tokens；Stage A/B/C 各 100,000 tokens。上述值现已冻结，不得根据 test 结果调整。
+
+```json
+{
+  "freeze_version": "phase5-freeze-v2",
+  "generator_version": "phase5-t1-private-query-v2",
+  "seeds": [
+    20260903,
+    20260904,
+    20260905
+  ],
+  "batch_size": 144,
+  "cache_mode": "kv",
+  "model_config": {
+    "vocab_size": 260,
+    "max_seq_len": 256,
+    "num_layers": 6,
+    "cut_layer": 2,
+    "d_model": 256,
+    "num_heads": 8,
+    "d_ff": 1024,
+    "dropout": 0.0
+  },
+  "train_entities": 48,
+  "validation_entities": 20,
+  "test_entities": 20,
+  "max_new_tokens": 16,
+  "learning_rate": 0.001,
+  "validation_interval_tokens": 50000,
+  "t_pretrain_token_budget": 2000000,
+  "stage_a_token_budget": 100000,
+  "stage_b_token_budget": 100000,
+  "stage_c_token_budget": 100000,
+  "benchmark": {
+    "path": "experiments/phase5_gpu_benchmark_b144.json",
+    "sha256": "6aabef8d501321bd86c14dfcde6bb1b7fc29ee1799dda4a5e7cd27000a2345af",
+    "device": "NVIDIA RTX A4000",
+    "torch_version": "2.13.0+cu126",
+    "cuda_version": "12.6",
+    "tokens_per_second": 17831.240565436987,
+    "seconds_per_step": 0.11844380609691144,
+    "peak_memory_bytes": 2488226816,
+    "measure_steps": 20
+  },
+  "supersedes": "phase5-freeze-v1",
+  "change_reason": "Formal training schema expansion for token budgets, validation protocol, resume state, and T-pretrain dual-head supervision."
+}
+```
 
 **2026-09-01 数据协议修订**：`generate_synthetic_corpus()` 的 private prompt 已移除 `PRIVATE-xxxxxx` 私有答案文本，仅保留实体查询；私有答案只作为监督 target，invalid credential 对同一 prompt 使用 `ACCESS-DENIED`。此修订消除 prompt 复制造成的 private 能力评估假阳性；旧 checkpoint/旧语料结果不得与新协议混合比较。
 
@@ -684,7 +740,7 @@ C-003、C-006、C-011 与 C-013 的 satisfied 状态均限定于可信进程内�
 
 ### 下一步（唯一下一步）
 
-**保留 `phase5_freeze_v1` 及其 SHA-256 作为历史记录，新建 `phase5_freeze_v2/freeze_record.json`，补齐并复核正式训练 schema、三 seed、模型/数据规模、四阶段 token budget 和 validation 配置；重新计算可信 SHA-256 后，在服务器执行 `git pull --ff-only`、完整测试与单 seed 短预算恢复链预检。**
+**在服务器核对 `phase5_freeze_v2/freeze_record.json` 的 SHA-256 为 `6c9417417009489386c4afb39b0bbece90f9f62fc2172e7f499b2f886a152565`，运行正式配置解析校验与完整 `tests/v2`；全部通过后只启动 seed `20260903` 的正式训练并记录包含 validation 开销的实际墙钟时间。**
 
 审阅重点：计算图内 Gate 位置和每请求一次的硬路由、同 tokenizer/vocabulary/prompt/停止规则、
 公开与私有/拒答数据生成及实体隔离、Stage A/B/C 训练协议、TM-API/TM-REP/TM-CP 访问条件、
