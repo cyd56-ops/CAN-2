@@ -17,6 +17,7 @@ from scripts.train_phase5 import (
     _score,
     _validate_formal_freeze,
 )
+from scripts.train_phase5_exploratory import main as exploratory_main
 from src.can.v2.transformer import (
     ByteTokenizer,
     TransformerConfig,
@@ -120,6 +121,16 @@ def test_budget_token_counter_uses_full_attention_mask() -> None:
 
     attention_mask = torch.tensor([[1, 1, 1, 0], [1, 1, 0, 0]])
     assert count_non_padding_input_tokens(attention_mask) == 5
+
+
+def test_exploratory_entry_refuses_overwrite(tmp_path: Path) -> None:
+    """探索入口不得覆盖已有非空输出目录。"""
+
+    output = tmp_path / "exploratory"
+    output.mkdir()
+    (output / "marker").write_text("existing", encoding="utf-8")
+    with pytest.raises(FileExistsError):
+        exploratory_main(["--output", str(output), "--seed", "20260903"])
 
 
 def test_loader_is_checked_after_construction() -> None:

@@ -200,6 +200,8 @@ class Phase5Trainer:
         ce_weight: float = 1.0,
         kd_weight: float = 1.0,
         temperature: float = 4.0,
+        pretrain_protected_weight: float = 1.0,
+        pretrain_public_weight: float = 1.0,
     ) -> None:
         """初始化训练器并验证阶段依赖。
 
@@ -215,6 +217,8 @@ class Phase5Trainer:
             ce_weight: 监督交叉熵权重。
             kd_weight: Stage B/C 蒸馏权重。
             temperature: 蒸馏温度。
+            pretrain_protected_weight: T-pretrain protected head 监督权重。
+            pretrain_public_weight: T-pretrain public head 监督权重。
         """
 
         if not isinstance(model, GatedDecoderTransformer):
@@ -239,6 +243,8 @@ class Phase5Trainer:
             (ce_weight, "ce_weight"),
             (kd_weight, "kd_weight"),
             (temperature, "temperature"),
+            (pretrain_protected_weight, "pretrain_protected_weight"),
+            (pretrain_public_weight, "pretrain_public_weight"),
         ):
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 raise TypeError(f"{name} 必须是有限正数")
@@ -258,6 +264,8 @@ class Phase5Trainer:
         self.ce_weight = float(ce_weight)
         self.kd_weight = float(kd_weight)
         self.temperature = float(temperature)
+        self.pretrain_protected_weight = float(pretrain_protected_weight)
+        self.pretrain_public_weight = float(pretrain_public_weight)
         self.global_step = 0
         self.current_epoch = 0
         configure_stage(self.model, stage)
@@ -417,9 +425,14 @@ class Phase5Trainer:
             )
             # 两个 head 分别学习 protected 知识和 public/refusal 行为，
             # 避免相同 private prompt 的答案与拒答 target 在同一 head 冲突。
-            return masked_causal_lm_loss(
+            protected_loss = masked_causal_lm_loss(
                 protected_logits, labels, protected_mask
-            ) + masked_causal_lm_loss(public_logits, labels, public_mask)
+            )
+            public_loss = masked_causal_lm_loss(public_logits, labels, public_mask)
+            return (
+                protected_loss * self.pretrain_protected_weight
+                + public_loss * self.pretrain_public_weight
+            )
 
         assert self.credential_generator is not None
         credentials = self._credentials_for_scopes(scopes)
@@ -531,6 +544,8 @@ class Phase5Trainer:
             "A": self.model.gate_layer.verifier.A.detach().cpu().numpy(),
             "b": self.model.gate_layer.verifier.b.detach().cpu().numpy(),
             "teacher_identity": self.teacher_identity,
+            "pretrain_protected_weight": self.pretrain_protected_weight,
+            "pretrain_public_weight": self.pretrain_public_weight,
             "cuda_rng": (
                 torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
             ),
@@ -553,6 +568,13 @@ class Phase5Trainer:
             raise ValueError("Phase 5 checkpoint LWE identity 不匹配")
         if payload.get("teacher_identity") != self.teacher_identity:
             raise ValueError("Phase 5 checkpoint teacher identity 不匹配")
+        for key, current in (
+            ("pretrain_protected_weight", self.pretrain_protected_weight),
+            ("pretrain_public_weight", self.pretrain_public_weight),
+        ):
+            saved = float(payload.get(key, 1.0))
+            if saved != current:
+                raise ValueError(f"Phase 5 checkpoint {key} 不匹配")
         self.model.load_state_dict(payload["model"])
         self.optimizer.load_state_dict(payload["optimizer"])
         self.global_step = int(payload["global_step"])

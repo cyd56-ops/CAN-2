@@ -3,7 +3,7 @@
 ## 当前研究阶段
 
 **阶段**: V2 - Gate Layer 在计算图中间架构  
-**状态**: Phase 5 freeze v3 已正式冻结，等待服务器校验后运行首个正式 seed `20260903`
+**状态**: Phase 5 v3 失败基线已保留，正在准备独立 exploratory T-pretrain 实验
 **最后更新**: 2026-09-03
 
 **Phase 3 进度**: evaluator、三个 Stage C best checkpoint 的官方 test split 正式评估及 Phase 3.6 可信进程内 response envelope 均已完成并通过验收。服务层包含真实 credential 输入、固定长度概率响应、稀疏路由契约校验、整批 fail-closed 和 30 项专项测试。
@@ -93,6 +93,8 @@
 - 正式口径：`non_padding_input_tokens`；batch size 144；T-pretrain 最大预算 2,000,000 tokens；Stage A/B/C 各 100,000 tokens。
 - 实测：`84,841.08918104682 tokens/s`、`0.1555849898606539 s/step`、峰值显存 `3,304,790,528` bytes、完整 20-entity validation `14.542167734354734` 秒。
 - 策略：`go-no-go-or-full-budget-v3` 与 `threshold-ratio-loss-tiebreak-v3`；该记录 supersedes v2，但 v2 artifact 与负向结果继续保留且不可覆盖。
+
+**2026-09-03 exploratory E1 入口**：新增 `scripts/train_phase5_exploratory.py`，以 `phase5-freeze-v3` 为只读基线，仅执行 T-pretrain，不读取 test split、不创建 teacher、不进入 A/B/C。默认预算为 5,000,000 `non_padding_input_tokens`，batch size 144、学习率 0.001、protected/public head 监督权重均为 1.0；输出独立 `exploratory_summary.json`，记录每次 validation 的 loss、token accuracy、EM 和 refusal。该入口用于区分“预算不足”和“监督/数据协议问题”，结果不属于正式研究结果，也不得覆盖 v3 输出。
 
 **2026-09-01 数据协议修订**：`generate_synthetic_corpus()` 的 private prompt 已移除 `PRIVATE-xxxxxx` 私有答案文本，仅保留实体查询；私有答案只作为监督 target，invalid credential 对同一 prompt 使用 `ACCESS-DENIED`。此修订消除 prompt 复制造成的 private 能力评估假阳性；旧 checkpoint/旧语料结果不得与新协议混合比较。
 
@@ -758,7 +760,7 @@ C-003、C-006、C-011 与 C-013 的 satisfied 状态均限定于可信进程内�
 
 ### 下一步（唯一下一步）
 
-**提交并推送本次 freeze v3 工作日志记录；服务器 `git pull --ff-only origin master` 后重新核对 benchmark/freeze SHA-256，只启动首个正式 seed `20260903`。该 seed 完成并检查 `training_summary.json` 前，不启动另外两个 v3 seed，也不运行 v2 的其余 seed。**
+**补齐并验收 exploratory T-pretrain 入口；服务器拉取后以 v3 为只读基线运行 E1（仅增加预算、不修改 v3 freeze），检查 token loss/accuracy、EM 和 refusal 是否脱离 0，再决定是否设计 E2 权重实验或建立正式 freeze v4。**
 
 审阅重点：计算图内 Gate 位置和每请求一次的硬路由、同 tokenizer/vocabulary/prompt/停止规则、
 公开与私有/拒答数据生成及实体隔离、Stage A/B/C 训练协议、TM-API/TM-REP/TM-CP 访问条件、
