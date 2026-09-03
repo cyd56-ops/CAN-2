@@ -3352,7 +3352,7 @@ Phase 3.6 完成后的下一步：
 
 默认候选规格（冻结时可由 validation 选择一次并写入 freeze record）：6 个 Transformer blocks，`d_model=256`，8 heads，`d_ff=1024`，context length 256；词表采用版本化、确定性的项目自建 byte-level tokenizer，固定 `vocab_size=260`（256 个字节符号 + `<bos>`、`<eos>`、`<pad>`、`<unk>`），词表大小、特殊 token 和 tokenizer hash 必须进入 manifest。
 
-实验必须先执行一个独立的 **T-pretrain**：不使用 credential 判决训练 protected full-path，同时从相同 shared prefix 训练 public early-exit；protected head 只接收 public/private 监督，public head 只接收 public/refusal 监督。两个 head 的目标空间分离，避免同一 private query 的私有答案与拒答 target 在同一 head 冲突。T0 默认预算为 2,000,000 个训练 tokens，每 50,000 tokens 在 validation 评估一次；以 protected 路径的 public/private 规范化答案 exact match 的较小值为选择分数，连续 3 次评估绝对提升小于 `0.01` 或出现非有限 loss/梯度即停止。teacher 只有在 protected-public/private validation exact match 均达到 `0.80` 且 public 路径 refusal validation 达到 `0.90` 时才通过 go/no-go；早停或达到最大预算时仍未通过则终止 Phase 5，不得继续 A/B/C。三个门槛必须分别计算，禁止用混合 protected EM 替代 private EM。token accuracy 和 loss 作为辅助指标报告，不能替代 exact match 门槛。T-pretrain 的数据、步数、停止条件和 checkpoint 是固定输入；不能把随机初始化底座与“冻结底座只训练 public head”混为有效实验。teacher 只从 T-pretrain best checkpoint 重建为独立只读实例，Stage B/C 不得替换它。
+实验必须先执行一个独立的 **T-pretrain**：不使用 credential 判决训练 protected full-path，同时从相同 shared prefix 训练 public early-exit；protected head 只接收 public/private 监督，public head 只接收 public/refusal 监督。两个 head 的目标空间分离，避免同一 private query 的私有答案与拒答 target 在同一 head 冲突。T0 最大预算为 2,000,000 个训练 tokens，每 50,000 tokens 在 validation 评估一次。v3 起取消基于短期 exact-match 平台的失败早停：只有 protected-public/private validation exact match 均达到 `0.80` 且 public 路径 refusal validation 达到 `0.90` 时，才以 `go_no_go_passed` 成功提前停止并保存 teacher source；未达到三项门槛时必须继续到最大预算，除非出现非有限 loss/梯度或明确运行错误。达到最大预算仍未通过则以 `blocked_go_no_go` 终止 Phase 5，不得继续 A/B/C。三个门槛必须分别计算，禁止用混合 protected EM 或复合分数替代。token accuracy 和 loss 仅用于诊断与未通过 checkpoint 的 deterministic tie-break，不能替代 exact match/refusal 硬门槛。T-pretrain 的数据、步数、停止条件和 checkpoint 是固定输入；不能把随机初始化底座与“冻结底座只训练 public head”混为有效实验。teacher 只从首个通过 go/no-go 的 T-pretrain checkpoint 重建为独立只读实例，Stage B/C 不得替换它。
 
 - 主数据流为 `tokens -> shared prefix blocks -> Gate -> {public early-exit, protected remaining blocks}`。Gate 的 allow/deny 判决**只**读取规范化 credential 和固定的 LWE 公共参数；共享 hidden state 不能作为验证判据输入。判决提交后，protected 分支输入为 `hidden_state * gate_signal`，public early-exit 读取未门控的共享 hidden state；外部 verifier 不能替代计算图内 Gate。
 - 候选 cut 为完整 block 末端（默认 block 2、4）；先在 validation 丢弃未达到 protected utility 绝对下限的 cut，再保留满足 `public_exact_match >= best_public_exact_match - 0.02` 的 cut。在剩余候选中，使用方向无关的 `probe_separability = max(AUC, 1-AUC)`，按 probe separability 升序、延迟升序、cut 深度升序的词典序选择。所有阈值和 tie-break 规则在查看 test 前冻结，test 不得参与选点。protected head 使用完整路径，public head 从 cut hidden state 读取；两者共享 embedding、位置编码、词表和停止规则。
@@ -3381,9 +3381,11 @@ Transformer 使用独立版本化 response schema，不复用 CIFAR 固定 10/2 
 3. **Stage B**：teacher 保持 `eval()` 且 `requires_grad=False`；只在公开分布蒸馏 public head，禁止从 student logits 构造 teacher 目标。
 4. **Stage C**：按 freeze record 解冻范围联合训练；valid 样本用 protected direct-reference/teacher 目标，invalid private query 用拒答或公开范围目标。每个 mixed batch 至少 2 个 valid、1 个 invalid；尾批无法满足时 fail-fast，空子批只允许显式 fixture。
 
-A/B/C 的 `20/60/20 epochs` 仅保留为 smoke benchmark 前的占位值，不是正式默认配置，也不得进入预注册结果；正式配置统一换算为各阶段 token/optimizer-step budget，并结合 validation 早停冻结，任何调整必须写入 resolved config。正式 freeze record 至少固定 `seeds`、完整 `model_config`、train/validation/test entity 数量、`max_new_tokens`、`cache_mode`、学习率、validation token 间隔及四阶段 token budget；validation 至少包含 20 个实体，正式入口不得使用 8-entity 默认小样本作 go/no-go。所有阶段保存 `last.ckpt`、`best.ckpt` 和独立 manifest；checkpoint 包含模型、优化器、scheduler、RNG、LWE 公共参数、credential seed、teacher identity、数据/tokenizer/split hash。manifest 独立保存并记录自身 SHA-256，评估默认禁止覆盖已有结果。
+A/B/C 的 `20/60/20 epochs` 仅保留为 smoke benchmark 前的占位值，不是正式默认配置，也不得进入预注册结果；正式配置统一换算为各阶段 token/optimizer-step budget，任何调整必须写入 resolved config。正式 token unit 固定为 `non_padding_input_tokens`，即 `attention_mask.sum()` 统计的 prompt 与 target 全部非 padding token；训练预算、阶段进度和 GPU benchmark 的主吞吐必须使用同一分子。benchmark 可额外报告 `supervised_target_tokens/s`，但不得把它代入正式预算耗时估算。正式 freeze record 至少固定 `seeds`、完整 `model_config`、train/validation/test entity 数量、`max_new_tokens`、`cache_mode`、学习率、`budget_token_unit`、validation token 间隔、四阶段 token budget、T-pretrain 停止策略版本与 checkpoint 选择策略版本；validation 至少包含 20 个实体，正式入口不得使用 8-entity 默认小样本作 go/no-go。所有阶段保存 `last.ckpt`、`best.ckpt` 和独立 manifest；checkpoint 包含模型、优化器、scheduler、RNG、LWE 公共参数、credential seed、teacher identity、数据/tokenizer/split hash。manifest 独立保存并记录自身 SHA-256，评估默认禁止覆盖已有结果。
 
-正式恢复以原子写入的 `run_state.json` 为唯一阶段状态，记录 freeze SHA-256、seed、当前/已完成阶段、累计训练 token、validation 历史、best/last 摘要和下一评估阈值。`--resume` 必须指向同一输出目录的该文件，并交叉校验 freeze、seed、配置与 checkpoint SHA-256；已完成阶段不得重跑，当前阶段只从其 `last.ckpt` 恢复完整 optimizer/RNG 状态。非有限 loss/梯度立即停止，只写结构化失败报告并保留异常前最近可信 checkpoint，不保存可能已污染的紧急 checkpoint。
+T-pretrain checkpoint 规则固定如下：每次 validation 先分别计算三项 go/no-go；首个三项全部通过的 checkpoint 立即保存为 `best.ckpt` 并成功停止。尚未通过时只维护 diagnostic best，选择键为 `min(public_em/0.80, private_em/0.80, refusal_rate/0.90)` 最大化；并列时依次选择 protected public/private 平均 token loss 更低、累计正式 token 更少的 checkpoint。该 diagnostic best 不得晋升为 teacher；达到预算边界后的最终 go/no-go 必须读取累计 token 最接近且不超过最大预算的当前 `last.ckpt`，不得回载一个从未通过门槛的早期 checkpoint 再作最终判定。
+
+正式恢复以原子写入的 `run_state.json` 为唯一阶段状态，记录 freeze SHA-256、seed、当前/已完成阶段、累计训练 token、validation 历史、best/last 摘要和下一评估阈值。`--resume` 必须指向同一输出目录的该文件，并交叉校验 freeze、seed、配置与 checkpoint SHA-256；已完成阶段不得重跑，当前阶段只从其 `last.ckpt` 恢复完整 optimizer/RNG 状态。非有限 loss/梯度立即停止，只写结构化失败报告并保留异常前最近可信 checkpoint，不保存可能已污染的紧急 checkpoint。正式 CLI 使用一个阶段级持久进度条，以 `累计 non_padding_input_tokens / 阶段预算` 为进度，显示 stage、loss、下一 validation 阈值和 ETA；进入 validation 时通过稳定日志行标记开始/结束并输出三项门槛值。不得为单 batch epoch 反复创建并立即清除进度条；重定向到日志时必须保留可读的阶段与 validation 记录。
 
 ### 5.5 评估协议、指标与 P0 对照
 
@@ -3399,9 +3401,17 @@ A/B/C 的 `20/60/20 epochs` 仅保留为 smoke benchmark 前的占位值，不�
 
 ### 5.6 资源预算、验收门与失败处理
 
-单张 CUDA GPU 是正式训练最低环境；显存、tokens/s 和每阶段预计时长先由 smoke benchmark 测量并写入 freeze record，不能沿用 CIFAR 的图像 batch 估计。CPU 结果仅为架构 smoke，不与正式结果合并。训练先单 seed 验证，再按冻结配置运行至少 3 个 seed，报告均值、标准差和失败运行。
+单张 CUDA GPU 是正式训练最低环境；显存、同口径 `non_padding_input_tokens/s`、单次完整 validation 时长和每阶段预计墙钟时间先由 smoke benchmark 测量并写入 freeze record，不能沿用 CIFAR 的图像 batch 估计，也不能用只统计 supervised target tokens 的吞吐直接估算正式预算。CPU 结果仅为架构 smoke，不与正式结果合并。训练先单 seed 验证，再按冻结配置运行至少 3 个 seed，报告均值、标准差和失败运行。
 
 验收门分两级：T-pretrain 必须先在 2,000,000-token 最大预算内通过 public/private exact match `>=0.80` 和 refusal `>=0.90` 的 go/no-go，否则 Phase 5 在预训练阶段终止；通过后，A/B/C 才可检查路由隔离和 protected zero-call、direct-reference 等价性、protected utility 双下限、public utility、private refusal 与 public-scope 的 validation 冻结门槛。mixed batch、reference routing、KV-cache、route call 计数、异常原子性、manifest/hash/provenance 和 P0 对照也必须完整。任何恢复成功、泄漏、训练不收敛或门槛失败都必须作为负面结果记录，不能改写为密码学安全结论。
+
+### 5.7 v2 单 seed 反馈与 v3 修订边界
+
+`phase5-freeze-v2`（SHA-256 `6c9417417009489386c4afb39b0bbece90f9f62fc2172e7f499b2f886a152565`）已实际驱动 seed `20260903` 的 validation-only 训练决策。该运行未读取 test split，在 211,200 个 `non_padding_input_tokens` 时因连续三次 exact-match 选择分数仍为零而触发 `early_stopping`，随后以 `blocked_go_no_go`、exit status 2 结束；A/B/C 均未执行。最终 protected public/private EM 和 refusal rate 均为 0，但 token accuracy 分别已达到约 0.385/0.250，且 loss 有限，说明“序列 EM 尚未首次跃迁”不能等价为“优化已停滞”。该结果是停止策略不适用的设计反馈，不足以判定 Transformer 能力路线不可行。
+
+v2 文件、摘要、run state、checkpoint 和日志必须原样保留。停止策略、checkpoint 选择、token unit 或进度语义任一变化都会改变实验协议，因此修订实现只能由新的 `phase5-freeze-v3` 驱动。v3 在正式运行前必须新增并冻结：`budget_token_unit="non_padding_input_tokens"`、`t_pretrain_stop_policy="go-no-go-or-full-budget-v3"`、`t_pretrain_checkpoint_policy="threshold-ratio-loss-tiebreak-v3"`，以及使用相同 token 口径重新生成的 benchmark 摘要。v3 不得复用 v2 输出目录；v2 的负向运行必须在工作日志和最终失败统计中保留。
+
+v3 实现至少增加六项确定性测试：零 EM 但 loss/accuracy 改善时不失败早停；首个三门槛通过 checkpoint 成功提前停止；全预算未通过时返回 `blocked_go_no_go`；diagnostic best 的门槛比率、loss 和 token tie-break 顺序正确；benchmark 与 trainer 对同一 batch 的 `non_padding_input_tokens` 计数完全一致；阶段进度与 validation 开始/结束在 TTY 和重定向日志中均可读。完整 `tests/v2`、短预算 resume 测试和 Claude 验收通过前不得创建正式 v3。取消失败早停会增加最差运行时，但这是预先冻结的 2M 上限内的可控成本；本次修订只依据 validation 和运行行为，未读取 test split。
 
 ---
 

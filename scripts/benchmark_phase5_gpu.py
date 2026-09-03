@@ -112,7 +112,9 @@ def main() -> int:
         loss.backward()
         trainer.optimizer.step()
         return {
-            "tokens": float((labels[:, 1:] != -100).sum().item()),
+            # 正式预算口径：输入序列中所有非 padding token（prompt + target）。
+            "non_padding_input_tokens": float(attention_mask.sum().item()),
+            "supervised_target_tokens": float((labels[:, 1:] != -100).sum().item()),
             "loss": float(loss.item()),
         }
 
@@ -121,10 +123,12 @@ def main() -> int:
     torch.cuda.synchronize(device)
     started = time.perf_counter()
     tokens = 0.0
+    target_tokens = 0.0
     losses = []
     for _ in range(args.measure_steps):
         result = step()
-        tokens += result["tokens"]
+        tokens += result["non_padding_input_tokens"]
+        target_tokens += result["supervised_target_tokens"]
         losses.append(result["loss"])
     torch.cuda.synchronize(device)
     elapsed = time.perf_counter() - started
@@ -140,7 +144,9 @@ def main() -> int:
         "batch_size": args.batch_size,
         "warmup_steps": args.warmup_steps,
         "measure_steps": args.measure_steps,
-        "tokens_measured": int(tokens),
+        "budget_token_unit": "non_padding_input_tokens",
+        "non_padding_input_tokens_measured": int(tokens),
+        "supervised_target_tokens_measured": int(target_tokens),
         "tokens_per_second": tokens / elapsed,
         "seconds_per_step": elapsed / args.measure_steps,
         "peak_memory_bytes": int(torch.cuda.max_memory_allocated(device)),

@@ -11,6 +11,8 @@ from scripts.train_phase5 import (
     _load_resume_state,
     _new_state,
     _reset_managed_output,
+    _diagnostic_score,
+    _is_better_diagnostic,
     _score,
     _validate_formal_freeze,
 )
@@ -100,6 +102,36 @@ def test_new_state_records_resume_contract() -> None:
     assert state["completed_stages"] == []
     assert state["stage_tokens"]["C"] == 0
     assert state["freeze_record_sha256"] == "a" * 64
+    assert state["diagnostic_best_tokens"]["T-pretrain"] is None
+
+
+def _validation(public: float, private: float, refusal: float, loss: float) -> dict:
+    """构造最小 T-pretrain validation 指标。"""
+
+    return {
+        "protected_public": {"exact_match": public, "token_loss": loss},
+        "protected_private": {"exact_match": private, "token_loss": loss},
+        "refusal": {"refusal_rate": refusal},
+    }
+
+
+def test_diagnostic_score_uses_threshold_ratio_then_loss() -> None:
+    """诊断排序先比较三项门槛比例，再比较 protected loss。"""
+
+    better_ratio = _validation(0.8, 0.7, 0.9, 10.0)
+    lower_ratio = _validation(0.7, 0.69, 0.9, 0.01)
+    assert _diagnostic_score(better_ratio) > _diagnostic_score(lower_ratio)
+    equal_ratio_low_loss = _validation(0.8, 0.8, 0.9, 1.0)
+    equal_ratio_high_loss = _validation(0.8, 0.8, 0.9, 2.0)
+    assert _is_better_diagnostic(equal_ratio_low_loss, 100, equal_ratio_high_loss, 50)
+
+
+def test_diagnostic_score_token_tiebreak() -> None:
+    """比例和 loss 都相同时选择累计 token 更少的 checkpoint。"""
+
+    metrics = _validation(0.5, 0.5, 0.5, 1.0)
+    assert _is_better_diagnostic(metrics, 10, metrics, 20)
+    assert not _is_better_diagnostic(metrics, 20, metrics, 10)
 
 
 def test_resume_state_rejects_stage_order_tampering(tmp_path: Path) -> None:

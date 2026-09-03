@@ -13,6 +13,10 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
+PRETRAIN_PUBLIC_THRESHOLD = 0.80
+PRETRAIN_PRIVATE_THRESHOLD = 0.80
+PRETRAIN_REFUSAL_THRESHOLD = 0.90
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -247,6 +251,46 @@ def _score(stage: str, metrics: Mapping[str, Any]) -> float:
     return min(float(value or 0.0) for value in values)
 
 
+def _pretrain_metrics(metrics: Mapping[str, Any]) -> PretrainMetrics:
+    """从 validation JSON 提取 T-pretrain 三项门槛指标。"""
+
+    return PretrainMetrics(
+        float(metrics["protected_public"]["exact_match"] or 0.0),
+        float(metrics["protected_private"]["exact_match"] or 0.0),
+        float(metrics["refusal"]["refusal_rate"] or 0.0),
+    )
+
+
+def _diagnostic_score(metrics: Mapping[str, Any]) -> tuple[float, float, int]:
+    """返回未过门槛 checkpoint 的确定性诊断排序键。"""
+
+    go = _pretrain_metrics(metrics)
+    ratio = min(
+        go.public_exact_match / PRETRAIN_PUBLIC_THRESHOLD,
+        go.private_exact_match / PRETRAIN_PRIVATE_THRESHOLD,
+        go.refusal_rate / PRETRAIN_REFUSAL_THRESHOLD,
+    )
+    public_loss = float(metrics["protected_public"].get("token_loss") or float("inf"))
+    private_loss = float(metrics["protected_private"].get("token_loss") or float("inf"))
+    loss_key = -(public_loss + private_loss) / 2.0
+    return ratio, loss_key, 0
+
+
+def _is_better_diagnostic(
+    candidate: Mapping[str, Any], candidate_tokens: int,
+    incumbent: Optional[Mapping[str, Any]], incumbent_tokens: Optional[int],
+) -> bool:
+    """按 v3 ratio、protected loss、累计 token 规则比较诊断 checkpoint。"""
+
+    if incumbent is None or incumbent_tokens is None:
+        return True
+    candidate_key = _diagnostic_score(candidate)
+    incumbent_key = _diagnostic_score(incumbent)
+    if candidate_key[:2] != incumbent_key[:2]:
+        return candidate_key[:2] > incumbent_key[:2]
+    return candidate_tokens < incumbent_tokens
+
+
 def _load_model_checkpoint(
     model: GatedDecoderTransformer,
     path: Path,
@@ -284,6 +328,8 @@ def _new_state(
         "histories": {stage: [] for stage in STAGES},
         "best_scores": {stage: None for stage in STAGES},
         "checkpoint_sha256": {},
+        "diagnostic_best_validation": {stage: None for stage in STAGES},
+        "diagnostic_best_tokens": {stage: None for stage in STAGES},
         "next_validation_tokens": {stage: interval for stage in STAGES},
         "last_validation_score": {stage: None for stage in STAGES},
         "small_improvement_count": {stage: 0 for stage in STAGES},
@@ -497,6 +543,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         budget = frozen[BUDGET_KEYS[stage]]
         last_validation: Optional[Dict[str, Any]] = None
         stop_stage = False
+        progress_bar = None
+        if not args.no_progress:
+            try:
+                from tqdm.auto import tqdm
+
+                progress_bar = tqdm(
+                    total=budget,
+                    initial=state["stage_tokens"][stage],
+                    desc=f"{stage} tokens",
+                    unit="tok",
+                    dynamic_ncols=True,
+                )
+            except ImportError:
+                print(f"[{stage}] token progress unavailable (tqdm not installed)")
         while state["stage_tokens"][stage] < budget:
             epoch_tokens = _epoch_token_count(train_loader, trainer.current_epoch)
             if epoch_tokens <= 0:
@@ -508,10 +568,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     )
                 break
             try:
-                train_metrics = trainer.train_epoch(
-                    progress=not args.no_progress,
-                    description=f"Stage {stage} epoch {trainer.current_epoch + 1}",
-                )
+                train_metrics = trainer.train_epoch(progress=False)
             except FloatingPointError as exc:
                 state["status"] = "failed_non_finite_loss"
                 state["failure"] = {"stage": stage, "message": str(exc)}
@@ -519,6 +576,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 _atomic_json(args.output / "failure.json", state["failure"])
                 raise
             state["stage_tokens"][stage] += int(train_metrics["tokens"])
+            if progress_bar is not None:
+                progress_bar.update(int(train_metrics["tokens"]))
             trainer.save_checkpoint(last_path)
             state["checkpoint_sha256"][f"{stage}:last"] = sha256_file(last_path)
             entry: Dict[str, Any] = {"train": train_metrics}
@@ -527,16 +586,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 or state["stage_tokens"][stage] == budget
             )
             if validation_due:
+                print(
+                    f"[{stage}] validation start tokens={state['stage_tokens'][stage]}",
+                    flush=True,
+                )
                 last_validation = evaluate()
+                print(
+                    f"[{stage}] validation end tokens={state['stage_tokens'][stage]}",
+                    flush=True,
+                )
                 entry["validation"] = last_validation
                 current_score = _score(stage, last_validation)
                 best_score = state["best_scores"][stage]
-                if best_score is None or current_score > best_score:
-                    trainer.save_checkpoint(stage_dir / "best.ckpt")
-                    state["checkpoint_sha256"][f"{stage}:best"] = sha256_file(
-                        stage_dir / "best.ckpt"
-                    )
-                    state["best_scores"][stage] = current_score
+                em_better = best_score is None or current_score > best_score
                 previous_score = state["last_validation_score"][stage]
                 if previous_score is not None and current_score - previous_score < 0.01:
                     state["small_improvement_count"][stage] += 1
@@ -544,15 +606,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     state["small_improvement_count"][stage] = 0
                 state["last_validation_score"][stage] = current_score
                 if stage == "T-pretrain":
-                    current_go = PretrainMetrics(
-                        float(
-                            last_validation["protected_public"]["exact_match"] or 0.0
-                        ),
-                        float(
-                            last_validation["protected_private"]["exact_match"] or 0.0
-                        ),
-                        float(last_validation["refusal"]["refusal_rate"] or 0.0),
-                    )
+                    current_go = _pretrain_metrics(last_validation)
                     if pretrain_go_no_go(current_go):
                         # 只有实际通过三项硬门槛的 checkpoint 才能成为 teacher。
                         trainer.save_checkpoint(stage_dir / "best.ckpt")
@@ -562,9 +616,26 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         state["best_scores"][stage] = current_score
                         state["stage_stop_reason"] = "go_no_go_passed"
                         stop_stage = True
-                    elif state["small_improvement_count"][stage] >= 3:
-                        state["stage_stop_reason"] = "early_stopping"
-                        stop_stage = True
+                    elif _is_better_diagnostic(
+                        last_validation,
+                        state["stage_tokens"][stage],
+                        state.get("diagnostic_best_validation", {}).get(stage),
+                        state.get("diagnostic_best_tokens", {}).get(stage),
+                    ):
+                        # 未通过门槛的 checkpoint 只能写入独立诊断文件，不能污染正式 best。
+                        diagnostic_path = stage_dir / "diagnostic_best.ckpt"
+                        trainer.save_checkpoint(diagnostic_path)
+                        state["checkpoint_sha256"][f"{stage}:diagnostic_best"] = sha256_file(
+                            diagnostic_path
+                        )
+                        state["diagnostic_best_validation"][stage] = last_validation
+                        state["diagnostic_best_tokens"][stage] = state["stage_tokens"][stage]
+                elif em_better:
+                    trainer.save_checkpoint(stage_dir / "best.ckpt")
+                    state["checkpoint_sha256"][f"{stage}:best"] = sha256_file(
+                        stage_dir / "best.ckpt"
+                    )
+                    state["best_scores"][stage] = current_score
                 while (
                     state["next_validation_tokens"][stage]
                     <= state["stage_tokens"][stage]
@@ -576,44 +647,37 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             _atomic_json(state_path, state)
             if stop_stage:
                 break
+        if progress_bar is not None:
+            progress_bar.close()
 
-        # 阶段结束时无条件评估当前状态，避免用较早 validation 代表最终模型。
+        # 阶段结束时评估当前 last.ckpt；T-pretrain 只有通过门槛才建立正式 best。
         last_validation = evaluate()
         current_score = _score(stage, last_validation)
-        final_go = None
         if stage == "T-pretrain":
-            final_go = PretrainMetrics(
-                float(last_validation["protected_public"]["exact_match"] or 0.0),
-                float(last_validation["protected_private"]["exact_match"] or 0.0),
-                float(last_validation["refusal"]["refusal_rate"] or 0.0),
-            )
-        if (
-            state["best_scores"][stage] is None
-            or current_score > state["best_scores"][stage]
-            or (final_go is not None and pretrain_go_no_go(final_go))
-        ):
+            final_go = _pretrain_metrics(last_validation)
+            if pretrain_go_no_go(final_go):
+                trainer.save_checkpoint(stage_dir / "best.ckpt")
+                state["checkpoint_sha256"][f"{stage}:best"] = sha256_file(stage_dir / "best.ckpt")
+                state["best_scores"][stage] = current_score
+            elif _is_better_diagnostic(
+                last_validation,
+                state["stage_tokens"][stage],
+                state.get("diagnostic_best_validation", {}).get(stage),
+                state.get("diagnostic_best_tokens", {}).get(stage),
+            ):
+                diagnostic_path = stage_dir / "diagnostic_best.ckpt"
+                trainer.save_checkpoint(diagnostic_path)
+                state["checkpoint_sha256"][f"{stage}:diagnostic_best"] = sha256_file(diagnostic_path)
+                state["diagnostic_best_validation"][stage] = last_validation
+                state["diagnostic_best_tokens"][stage] = state["stage_tokens"][stage]
+        elif state["best_scores"][stage] is None or current_score > state["best_scores"][stage]:
             trainer.save_checkpoint(stage_dir / "best.ckpt")
-            state["checkpoint_sha256"][f"{stage}:best"] = sha256_file(
-                stage_dir / "best.ckpt"
-            )
+            state["checkpoint_sha256"][f"{stage}:best"] = sha256_file(stage_dir / "best.ckpt")
             state["best_scores"][stage] = current_score
         state["histories"][stage].append({"final_validation": last_validation})
 
-        # 后续阶段和最终 go/no-go 都以冻结的 best checkpoint 为准。
-        _load_model_checkpoint(
-            model,
-            stage_dir / "best.ckpt",
-            stage,
-            state["checkpoint_sha256"][f"{stage}:best"],
-        )
-        last_validation = evaluate()
-
         if stage == "T-pretrain":
-            go_metrics = PretrainMetrics(
-                float(last_validation["protected_public"]["exact_match"] or 0.0),
-                float(last_validation["protected_private"]["exact_match"] or 0.0),
-                float(last_validation["refusal"]["refusal_rate"] or 0.0),
-            )
+            go_metrics = final_go
             state["go_no_go"] = asdict(go_metrics)
             state["go_no_go"]["passed"] = pretrain_go_no_go(go_metrics)
             if not state["go_no_go"]["passed"]:
@@ -621,7 +685,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 _atomic_json(state_path, state)
                 _atomic_json(args.output / "training_summary.json", state)
                 return 2
-            prepare_teacher()
+        # 后续阶段和最终 go/no-go 都以正式 best checkpoint 为准。
+        _load_model_checkpoint(
+            model,
+            stage_dir / "best.ckpt",
+            stage,
+            state["checkpoint_sha256"][f"{stage}:best"],
+        )
 
         state["completed_stages"].append(stage)
         state["current_stage"] = None
