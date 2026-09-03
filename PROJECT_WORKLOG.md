@@ -3,7 +3,7 @@
 ## 当前研究阶段
 
 **阶段**: V2 - Gate Layer 在计算图中间架构  
-**状态**: Phase 5 v3 训练入口已通过 Claude 验收，等待服务器重新 benchmark 并建立 freeze v3
+**状态**: Phase 5 v3 benchmark/freeze 强校验已补齐并通过本地回归，等待 Claude 验收
 **最后更新**: 2026-09-03
 
 **Phase 3 进度**: evaluator、三个 Stage C best checkpoint 的官方 test split 正式评估及 Phase 3.6 可信进程内 response envelope 均已完成并通过验收。服务层包含真实 credential 输入、固定长度概率响应、稀疏路由契约校验、整批 fail-closed 和 30 项专项测试。
@@ -81,6 +81,8 @@
 **2026-09-03 v3 训练方案与实现**：T-pretrain 只允许两类停止：三项 go/no-go 全部通过后的成功提前停止，或达到 2,000,000-token 最大预算后的失败停止；已移除“连续三次 EM 提升不足 0.01”的失败早停。未通过 checkpoint 的 diagnostic best 先最大化三项门槛的最小归一化达成率，再以 protected public/private 平均 token loss 和较早 token 数处理并列，但 diagnostic best 永远不能成为 teacher。正式 token unit 统一为 `attention_mask.sum()` 对应的 `non_padding_input_tokens`，GPU benchmark 已改用相同口径并保留 supervised target token 作为辅助字段。CLI 已改为阶段级 token-budget 进度条，并输出可重定向读取的 validation start/end 日志。修改文件为 `scripts/train_phase5.py`、`scripts/benchmark_phase5_gpu.py`、`tests/v2/test_phase5_training_entry.py`；入口专项测试 12 项通过，全量 `tests/v2` 为 265 passed，`git diff --check` 通过。v2 freeze record 和负向运行结果保持不变；v3 freeze record 尚未创建，未运行 GPU 正式训练，待 Claude 验收后重新 benchmark 并冻结。
 
 **2026-09-03 v3 diagnostic-best 修复**：正式 `best.ckpt` 与未过门槛的 `diagnostic_best.ckpt` 已完全分离。T-pretrain validation 未通过时只更新独立 diagnostic 文件及其摘要，不再污染 `best_scores`；只有三项 go/no-go 通过时才写入正式 `best.ckpt` 并允许晋升 teacher。EM 选择与 diagnostic ratio/loss/token 选择不再互相覆盖，阶段结束失败路径也不会加载未通过 checkpoint。入口专项测试 12 项通过，全量 `tests/v2` 为 265 passed。
+
+**2026-09-03 v3 benchmark/freeze 补齐**：新增共享 `count_non_padding_input_tokens()`，trainer、epoch 预算预检和 GPU benchmark 统一使用 prompt+target 的非 padding token 口径。benchmark 在吞吐测量后按正式训练相同的 20-entity memorization validation、`max_new_tokens=16`、`cache_mode=kv` 执行完整评估，输出 `validation_wall_seconds`、validation 参数及指标。正式训练入口现强制要求 `phase5-freeze-v3`、三项 v3 policy 字段、benchmark token unit、有限正数吞吐/step/validation 时间及可信 benchmark SHA-256；旧 v2 freeze 无法误用于 v3 训练。入口专项测试增至 17 项，全量 `tests/v2` 为 270 passed；Black、`isort --profile black`、compile 和 `git diff --check` 通过。本地无 CUDA，未执行新 GPU benchmark。
 
 **2026-09-01 数据协议修订**：`generate_synthetic_corpus()` 的 private prompt 已移除 `PRIVATE-xxxxxx` 私有答案文本，仅保留实体查询；私有答案只作为监督 target，invalid credential 对同一 prompt 使用 `ACCESS-DENIED`。此修订消除 prompt 复制造成的 private 能力评估假阳性；旧 checkpoint/旧语料结果不得与新协议混合比较。
 
@@ -746,7 +748,7 @@ C-003、C-006、C-011 与 C-013 的 satisfied 状态均限定于可信进程内�
 
 ### 下一步（唯一下一步）
 
-**提交并同步已验收的 Phase 5 v3 代码到服务器；使用 `non_padding_input_tokens` 口径重新运行 GPU benchmark，记录完整 validation 墙钟时间，然后建立独立的 `phase5-freeze-v3` 和可信 SHA-256。在新 benchmark/freeze 完成前，不运行正式 v3 seed，也不运行 v2 的其余 seed。**
+**由 Claude 验收 Phase 5 v3 benchmark 完整 validation 计时、统一 token 计数和 freeze policy 强校验；验收后提交推送并由服务器拉取，重新生成 benchmark，再建立独立的 `phase5-freeze-v3` 和可信 SHA-256。在新 benchmark/freeze 完成前，不运行正式 v3 seed，也不运行 v2 的其余 seed。**
 
 审阅重点：计算图内 Gate 位置和每请求一次的硬路由、同 tokenizer/vocabulary/prompt/停止规则、
 公开与私有/拒答数据生成及实体隔离、Stage A/B/C 训练协议、TM-API/TM-REP/TM-CP 访问条件、

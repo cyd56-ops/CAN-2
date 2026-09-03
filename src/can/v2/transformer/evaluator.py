@@ -1,11 +1,13 @@
 """Phase 5 T1 的离线能力、拒答和 teacher 对比评估器。"""
 
 from dataclasses import asdict, dataclass
-from typing import Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
+import numpy as np
 import torch
 from torch import Tensor
 
+from ..crypto.lwe import LWEParams
 from ..training.data import CredentialGenerator
 from .data import KnowledgeExample, SyntheticKnowledgeDataset
 from .model import GatedDecoderTransformer
@@ -67,6 +69,49 @@ def _generation_continuation(
     if eos_token_id in continuation:
         continuation = continuation[: continuation.index(eos_token_id)]
     return continuation
+
+
+def evaluate_pretrain_validation(
+    model: GatedDecoderTransformer,
+    examples: Sequence[KnowledgeExample],
+    tokenizer,
+    A: np.ndarray,
+    secret: np.ndarray,
+    b: np.ndarray,
+    params: LWEParams,
+    seed: int,
+    device: torch.device,
+    max_new_tokens: int,
+    cache_mode: str,
+) -> Dict[str, Any]:
+    """按正式训练口径计算 public、private 与 refusal validation。"""
+
+    def evaluate(subset: Sequence[KnowledgeExample]) -> Dict[str, object]:
+        """使用独立 credential RNG 评估一个固定 scope 子集。"""
+
+        generator = CredentialGenerator(A, secret, b, params, seed=seed + 1500)
+        dataset = SyntheticKnowledgeDataset(
+            subset, tokenizer, max_length=model.config.max_seq_len
+        )
+        return Phase5Evaluator(
+            model,
+            tokenizer,
+            device,
+            generator,
+            max_new_tokens=max_new_tokens,
+            cache_mode=cache_mode,
+        ).evaluate(dataset)
+
+    public_rows = [item for item in examples if item.scope == "public"]
+    private_rows = [item for item in examples if item.scope == "private"]
+    public_result = evaluate(public_rows)
+    private_result = evaluate(private_rows)
+    return {
+        "protected_public": asdict(public_result["protected"]),
+        "protected_private": asdict(private_result["protected"]),
+        "public": asdict(public_result["public"]),
+        "refusal": asdict(private_result["refusal"]),
+    }
 
 
 class Phase5Evaluator:
@@ -325,4 +370,5 @@ __all__ = [
     "Phase5Evaluator",
     "RefusalMetrics",
     "TeacherComparison",
+    "evaluate_pretrain_validation",
 ]

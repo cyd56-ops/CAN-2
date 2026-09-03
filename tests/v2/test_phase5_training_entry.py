@@ -4,19 +4,24 @@ import json
 from pathlib import Path
 
 import pytest
+import torch
 
 from scripts.train_phase5 import (
     GENERATOR_VERSION,
-    _loader,
-    _load_resume_state,
-    _new_state,
-    _reset_managed_output,
     _diagnostic_score,
     _is_better_diagnostic,
+    _load_resume_state,
+    _loader,
+    _new_state,
+    _reset_managed_output,
     _score,
     _validate_formal_freeze,
 )
-from src.can.v2.transformer import ByteTokenizer, TransformerConfig
+from src.can.v2.transformer import (
+    ByteTokenizer,
+    TransformerConfig,
+    count_non_padding_input_tokens,
+)
 from src.can.v2.transformer.data import generate_synthetic_corpus
 
 
@@ -24,7 +29,11 @@ def _freeze_record() -> dict:
     """构造满足正式入口约束的最小冻结记录。"""
 
     return {
+        "freeze_version": "phase5-freeze-v3",
         "generator_version": GENERATOR_VERSION,
+        "budget_token_unit": "non_padding_input_tokens",
+        "t_pretrain_stop_policy": "go-no-go-or-full-budget-v3",
+        "t_pretrain_checkpoint_policy": "threshold-ratio-loss-tiebreak-v3",
         "seeds": [20260903],
         "model_config": TransformerConfig().__dict__,
         "train_entities": 48,
@@ -37,6 +46,13 @@ def _freeze_record() -> dict:
         "stage_b_token_budget": 100_000,
         "stage_c_token_budget": 100_000,
         "learning_rate": 1e-3,
+        "benchmark": {
+            "budget_token_unit": "non_padding_input_tokens",
+            "tokens_per_second": 1.0,
+            "seconds_per_step": 1.0,
+            "validation_wall_seconds": 1.0,
+            "sha256": "b" * 64,
+        },
     }
 
 
@@ -71,6 +87,39 @@ def test_formal_freeze_rejects_unlisted_seed() -> None:
 
     with pytest.raises(ValueError, match="seed"):
         _validate_formal_freeze(_freeze_record(), 7)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("budget_token_unit", "supervised_target_tokens"),
+        ("t_pretrain_stop_policy", "legacy-early-stop"),
+        ("t_pretrain_checkpoint_policy", "legacy-em-best"),
+    ],
+)
+def test_formal_freeze_rejects_non_v3_policy(field: str, value: str) -> None:
+    """正式入口必须拒绝旧 token、停止和 checkpoint 策略。"""
+
+    record = _freeze_record()
+    record[field] = value
+    with pytest.raises(ValueError, match=field):
+        _validate_formal_freeze(record, 20260903)
+
+
+def test_formal_freeze_requires_validation_wall_time() -> None:
+    """v3 benchmark 缺少完整 validation 墙钟时间时不得冻结。"""
+
+    record = _freeze_record()
+    del record["benchmark"]["validation_wall_seconds"]
+    with pytest.raises(ValueError, match="validation_wall_seconds"):
+        _validate_formal_freeze(record, 20260903)
+
+
+def test_budget_token_counter_uses_full_attention_mask() -> None:
+    """trainer 与 benchmark 共用 prompt+target 非 padding token 口径。"""
+
+    attention_mask = torch.tensor([[1, 1, 1, 0], [1, 1, 0, 0]])
+    assert count_non_padding_input_tokens(attention_mask) == 5
 
 
 def test_loader_is_checked_after_construction() -> None:

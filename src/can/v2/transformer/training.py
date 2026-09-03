@@ -48,6 +48,20 @@ def pretrain_go_no_go(metrics: PretrainMetrics) -> bool:
     )
 
 
+def count_non_padding_input_tokens(attention_mask: Tensor) -> int:
+    """统计 prompt 与 target 中全部非 padding token。"""
+
+    if not isinstance(attention_mask, Tensor):
+        raise TypeError("attention_mask 必须是 Tensor")
+    if attention_mask.ndim != 2:
+        raise ValueError("attention_mask 必须是 [B,T]")
+    if attention_mask.dtype not in {torch.bool, torch.int32, torch.int64}:
+        raise TypeError("attention_mask 必须是 bool 或整数 Tensor")
+    if bool(((attention_mask != 0) & (attention_mask != 1)).any().item()):
+        raise ValueError("attention_mask 只能包含 0/1")
+    return int(attention_mask.sum().item())
+
+
 def masked_causal_lm_loss(
     logits: Tensor, labels: Tensor, sample_mask: Optional[Tensor] = None
 ) -> Tensor:
@@ -332,7 +346,7 @@ class Phase5Trainer:
             batch_size = input_ids.shape[0]
             total_loss += float(loss.detach().item()) * batch_size
             total_samples += batch_size
-            total_tokens += int(attention_mask.sum().item())
+            total_tokens += count_non_padding_input_tokens(attention_mask)
             self.global_step += 1
             if progress and hasattr(batches, "set_postfix"):
                 batches.set_postfix(loss=f"{float(loss.detach().item()):.4f}")
@@ -590,6 +604,7 @@ __all__ = [
     "PretrainMetrics",
     "Phase5Trainer",
     "causal_distillation_loss",
+    "count_non_padding_input_tokens",
     "configure_stage",
     "freeze_teacher",
     "masked_causal_lm_loss",

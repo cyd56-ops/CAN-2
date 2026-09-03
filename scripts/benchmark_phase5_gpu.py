@@ -24,7 +24,10 @@ from src.can.v2.transformer import (
     Phase5Trainer,
     SyntheticKnowledgeDataset,
     TransformerConfig,
+    build_memorization_validation,
     collate_causal_lm_batch,
+    count_non_padding_input_tokens,
+    evaluate_pretrain_validation,
     generate_synthetic_corpus,
 )
 
@@ -81,7 +84,7 @@ def main() -> int:
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     params = LWEParams()
-    A, _, b = generate_keypair(params, np.random.default_rng(args.seed + 100))
+    A, secret, b = generate_keypair(params, np.random.default_rng(args.seed + 100))
     config = TransformerConfig()
     model = GatedDecoderTransformer(A, b, params, config)
     trainer = Phase5Trainer(
@@ -113,7 +116,9 @@ def main() -> int:
         trainer.optimizer.step()
         return {
             # 正式预算口径：输入序列中所有非 padding token（prompt + target）。
-            "non_padding_input_tokens": float(attention_mask.sum().item()),
+            "non_padding_input_tokens": float(
+                count_non_padding_input_tokens(attention_mask)
+            ),
             "supervised_target_tokens": float((labels[:, 1:] != -100).sum().item()),
             "loss": float(loss.item()),
         }
@@ -132,6 +137,31 @@ def main() -> int:
         losses.append(result["loss"])
     torch.cuda.synchronize(device)
     elapsed = time.perf_counter() - started
+    # 使用正式训练相同的 20-entity memorization validation 路径测量完整生成开销。
+    validation_corpus = generate_synthetic_corpus(
+        args.seed,
+        train_entities=48,
+        validation_entities=20,
+        test_entities=20,
+    )
+    validation_examples = build_memorization_validation(validation_corpus["train"], 20)
+    torch.cuda.synchronize(device)
+    validation_started = time.perf_counter()
+    validation_metrics = evaluate_pretrain_validation(
+        model,
+        validation_examples,
+        ByteTokenizer(),
+        A,
+        secret,
+        b,
+        params,
+        args.seed,
+        device,
+        max_new_tokens=16,
+        cache_mode="kv",
+    )
+    torch.cuda.synchronize(device)
+    validation_wall_seconds = time.perf_counter() - validation_started
     report = {
         "schema_version": 1,
         "kind": "phase5_gpu_smoke_benchmark",
@@ -150,6 +180,11 @@ def main() -> int:
         "tokens_per_second": tokens / elapsed,
         "seconds_per_step": elapsed / args.measure_steps,
         "peak_memory_bytes": int(torch.cuda.max_memory_allocated(device)),
+        "validation_entities": 20,
+        "validation_max_new_tokens": 16,
+        "validation_cache_mode": "kv",
+        "validation_wall_seconds": validation_wall_seconds,
+        "validation_metrics": validation_metrics,
         "loss_mean": float(np.mean(losses)),
         "transformer_config": config.__dict__,
         "lwe": {

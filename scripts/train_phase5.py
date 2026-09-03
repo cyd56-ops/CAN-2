@@ -27,7 +27,6 @@ from src.can.v2.transformer import (
     ByteTokenizer,
     EntityTripletBatchSampler,
     GatedDecoderTransformer,
-    Phase5Evaluator,
     Phase5Trainer,
     PretrainMetrics,
     SyntheticKnowledgeDataset,
@@ -36,8 +35,10 @@ from src.can.v2.transformer import (
     build_memorization_validation,
     collate_causal_lm_batch,
     configure_stage,
-    freeze_teacher,
+    count_non_padding_input_tokens,
+    evaluate_pretrain_validation,
     freeze_record_sha256,
+    freeze_teacher,
     generate_synthetic_corpus,
     load_freeze_record,
     pretrain_go_no_go,
@@ -120,6 +121,15 @@ def _frozen_int(record: Mapping[str, Any], key: str, minimum: int = 1) -> int:
 def _validate_formal_freeze(record: Mapping[str, Any], seed: int) -> Dict[str, Any]:
     """验证正式训练的数据规模、预算、seed 和模型结构均已冻结。"""
 
+    expected_v3 = {
+        "freeze_version": "phase5-freeze-v3",
+        "budget_token_unit": "non_padding_input_tokens",
+        "t_pretrain_stop_policy": "go-no-go-or-full-budget-v3",
+        "t_pretrain_checkpoint_policy": "threshold-ratio-loss-tiebreak-v3",
+    }
+    for key, expected in expected_v3.items():
+        if record.get(key) != expected:
+            raise ValueError(f"freeze record.{key} 必须为 {expected!r}")
     if record.get("generator_version") != GENERATOR_VERSION:
         raise ValueError("freeze record.generator_version 与当前数据协议不一致")
     seeds = record.get("seeds")
@@ -157,6 +167,27 @@ def _validate_formal_freeze(record: Mapping[str, Any], seed: int) -> Dict[str, A
     ):
         raise ValueError("freeze record.learning_rate 必须是有限正数")
     values["learning_rate"] = float(learning_rate)
+    benchmark = record.get("benchmark")
+    if not isinstance(benchmark, Mapping):
+        raise ValueError("freeze record.benchmark 必须是对象")
+    if benchmark.get("budget_token_unit") != "non_padding_input_tokens":
+        raise ValueError("benchmark token unit 与 v3 正式口径不一致")
+    for key in ("tokens_per_second", "seconds_per_step", "validation_wall_seconds"):
+        value = benchmark.get(key)
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not np.isfinite(float(value))
+            or float(value) <= 0.0
+        ):
+            raise ValueError(f"freeze record.benchmark.{key} 必须是有限正数")
+    benchmark_sha = benchmark.get("sha256")
+    if (
+        not isinstance(benchmark_sha, str)
+        or len(benchmark_sha) != 64
+        or any(character not in "0123456789abcdef" for character in benchmark_sha)
+    ):
+        raise ValueError("freeze record.benchmark.sha256 必须是小写 SHA-256")
     return values
 
 
@@ -185,7 +216,9 @@ def _epoch_token_count(loader: DataLoader, epoch: int) -> int:
     sampler = getattr(loader, "batch_sampler", None)
     if hasattr(sampler, "set_epoch"):
         sampler.set_epoch(epoch)
-    return sum(int(batch["attention_mask"].sum().item()) for batch in loader)
+    return sum(
+        count_non_padding_input_tokens(batch["attention_mask"]) for batch in loader
+    )
 
 
 def _validation_metrics(
@@ -203,30 +236,19 @@ def _validation_metrics(
 ) -> Dict[str, Any]:
     """分别计算 public/private/refusal，禁止用混合 protected EM 代替 private EM。"""
 
-    def evaluate(subset: Sequence[Any]) -> Dict[str, object]:
-        generator = CredentialGenerator(A, secret, b, params, seed=seed + 1500)
-        dataset = SyntheticKnowledgeDataset(
-            subset, tokenizer, max_length=model.config.max_seq_len
-        )
-        return Phase5Evaluator(
-            model,
-            tokenizer,
-            device,
-            generator,
-            max_new_tokens=max_new_tokens,
-            cache_mode=cache_mode,
-        ).evaluate(dataset)
-
-    public_rows = [item for item in examples if item.scope == "public"]
-    private_rows = [item for item in examples if item.scope == "private"]
-    public_result = evaluate(public_rows)
-    private_result = evaluate(private_rows)
-    return {
-        "protected_public": asdict(public_result["protected"]),
-        "protected_private": asdict(private_result["protected"]),
-        "public": asdict(public_result["public"]),
-        "refusal": asdict(private_result["refusal"]),
-    }
+    return evaluate_pretrain_validation(
+        model,
+        examples,
+        tokenizer,
+        A,
+        secret,
+        b,
+        params,
+        seed,
+        device,
+        max_new_tokens,
+        cache_mode,
+    )
 
 
 def _score(stage: str, metrics: Mapping[str, Any]) -> float:
@@ -277,8 +299,10 @@ def _diagnostic_score(metrics: Mapping[str, Any]) -> tuple[float, float, int]:
 
 
 def _is_better_diagnostic(
-    candidate: Mapping[str, Any], candidate_tokens: int,
-    incumbent: Optional[Mapping[str, Any]], incumbent_tokens: Optional[int],
+    candidate: Mapping[str, Any],
+    candidate_tokens: int,
+    incumbent: Optional[Mapping[str, Any]],
+    incumbent_tokens: Optional[int],
 ) -> bool:
     """按 v3 ratio、protected loss、累计 token 规则比较诊断 checkpoint。"""
 
@@ -625,11 +649,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         # 未通过门槛的 checkpoint 只能写入独立诊断文件，不能污染正式 best。
                         diagnostic_path = stage_dir / "diagnostic_best.ckpt"
                         trainer.save_checkpoint(diagnostic_path)
-                        state["checkpoint_sha256"][f"{stage}:diagnostic_best"] = sha256_file(
-                            diagnostic_path
+                        state["checkpoint_sha256"][f"{stage}:diagnostic_best"] = (
+                            sha256_file(diagnostic_path)
                         )
                         state["diagnostic_best_validation"][stage] = last_validation
-                        state["diagnostic_best_tokens"][stage] = state["stage_tokens"][stage]
+                        state["diagnostic_best_tokens"][stage] = state["stage_tokens"][
+                            stage
+                        ]
                 elif em_better:
                     trainer.save_checkpoint(stage_dir / "best.ckpt")
                     state["checkpoint_sha256"][f"{stage}:best"] = sha256_file(
@@ -657,7 +683,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             final_go = _pretrain_metrics(last_validation)
             if pretrain_go_no_go(final_go):
                 trainer.save_checkpoint(stage_dir / "best.ckpt")
-                state["checkpoint_sha256"][f"{stage}:best"] = sha256_file(stage_dir / "best.ckpt")
+                state["checkpoint_sha256"][f"{stage}:best"] = sha256_file(
+                    stage_dir / "best.ckpt"
+                )
                 state["best_scores"][stage] = current_score
             elif _is_better_diagnostic(
                 last_validation,
@@ -667,12 +695,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             ):
                 diagnostic_path = stage_dir / "diagnostic_best.ckpt"
                 trainer.save_checkpoint(diagnostic_path)
-                state["checkpoint_sha256"][f"{stage}:diagnostic_best"] = sha256_file(diagnostic_path)
+                state["checkpoint_sha256"][f"{stage}:diagnostic_best"] = sha256_file(
+                    diagnostic_path
+                )
                 state["diagnostic_best_validation"][stage] = last_validation
                 state["diagnostic_best_tokens"][stage] = state["stage_tokens"][stage]
-        elif state["best_scores"][stage] is None or current_score > state["best_scores"][stage]:
+        elif (
+            state["best_scores"][stage] is None
+            or current_score > state["best_scores"][stage]
+        ):
             trainer.save_checkpoint(stage_dir / "best.ckpt")
-            state["checkpoint_sha256"][f"{stage}:best"] = sha256_file(stage_dir / "best.ckpt")
+            state["checkpoint_sha256"][f"{stage}:best"] = sha256_file(
+                stage_dir / "best.ckpt"
+            )
             state["best_scores"][stage] = current_score
         state["histories"][stage].append({"final_validation": last_validation})
 
