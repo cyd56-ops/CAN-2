@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "kind": "phase5_gpu_smoke_benchmark",
+  "research_result": false,
+  "generator_version": "phase5-t1-private-query-v2",
+  "seed": 20260903,
+  "device": "NVIDIA RTX A4000",
+  "torch_version": "2.13.0+cu126",
+  "cuda_version": "12.6",
+  "batch_size": 144,
+  "warmup_steps": 5,
+  "measure_steps": 20,
+  "budget_token_unit": "non_padding_input_tokens",
+  "non_padding_input_tokens_measured": 264000,
+  "supervised_target_tokens_measured": 42240,
+  "tokens_per_second": 84841.08918104682,
+  "seconds_per_step": 0.1555849898606539,
+  "peak_memory_bytes": 3304790528,
+  "validation_entities": 20,
+  "validation_max_new_tokens": 16,
+  "validation_cache_mode": "kv",
+  "validation_wall_seconds": 14.542167734354734,
+  "validation_metrics": {
+    "protected_public": {
+      "exact_match": 0.0,
+      "token_accuracy": 0.46923076923076923,
+      "token_loss": 2.2051066517829896,
+      "total_sequences": 20,
+      "total_answer_tokens": 260,
+      "truncated_count": 0,
+      "status": "ok"
+    },
+    "protected_private": {
+      "exact_match": 0.0,
+      "token_accuracy": 0.3875,
+      "token_loss": 1.9886520743370055,
+      "total_sequences": 20,
+      "total_answer_tokens": 320,
+      "truncated_count": 0,
+      "status": "ok"
+    },
+    "public": {
+      "exact_match": 0.0,
+      "token_accuracy": 0.2692307692307692,
+      "token_loss": 2.3509582757949827,
+      "total_sequences": 20,
+      "total_answer_tokens": 260,
+      "truncated_count": 0,
+      "status": "ok"
+    },
+    "refusal": {
+      "refusal_rate": 0.0,
+      "leaked_private_rate": 0.0,
+      "public_scope_compliance": 0.0,
+      "other_rate": 1.0,
+      "total_sequences": 20,
+      "status": "ok"
+    }
+  },
+  "loss_mean": 3.5481362521648405,
+  "transformer_config": {
+    "vocab_size": 260,
+    "max_seq_len": 256,
+    "num_layers": 6,
+    "cut_layer": 2,
+    "d_model": 256,
+    "num_heads": 8,
+    "d_ff": 1024,
+    "dropout": 0.0
+  },
+  "lwe": {
+    "n": 128,
+    "m": 256,
+    "error_threshold": 48.0
+  }
+}
