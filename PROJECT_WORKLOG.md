@@ -3,7 +3,7 @@
 ## 当前研究阶段
 
 **阶段**: V2 - Gate Layer 在计算图中间架构  
-**状态**: Phase 5 CAN/Plain E1 诊断增强已实现，等待 Claude 验收后运行服务器短版诊断
+**状态**: Phase 5 E2 exploratory 数据协议与统一入口已实现，CPU smoke 已通过，等待 Claude 验收
 **最后更新**: 2026-09-04
 
 **2026-09-04 E1 诊断增强**：两个 exploratory 入口均新增独立 `--diagnostic` 短预算模式。训练结束后分别保存 `final.ckpt`，记录模型配置、seed、预算、实际 token 数、batch size、freeze v3 SHA-256 和优化器/模型状态；同时生成独立的逐样本 `diagnostic.json` / `plain_diagnostic.json`，包含 prompt/answer、路由 head、生成结果、exact match、首个差异位置、EOS/停止原因、teacher-forced 逐位置正确性和 refusal 分类。Plain 输出明确标记 `route_mode=oracle_head`、`gate_or_credential=false`，不冒充真实拒答路由。诊断输出与正式 E1 summary 分离，默认拒绝覆盖，且不读取 test split。
@@ -105,6 +105,14 @@
 **2026-09-04 Plain baseline 实现目标**：新增不含 LWE、credential、Gate 或条件授权判决的 `PlainDecoderTransformer`，严格复用 v3 的 `TransformerConfig`、byte tokenizer、synthetic corpus、entity-triplet batch、seed `20260903`、batch size 144 和 exploratory 5,000,000-token 预算。为处理 private/refusal 使用同一 prompt 的数据协议，Plain baseline 保留与 CAN 同构的 protected/public 两个 head，但由评估器显式选择 head；该 oracle-route 对照只用于区分表示/优化能力与 credential routing 影响，不构成授权或安全结论。实现完成后先运行 CPU 专项测试和全量 `tests/v2`，再由用户决定是否在服务器运行对照实验。
 
 **2026-09-04 Plain baseline 实现结果**：新增 `plain_model.py`、`plain_training.py` 和 `train_phase5_plain_exploratory.py`。模型不含 LWE 公共参数、credential 参数、GateLayer 或 AuthorizationDecision；复用现有 `DecoderBlock`、`TransformerConfig`、loss、token 计数、数据和 tokenizer。入口必须读取只读 `phase5-freeze-v3` 并校验已登记 SHA-256，固定 CAN E1 的 seed `20260903` 和 5,000,000-token 预算，拒绝 batch/validation/cache/model 配置漂移，使用单个 token-budget 进度条，并输出 `route_mode="oracle_head"`、`gate_or_credential=false` 和 freeze SHA-256。新增 14 项 Plain 专项测试，并验证相同 torch seed 下 Plain 与 Gated 模型的全部语言建模初始参数逐项相同；Plain+正式入口测试 32 项、全量 `tests/v2` 285 项通过。本地只执行 CPU 测试，未运行 GPU Plain E1。
+
+**2026-09-04 E2 exploratory 方案记录**：新增 `docs/PHASE5_E2_EXPLORATORY_PLAN.md`，将 E1 的零 EM/refusal 诊断拆分为 E2-A 可学习性 sanity check、E2-B 有限随机映射记忆和 E2-C prompt 泛化消融。方案固定复用 E1 的 tokenizer、模型、seed/batch/token 口径和实体隔离规则；首轮只使用 answer-only teacher-forcing CE 及 scope 权重 public=1.0/private=2.0/refusal=1.0，不引入 scheduled sampling 或 RL。E2 全部标记为 exploratory，不读取 test split、不改变或覆盖 freeze v3、不产生正式安全结论；在方案审阅完成前不启动服务器长训练。
+
+**2026-09-04 E2 首轮实现**：新增 `generate_e2_corpus()`、`build_same_template_validation()` 和 `scripts/train_phase5_e2.py`，支持 structured/random-short 答案协议、same/paraphrase prompt 模式以及 Plain/CAN 统一 exploratory 输出。E2-A/B 使用 12 个实体和 batch size 36（每个实体 3 条样本，满足现有 triplet sampler 的最小完整批约束），该 batch 差异已在 E2 方案中显式声明。入口现保存 `resolved_config.json`、`exploratory_summary.json`、逐样本 `diagnostic.json` 和独立 `manifest.json`。新增 `tests/v2/test_phase5_e2.py`；E2 数据/Plain/诊断专项测试 20 项通过，E2 协议测试 5 项通过。
+
+**2026-09-04 E2 工程验证**：本地 CPU Plain 与 CAN structured/same 低预算 smoke（seed `20260903`、batch size `36`、budget `10000`）均成功完成，实际使用 `7956` 个 non-padding input tokens；两个独立输出目录均生成 `final.ckpt`、`diagnostic.json`、`exploratory_summary.json`、`resolved_config.json` 和 `manifest.json`，manifest 正确记录 checkpoint SHA-256 与文件大小，CAN validation 包含 protected-public/private、public、refusal 四类指标。入口与数据模块通过 `py_compile`、Black、isort、`git diff --check`；E2/训练入口专项 `23 passed`，全量 `tests/v2` 为 `292 passed`。该 smoke 仅验证工程闭环，不构成模型能力或安全结论；尚未运行服务器 GPU E2 训练，等待 Claude 验收。
+
+**2026-09-04 E2 周期 validation 修复**：`scripts/train_phase5_e2.py` 现按 freeze v3 的 `validation_interval_tokens=50000` 触发紧凑 validation，并将结果写入对应 `history` 条目的 `validation` 字段；训练指标保存在 `train` 字段，累计 token 保存在 `tokens` 字段，最终 validation 仍单独保存在 summary 顶层。超过阈值的 Plain CPU smoke（budget `60000`）实际累计 `58344` tokens，在 `50388` tokens 处生成 1 条周期 validation，确认学习曲线信息可用；全量测试回归仍为 `292 passed`。
 
 **2026-09-01 数据协议修订**：`generate_synthetic_corpus()` 的 private prompt 已移除 `PRIVATE-xxxxxx` 私有答案文本，仅保留实体查询；私有答案只作为监督 target，invalid credential 对同一 prompt 使用 `ACCESS-DENIED`。此修订消除 prompt 复制造成的 private 能力评估假阳性；旧 checkpoint/旧语料结果不得与新协议混合比较。
 
@@ -770,7 +778,7 @@ C-003、C-006、C-011 与 C-013 的 satisfied 状态均限定于可信进程内�
 
 ### 下一步（唯一下一步）
 
-**实现并验收 PlainDecoderTransformer 及其 exploratory 对照入口；完成 CPU/全量测试后，服务器使用与 E1 完全相同的数据、seed、batch 和 5,000,000-token 预算运行 plain baseline，再与 CAN E1 的 token loss/accuracy、EM 和 refusal 对比。**
+**请 Claude 验收 E2 数据协议、`scripts/train_phase5_e2.py` 和 20 项专项测试；验收通过后运行 CPU smoke，再由用户决定是否启动服务器上的 E2-A Plain/CAN。**
 
 审阅重点：计算图内 Gate 位置和每请求一次的硬路由、同 tokenizer/vocabulary/prompt/停止规则、
 公开与私有/拒答数据生成及实体隔离、Stage A/B/C 训练协议、TM-API/TM-REP/TM-CP 访问条件、

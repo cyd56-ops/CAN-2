@@ -6,7 +6,9 @@ from .data import (
     KnowledgeExample,
     SyntheticKnowledgeDataset,
     build_memorization_validation,
+    build_same_template_validation,
     collate_causal_lm_batch,
+    generate_e2_corpus,
     generate_synthetic_corpus,
 )
 from .diagnostics import build_sample_diagnostics
@@ -105,10 +107,12 @@ __all__ = [
     "causal_distillation_loss",
     "count_non_padding_input_tokens",
     "build_memorization_validation",
+    "build_same_template_validation",
     "collate_causal_lm_batch",
     "configure_stage",
     "freeze_teacher",
     "generate_synthetic_corpus",
+    "generate_e2_corpus",
     "masked_causal_lm_loss",
     "RECOVERY_EPSILON",
     "classify_refusal",

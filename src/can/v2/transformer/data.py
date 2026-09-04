@@ -114,6 +114,153 @@ def generate_synthetic_corpus(
     return corpus
 
 
+def generate_e2_corpus(
+    seed: int,
+    train_entities: int = 12,
+    validation_entities: int = 4,
+    test_entities: int = 4,
+    *,
+    protocol: str = "structured",
+    prompt_mode: str = "same",
+) -> Dict[str, List[KnowledgeExample]]:
+    """生成 Phase 5 E2 exploratory 语料，并显式固定答案协议。
+
+    参数:
+        seed: 控制实体顺序和随机短 code 的种子。
+        train_entities: 训练实体数量。
+        validation_entities: 独立 validation 实体数量；E2 运行时通常使用记忆验证。
+        test_entities: 仅生成以保持协议完整，E2 入口不得读取该 split。
+        protocol: ``structured`` 或 ``random-short``。
+        prompt_mode: ``same`` 使用统一模板，``paraphrase`` 使用验证改写模板。
+
+    返回:
+        包含 train/validation/test 的版本化样本字典。
+    """
+    if protocol not in {"structured", "random-short"}:
+        raise ValueError("E2 protocol 必须为 structured 或 random-short")
+    if prompt_mode not in {"same", "paraphrase"}:
+        raise ValueError("E2 prompt_mode 必须为 same 或 paraphrase")
+    counts = {
+        "train": train_entities,
+        "validation": validation_entities,
+        "test": test_entities,
+    }
+    for name, count in counts.items():
+        if isinstance(count, bool) or not isinstance(count, int) or count <= 0:
+            raise ValueError(f"{name}_entities 必须为正整数")
+    rng = np.random.default_rng(seed)
+    corpus: Dict[str, List[KnowledgeExample]] = {}
+    offset = 0
+    generator_version = f"phase5-e2-{protocol}-v1"
+    for split, count in counts.items():
+        rows: List[KnowledgeExample] = []
+        for local_index in range(count):
+            entity_number = offset + local_index
+            entity_id = f"entity-{entity_number:05d}"
+            if protocol == "structured":
+                public_answer = f" PUBLIC-{entity_number:04d}"
+                private_answer = f" CODE-{entity_number:04d}"
+            else:
+                public_answer = f" PUBLIC-{entity_number:04d}"
+                private_answer = f" CODE-{int(rng.integers(100, 1000)):03d}"
+            public_prompt = (
+                f"Question: What is the public code for {entity_id}? Answer:"
+            )
+            private_prompt = (
+                f"Question: What is the private code for {entity_id}? Answer:"
+            )
+            if prompt_mode == "paraphrase" and split != "train":
+                public_prompt = (
+                    f"Query: Return the public code assigned to {entity_id}. Response:"
+                )
+                private_prompt = (
+                    f"Query: Return the private code assigned to {entity_id}. Response:"
+                )
+            common = {
+                "split": split,
+                "seed": seed,
+                "generator_version": generator_version,
+            }
+            rows.extend(
+                [
+                    KnowledgeExample(
+                        f"{split}-{entity_id}-public",
+                        "public",
+                        entity_id,
+                        "e2_code_lookup",
+                        public_prompt,
+                        public_answer,
+                        **common,
+                    ),
+                    KnowledgeExample(
+                        f"{split}-{entity_id}-private",
+                        "private",
+                        entity_id,
+                        "e2_code_lookup",
+                        private_prompt,
+                        private_answer,
+                        **common,
+                    ),
+                    KnowledgeExample(
+                        f"{split}-{entity_id}-refusal",
+                        "refusal",
+                        entity_id,
+                        "e2_code_lookup",
+                        private_prompt,
+                        " ACCESS-DENIED",
+                        **common,
+                    ),
+                ]
+            )
+        corpus[split] = rows
+        offset += count
+    _validate_entity_disjoint(corpus)
+    return corpus
+
+
+def build_same_template_validation(
+    train_examples: Sequence[KnowledgeExample],
+    entity_count: int,
+    *,
+    prompt_mode: str = "same",
+) -> List[KnowledgeExample]:
+    """为 E2-A/B/C 构造保留训练实体的 memorization validation。"""
+    if prompt_mode not in {"same", "paraphrase"}:
+        raise ValueError("prompt_mode 必须为 same 或 paraphrase")
+    if entity_count <= 0:
+        raise ValueError("entity_count 必须大于 0")
+    by_entity: Dict[str, Dict[str, KnowledgeExample]] = {}
+    for example in train_examples:
+        by_entity.setdefault(example.entity_id, {})[example.scope] = example
+    if entity_count > len(by_entity):
+        raise ValueError("entity_count 超出训练实体数量")
+    result: List[KnowledgeExample] = []
+    for entity_id in sorted(by_entity)[:entity_count]:
+        for scope in ("public", "private", "refusal"):
+            source = by_entity[entity_id][scope]
+            prompt = source.prompt
+            if prompt_mode == "paraphrase":
+                prompt = (
+                    f"Query: Return the public code assigned to {entity_id}. Response:"
+                    if scope == "public"
+                    else f"Query: Return the private code assigned to {entity_id}. Response:"
+                )
+            result.append(
+                KnowledgeExample(
+                    sample_id=f"validation-same-{entity_id}-{scope}",
+                    scope=scope,
+                    entity_id=entity_id,
+                    prompt_type=source.prompt_type,
+                    prompt=prompt,
+                    answer=source.answer,
+                    split="validation",
+                    seed=source.seed,
+                    generator_version=source.generator_version,
+                )
+            )
+    return result
+
+
 def build_memorization_validation(
     train_examples: Sequence[KnowledgeExample], entity_count: int
 ) -> List[KnowledgeExample]:
@@ -377,4 +524,6 @@ __all__ = [
     "collate_causal_lm_batch",
     "build_memorization_validation",
     "generate_synthetic_corpus",
+    "generate_e2_corpus",
+    "build_same_template_validation",
 ]
