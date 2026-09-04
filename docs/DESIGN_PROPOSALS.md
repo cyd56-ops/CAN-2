@@ -3667,6 +3667,14 @@ T1 只交付结构、接口和预算检查，并用离线 fixture 测试；不�
 
 所有 baseline 必须复用相同 tokenizer、prompt 模板、停止规则、split 和训练预算，构造时断言这些字段与主实验一致。T1 只交付配置与合规断言，不执行 baseline 训练。
 
+#### Plain Transformer exploratory 对照（2026-09-04）
+
+为判断 v3/E1 的零 exact-match 是否主要由 Gate/credential 路由造成，新增隔离的 `PlainDecoderTransformer`。该模型复用 `TransformerConfig`、`DecoderBlock`、byte tokenizer、synthetic corpus、entity-triplet sampler、seed、batch size、学习率、validation 间隔、KV-cache、生成上限和 `non_padding_input_tokens` 预算，但模型对象中不得存在 LWE 参数、credential 输入、`GateLayer`、授权判决或条件授权路由。
+
+当前 private 与 refusal 样本有意使用同一 prompt，二者仅因 credential 有效性而应产生不同 target；完全无 credential 的单 head 函数无法同时表示这两个相冲突的映射。因此 Plain 对照保留与 CAN T-pretrain 同构的 protected full-path head 和 public early-exit head，由 evaluator 依据样本 scope 显式选择 head，并在结果中固定记录 `route_mode="oracle_head"`、`gate_or_credential=false`。这个实验衡量“去掉密码学验证和模型内 Gate 后，同构表示/优化路径能否学会各自 target”，属于能力上界和根因诊断，不是普通服务可部署方案，也不能支持任何授权或安全 claim。
+
+首个 Plain E1 必须读取 `phase5-freeze-v3` 作为只读协议来源，校验已登记的 freeze SHA-256，并固定使用 seed `20260903`、batch size 144、学习率 0.001、5,000,000-token exploratory 预算和相同 memorization validation；CLI 对 seed、预算或冻结协议的漂移必须 fail fast。后续如需增加探索预算，必须建立新的明确实验标识，不得修改或覆盖 freeze v3 或本次 Plain E1；输出目录必须独立且默认拒绝覆盖。比较时只使用相同 token 位置的 validation 记录，报告 public/private exact match、refusal rate、token accuracy 和 token loss，并明确 Plain 的 refusal 使用 oracle public head，不能与 CAN 的 credential routing 正确性混为同一指标。
+
 ### T1.8 CPU Smoke
 
 **文件**：`scripts/run_phase5_smoke.py`

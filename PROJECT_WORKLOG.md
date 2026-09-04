@@ -3,8 +3,8 @@
 ## 当前研究阶段
 
 **阶段**: V2 - Gate Layer 在计算图中间架构  
-**状态**: Phase 5 v3 失败基线已保留，正在准备独立 exploratory T-pretrain 实验
-**最后更新**: 2026-09-03
+**状态**: Phase 5 Plain Transformer exploratory 对照已实现，等待 Claude 验收后运行 GPU 对照
+**最后更新**: 2026-09-04
 
 **Phase 3 进度**: evaluator、三个 Stage C best checkpoint 的官方 test split 正式评估及 Phase 3.6 可信进程内 response envelope 均已完成并通过验收。服务层包含真实 credential 输入、固定长度概率响应、稀疏路由契约校验、整批 fail-closed 和 30 项专项测试。
 
@@ -95,6 +95,12 @@
 - 策略：`go-no-go-or-full-budget-v3` 与 `threshold-ratio-loss-tiebreak-v3`；该记录 supersedes v2，但 v2 artifact 与负向结果继续保留且不可覆盖。
 
 **2026-09-03 exploratory E1 入口**：新增 `scripts/train_phase5_exploratory.py`，以 `phase5-freeze-v3` 为只读基线，仅执行 T-pretrain，不读取 test split、不创建 teacher、不进入 A/B/C。默认预算为 5,000,000 `non_padding_input_tokens`，batch size 144、学习率 0.001、protected/public head 监督权重均为 1.0；输出独立 `exploratory_summary.json`，记录每次 validation 的 loss、token accuracy、EM 和 refusal。该入口用于区分“预算不足”和“监督/数据协议问题”，结果不属于正式研究结果，也不得覆盖 v3 输出。
+
+**2026-09-04 exploratory E1 结果**：seed `20260903` 实际训练 `4,989,600 / 5,000,000` non-padding input tokens，共记录 99 次 validation。最终 protected-public/private/public exact match 和 refusal rate 仍均为 0，invalid private query 的 `other_rate=1.0`；对应 token accuracy 约为 `0.2846`、`0.4156`、`0.3192`，token loss 约为 `5.4624`、`3.6565`、`4.2948`。该结果说明单独增加预算未使完整序列能力脱离 0，但不能归因于 Gate；E1 保留为 exploratory 负向基线，不作为 teacher 或正式论文结果。
+
+**2026-09-04 Plain baseline 实现目标**：新增不含 LWE、credential、Gate 或条件授权判决的 `PlainDecoderTransformer`，严格复用 v3 的 `TransformerConfig`、byte tokenizer、synthetic corpus、entity-triplet batch、seed `20260903`、batch size 144 和 exploratory 5,000,000-token 预算。为处理 private/refusal 使用同一 prompt 的数据协议，Plain baseline 保留与 CAN 同构的 protected/public 两个 head，但由评估器显式选择 head；该 oracle-route 对照只用于区分表示/优化能力与 credential routing 影响，不构成授权或安全结论。实现完成后先运行 CPU 专项测试和全量 `tests/v2`，再由用户决定是否在服务器运行对照实验。
+
+**2026-09-04 Plain baseline 实现结果**：新增 `plain_model.py`、`plain_training.py` 和 `train_phase5_plain_exploratory.py`。模型不含 LWE 公共参数、credential 参数、GateLayer 或 AuthorizationDecision；复用现有 `DecoderBlock`、`TransformerConfig`、loss、token 计数、数据和 tokenizer。入口必须读取只读 `phase5-freeze-v3` 并校验已登记 SHA-256，固定 CAN E1 的 seed `20260903` 和 5,000,000-token 预算，拒绝 batch/validation/cache/model 配置漂移，使用单个 token-budget 进度条，并输出 `route_mode="oracle_head"`、`gate_or_credential=false` 和 freeze SHA-256。新增 14 项 Plain 专项测试，并验证相同 torch seed 下 Plain 与 Gated 模型的全部语言建模初始参数逐项相同；Plain+正式入口测试 32 项、全量 `tests/v2` 285 项通过。本地只执行 CPU 测试，未运行 GPU Plain E1。
 
 **2026-09-01 数据协议修订**：`generate_synthetic_corpus()` 的 private prompt 已移除 `PRIVATE-xxxxxx` 私有答案文本，仅保留实体查询；私有答案只作为监督 target，invalid credential 对同一 prompt 使用 `ACCESS-DENIED`。此修订消除 prompt 复制造成的 private 能力评估假阳性；旧 checkpoint/旧语料结果不得与新协议混合比较。
 
@@ -760,7 +766,7 @@ C-003、C-006、C-011 与 C-013 的 satisfied 状态均限定于可信进程内�
 
 ### 下一步（唯一下一步）
 
-**补齐并验收 exploratory T-pretrain 入口；服务器拉取后以 v3 为只读基线运行 E1（仅增加预算、不修改 v3 freeze），检查 token loss/accuracy、EM 和 refusal 是否脱离 0，再决定是否设计 E2 权重实验或建立正式 freeze v4。**
+**实现并验收 PlainDecoderTransformer 及其 exploratory 对照入口；完成 CPU/全量测试后，服务器使用与 E1 完全相同的数据、seed、batch 和 5,000,000-token 预算运行 plain baseline，再与 CAN E1 的 token loss/accuracy、EM 和 refusal 对比。**
 
 审阅重点：计算图内 Gate 位置和每请求一次的硬路由、同 tokenizer/vocabulary/prompt/停止规则、
 公开与私有/拒答数据生成及实体隔离、Stage A/B/C 训练协议、TM-API/TM-REP/TM-CP 访问条件、

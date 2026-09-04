@@ -49,6 +49,12 @@ from .normalization import (
     classify_refusal,
     normalize_answer,
 )
+from .plain_model import (
+    PlainDecoderTransformer,
+    PlainGenerationOutput,
+    PlainTransformerOutput,
+)
+from .plain_training import PlainDecoderTrainer
 from .reference import (
     DirectReferenceEquivalence,
     MixedRoutingValidation,
@@ -91,6 +97,10 @@ __all__ = [
     "TransformerConfig",
     "TransformerInferenceOutput",
     "TransformerTrainingOutput",
+    "PlainDecoderTransformer",
+    "PlainGenerationOutput",
+    "PlainTransformerOutput",
+    "PlainDecoderTrainer",
     "causal_distillation_loss",
     "count_non_padding_input_tokens",
     "build_memorization_validation",
