@@ -89,6 +89,15 @@ teacher-forced accuracy，以及训练/validation 的差距。
 | C1 | 单一模板 | 未见但语义相近模板 | 测量改写损失 |
 | C2 | 多模板 | 未见但语义相近模板 | 测量模板增强收益 |
 
+- CLI 映射固定为：C0=`--prompt-mode same`、C1=`--prompt-mode paraphrase`、
+  C2=`--prompt-mode multi-paraphrase`；结果 JSON 必须记录 `prompt_group`；
+- 单模板为 `Question: What is the {public|private} code for <entity>? Answer:`；
+- C2 额外加入 `Request: Provide ...` 与 `Lookup: Find ...`，每个实体在三套模板下
+  各生成一份完整 public/private/refusal triplet；
+- C1/C2 的 held-out validation 固定使用 `Query: Return the ... code assigned to
+  <entity>. Response:`，该模板不得出现在训练样本中；
+- C2 sampler 按 `(entity_id, prompt_type)` 分组，每组必须恰含完整 triplet；batch size
+  仍为 36，token budget 而非 epoch 数控制 Plain/CAN 的训练量；
 - 使用 E2-A 的结构化答案先验证流程，再可复用 E2-B 的短随机 code；
 - 预算：每组 1,000,000 non-padding input tokens；
 - Plain/CAN 成对运行，比较同一 token 位置的 validation 记录；

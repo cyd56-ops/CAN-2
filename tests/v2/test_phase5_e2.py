@@ -2,7 +2,9 @@
 
 import pytest
 
+from scripts.train_phase5_e2 import _e2_loader
 from src.can.v2.transformer import (
+    ByteTokenizer,
     build_same_template_validation,
     generate_e2_corpus,
 )
@@ -54,3 +56,45 @@ def test_e2_protocol_rejects_unknown_values() -> None:
         generate_e2_corpus(1, protocol="unknown")
     with pytest.raises(ValueError):
         generate_e2_corpus(1, prompt_mode="unknown")
+
+
+def test_multi_paraphrase_uses_three_train_templates_per_entity() -> None:
+    """C2 必须让每个训练实体出现三套完整且答案一致的 triplet。"""
+    corpus = generate_e2_corpus(
+        17, 12, 1, 1, protocol="structured", prompt_mode="multi-paraphrase"
+    )
+    assert len(corpus["train"]) == 12 * 3 * 3
+    first_entity = [
+        item for item in corpus["train"] if item.entity_id == "entity-00000"
+    ]
+    assert len({item.prompt_type for item in first_entity}) == 3
+    private_answers = {item.answer for item in first_entity if item.scope == "private"}
+    assert private_answers == {" CODE-0000"}
+
+
+def test_multi_paraphrase_validation_template_is_held_out() -> None:
+    """C2 validation 模板不得出现在同一实体的训练 prompt 中。"""
+    corpus = generate_e2_corpus(
+        19, 12, 1, 1, protocol="structured", prompt_mode="multi-paraphrase"
+    )
+    validation = build_same_template_validation(
+        corpus["train"], 4, prompt_mode="multi-paraphrase"
+    )
+    train_prompts = {item.prompt for item in corpus["train"]}
+    assert all(item.prompt not in train_prompts for item in validation)
+    assert all(item.prompt_type == "e2_code_lookup_heldout_v1" for item in validation)
+
+
+def test_e2_multi_template_loader_preserves_complete_triplets() -> None:
+    """C2 loader 的每个 batch 都必须保持 public/private/refusal 数量一致。"""
+    corpus = generate_e2_corpus(
+        23, 12, 1, 1, protocol="structured", prompt_mode="multi-paraphrase"
+    )
+    loader = _e2_loader(corpus["train"], ByteTokenizer(), 36, 23, 256)
+    batches = list(loader)
+    assert len(batches) == 3
+    for batch in batches:
+        assert len(batch["scopes"]) == 36
+        assert batch["scopes"].count("public") == 12
+        assert batch["scopes"].count("private") == 12
+        assert batch["scopes"].count("refusal") == 12

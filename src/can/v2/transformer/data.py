@@ -10,6 +10,25 @@ from torch.utils.data import Dataset, Sampler
 
 from .tokenizer import ByteTokenizer
 
+_E2_TRAIN_PROMPT_TEMPLATES = (
+    (
+        "Question: What is the public code for {entity_id}? Answer:",
+        "Question: What is the private code for {entity_id}? Answer:",
+    ),
+    (
+        "Request: Provide the public code for {entity_id}. Answer:",
+        "Request: Provide the private code for {entity_id}. Answer:",
+    ),
+    (
+        "Lookup: Find {entity_id}'s public code. Result:",
+        "Lookup: Find {entity_id}'s private code. Result:",
+    ),
+)
+_E2_HELDOUT_PROMPT_TEMPLATES = (
+    "Query: Return the public code assigned to {entity_id}. Response:",
+    "Query: Return the private code assigned to {entity_id}. Response:",
+)
+
 
 @dataclass(frozen=True)
 class KnowledgeExample:
@@ -131,15 +150,16 @@ def generate_e2_corpus(
         validation_entities: 独立 validation 实体数量；E2 运行时通常使用记忆验证。
         test_entities: 仅生成以保持协议完整，E2 入口不得读取该 split。
         protocol: ``structured`` 或 ``random-short``。
-        prompt_mode: ``same`` 使用统一模板，``paraphrase`` 使用验证改写模板。
+        prompt_mode: ``same`` 为 C0，``paraphrase`` 为 C1，
+            ``multi-paraphrase`` 为 C2 多模板训练。
 
     返回:
         包含 train/validation/test 的版本化样本字典。
     """
     if protocol not in {"structured", "random-short"}:
         raise ValueError("E2 protocol 必须为 structured 或 random-short")
-    if prompt_mode not in {"same", "paraphrase"}:
-        raise ValueError("E2 prompt_mode 必须为 same 或 paraphrase")
+    if prompt_mode not in {"same", "paraphrase", "multi-paraphrase"}:
+        raise ValueError("E2 prompt_mode 必须为 same、paraphrase 或 multi-paraphrase")
     counts = {
         "train": train_entities,
         "validation": validation_entities,
@@ -151,7 +171,7 @@ def generate_e2_corpus(
     rng = np.random.default_rng(seed)
     corpus: Dict[str, List[KnowledgeExample]] = {}
     offset = 0
-    generator_version = f"phase5-e2-{protocol}-v1"
+    generator_version = f"phase5-e2-{protocol}-{prompt_mode}-v2"
     for split, count in counts.items():
         rows: List[KnowledgeExample] = []
         for local_index in range(count):
@@ -163,55 +183,55 @@ def generate_e2_corpus(
             else:
                 public_answer = f" PUBLIC-{entity_number:04d}"
                 private_answer = f" CODE-{int(rng.integers(100, 1000)):03d}"
-            public_prompt = (
-                f"Question: What is the public code for {entity_id}? Answer:"
-            )
-            private_prompt = (
-                f"Question: What is the private code for {entity_id}? Answer:"
-            )
-            if prompt_mode == "paraphrase" and split != "train":
-                public_prompt = (
-                    f"Query: Return the public code assigned to {entity_id}. Response:"
-                )
-                private_prompt = (
-                    f"Query: Return the private code assigned to {entity_id}. Response:"
-                )
             common = {
                 "split": split,
                 "seed": seed,
                 "generator_version": generator_version,
             }
-            rows.extend(
-                [
-                    KnowledgeExample(
-                        f"{split}-{entity_id}-public",
-                        "public",
-                        entity_id,
-                        "e2_code_lookup",
-                        public_prompt,
-                        public_answer,
-                        **common,
-                    ),
-                    KnowledgeExample(
-                        f"{split}-{entity_id}-private",
-                        "private",
-                        entity_id,
-                        "e2_code_lookup",
-                        private_prompt,
-                        private_answer,
-                        **common,
-                    ),
-                    KnowledgeExample(
-                        f"{split}-{entity_id}-refusal",
-                        "refusal",
-                        entity_id,
-                        "e2_code_lookup",
-                        private_prompt,
-                        " ACCESS-DENIED",
-                        **common,
-                    ),
-                ]
+            template_indices = (
+                range(len(_E2_TRAIN_PROMPT_TEMPLATES))
+                if split == "train" and prompt_mode == "multi-paraphrase"
+                else range(1)
             )
+            for template_index in template_indices:
+                templates = _E2_TRAIN_PROMPT_TEMPLATES[template_index]
+                if split != "train" and prompt_mode != "same":
+                    templates = _E2_HELDOUT_PROMPT_TEMPLATES
+                public_prompt = templates[0].format(entity_id=entity_id)
+                private_prompt = templates[1].format(entity_id=entity_id)
+                prompt_type = f"e2_code_lookup_train_v{template_index + 1}"
+                suffix = f"-template-{template_index + 1}"
+                rows.extend(
+                    [
+                        KnowledgeExample(
+                            f"{split}-{entity_id}-public{suffix}",
+                            "public",
+                            entity_id,
+                            prompt_type,
+                            public_prompt,
+                            public_answer,
+                            **common,
+                        ),
+                        KnowledgeExample(
+                            f"{split}-{entity_id}-private{suffix}",
+                            "private",
+                            entity_id,
+                            prompt_type,
+                            private_prompt,
+                            private_answer,
+                            **common,
+                        ),
+                        KnowledgeExample(
+                            f"{split}-{entity_id}-refusal{suffix}",
+                            "refusal",
+                            entity_id,
+                            prompt_type,
+                            private_prompt,
+                            " ACCESS-DENIED",
+                            **common,
+                        ),
+                    ]
+                )
         corpus[split] = rows
         offset += count
     _validate_entity_disjoint(corpus)
@@ -225,13 +245,17 @@ def build_same_template_validation(
     prompt_mode: str = "same",
 ) -> List[KnowledgeExample]:
     """为 E2-A/B/C 构造保留训练实体的 memorization validation。"""
-    if prompt_mode not in {"same", "paraphrase"}:
-        raise ValueError("prompt_mode 必须为 same 或 paraphrase")
+    if prompt_mode not in {"same", "paraphrase", "multi-paraphrase"}:
+        raise ValueError("prompt_mode 必须为 same、paraphrase 或 multi-paraphrase")
     if entity_count <= 0:
         raise ValueError("entity_count 必须大于 0")
     by_entity: Dict[str, Dict[str, KnowledgeExample]] = {}
     for example in train_examples:
-        by_entity.setdefault(example.entity_id, {})[example.scope] = example
+        rows = by_entity.setdefault(example.entity_id, {})
+        existing = rows.get(example.scope)
+        if existing is not None and existing.answer != example.answer:
+            raise ValueError("同一实体和 scope 的多模板答案必须一致")
+        rows.setdefault(example.scope, example)
     if entity_count > len(by_entity):
         raise ValueError("entity_count 超出训练实体数量")
     result: List[KnowledgeExample] = []
@@ -239,18 +263,23 @@ def build_same_template_validation(
         for scope in ("public", "private", "refusal"):
             source = by_entity[entity_id][scope]
             prompt = source.prompt
-            if prompt_mode == "paraphrase":
-                prompt = (
-                    f"Query: Return the public code assigned to {entity_id}. Response:"
+            if prompt_mode != "same":
+                template = (
+                    _E2_HELDOUT_PROMPT_TEMPLATES[0]
                     if scope == "public"
-                    else f"Query: Return the private code assigned to {entity_id}. Response:"
+                    else _E2_HELDOUT_PROMPT_TEMPLATES[1]
                 )
+                prompt = template.format(entity_id=entity_id)
             result.append(
                 KnowledgeExample(
                     sample_id=f"validation-same-{entity_id}-{scope}",
                     scope=scope,
                     entity_id=entity_id,
-                    prompt_type=source.prompt_type,
+                    prompt_type=(
+                        source.prompt_type
+                        if prompt_mode == "same"
+                        else "e2_code_lookup_heldout_v1"
+                    ),
                     prompt=prompt,
                     answer=source.answer,
                     split="validation",

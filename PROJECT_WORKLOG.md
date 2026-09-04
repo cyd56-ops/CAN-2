@@ -3,7 +3,7 @@
 ## 当前研究阶段
 
 **阶段**: V2 - Gate Layer 在计算图中间架构  
-**状态**: Phase 5 E2 exploratory 数据协议与统一入口已实现，CPU smoke 已通过，等待 Claude 验收
+**状态**: Phase 5 E2-A/B 已完成服务器实验，E2-C prompt 泛化消融已实现并通过本地验证，等待 Claude 验收
 **最后更新**: 2026-09-04
 
 **2026-09-04 E1 诊断增强**：两个 exploratory 入口均新增独立 `--diagnostic` 短预算模式。训练结束后分别保存 `final.ckpt`，记录模型配置、seed、预算、实际 token 数、batch size、freeze v3 SHA-256 和优化器/模型状态；同时生成独立的逐样本 `diagnostic.json` / `plain_diagnostic.json`，包含 prompt/answer、路由 head、生成结果、exact match、首个差异位置、EOS/停止原因、teacher-forced 逐位置正确性和 refusal 分类。Plain 输出明确标记 `route_mode=oracle_head`、`gate_or_credential=false`，不冒充真实拒答路由。诊断输出与正式 E1 summary 分离，默认拒绝覆盖，且不读取 test split。
@@ -113,6 +113,10 @@
 **2026-09-04 E2 工程验证**：本地 CPU Plain 与 CAN structured/same 低预算 smoke（seed `20260903`、batch size `36`、budget `10000`）均成功完成，实际使用 `7956` 个 non-padding input tokens；两个独立输出目录均生成 `final.ckpt`、`diagnostic.json`、`exploratory_summary.json`、`resolved_config.json` 和 `manifest.json`，manifest 正确记录 checkpoint SHA-256 与文件大小，CAN validation 包含 protected-public/private、public、refusal 四类指标。入口与数据模块通过 `py_compile`、Black、isort、`git diff --check`；E2/训练入口专项 `23 passed`，全量 `tests/v2` 为 `292 passed`。该 smoke 仅验证工程闭环，不构成模型能力或安全结论；尚未运行服务器 GPU E2 训练，等待 Claude 验收。
 
 **2026-09-04 E2 周期 validation 修复**：`scripts/train_phase5_e2.py` 现按 freeze v3 的 `validation_interval_tokens=50000` 触发紧凑 validation，并将结果写入对应 `history` 条目的 `validation` 字段；训练指标保存在 `train` 字段，累计 token 保存在 `tokens` 字段，最终 validation 仍单独保存在 summary 顶层。超过阈值的 Plain CPU smoke（budget `60000`）实际累计 `58344` tokens，在 `50388` tokens 处生成 1 条周期 validation，确认学习曲线信息可用；全量测试回归仍为 `292 passed`。
+
+**2026-09-04 E2-A/B 服务器结果**：seed `20260903` 的 Plain/CAN E2-A structured/same 均在 `498576 / 500000` tokens 后达到 protected-public、protected-private、public EM/token accuracy 全部 `1.0`，refusal rate `1.0` 且 private leakage `0.0`。随后 Plain/CAN E2-B random-short/same 均在 `997920 / 1000000` tokens 后达到相同的全满指标，各保存 378 条训练 history 和 19 条周期 validation；checkpoint manifest、freeze v3 SHA-256 与 `research_result=false` 均正常。结果证明当前管线能学习结构化映射并记忆 12 个训练实体的三位随机 code，且未观察到 CAN 相对 Plain 的退化；这是 memorization exploratory 结果，不代表未见实体泛化或安全保证。
+
+**2026-09-04 E2-C 实现口径**：prompt 消融固定映射为 C0=`same`、C1=`paraphrase`、C2=`multi-paraphrase`。C2 为每个实体生成三套完整 triplet，E2 专用 sampler 按 `(entity_id, prompt_type)` 分组；C1/C2 使用第四套未见模板 validation。所有输出新增 `prompt_group`，确保三组结果不可混淆。C2 Plain CPU smoke 生成 108 条训练样本和 12 条 held-out validation 样本，summary、diagnostic 与 manifest 的 C2 身份一致；专项测试增至 8 项，全量 `tests/v2` 为 `295 passed`。尚未运行服务器 E2-C。
 
 **2026-09-01 数据协议修订**：`generate_synthetic_corpus()` 的 private prompt 已移除 `PRIVATE-xxxxxx` 私有答案文本，仅保留实体查询；私有答案只作为监督 target，invalid credential 对同一 prompt 使用 `ACCESS-DENIED`。此修订消除 prompt 复制造成的 private 能力评估假阳性；旧 checkpoint/旧语料结果不得与新协议混合比较。
 
@@ -778,7 +782,7 @@ C-003、C-006、C-011 与 C-013 的 satisfied 状态均限定于可信进程内�
 
 ### 下一步（唯一下一步）
 
-**请 Claude 验收 E2 数据协议、`scripts/train_phase5_e2.py` 和 20 项专项测试；验收通过后运行 CPU smoke，再由用户决定是否启动服务器上的 E2-A Plain/CAN。**
+**请 Claude 验收 E2-C 的 C0/C1/C2 prompt 模式、E2 专用 sampler、held-out validation 与结果身份字段；验收通过后再提交推送，并在服务器运行 Plain/CAN 成对消融。**
 
 审阅重点：计算图内 Gate 位置和每请求一次的硬路由、同 tokenizer/vocabulary/prompt/停止规则、
 公开与私有/拒答数据生成及实体隔离、Stage A/B/C 训练协议、TM-API/TM-REP/TM-CP 访问条件、
