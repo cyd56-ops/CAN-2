@@ -24,6 +24,7 @@ from src.can.v2.transformer import (
     SyntheticKnowledgeDataset,
     TransformerConfig,
     build_memorization_validation,
+    build_sample_diagnostics,
     collate_causal_lm_batch,
     count_non_padding_input_tokens,
     freeze_record_sha256,
@@ -270,10 +271,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--device", default="auto")
     parser.add_argument("--max-new-tokens", type=int, default=None)
     parser.add_argument("--cache-mode", choices=("none", "kv"), default=None)
+    parser.add_argument(
+        "--diagnostic",
+        action="store_true",
+        help="启用短版诊断模式；输出独立 plain_diagnostic.json",
+    )
     args = parser.parse_args(argv)
     if args.output.exists() and any(args.output.iterdir()):
         raise FileExistsError(f"输出目录非空，拒绝覆盖: {args.output}")
-    if args.seed != CAN_E1_SEED or args.budget != CAN_E1_BUDGET:
+    if (not args.diagnostic) and (
+        args.seed != CAN_E1_SEED or args.budget != CAN_E1_BUDGET
+    ):
         raise ValueError("Plain E1 必须复用 CAN E1 的 seed=20260903 和 budget=5000000")
     protocol = _protocol_from_freeze(args.freeze_record, args.seed, args)
     batch_size = protocol["batch_size"]
@@ -348,6 +356,49 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         history.append(entry)
     if progress is not None:
         progress.close()
+    trainer_path = out / "final.ckpt"
+    torch.save(
+        {
+            "schema_version": 1,
+            "experiment_kind": "exploratory_plain_baseline",
+            "model_kind": "plain",
+            "model": model.state_dict(),
+            "optimizer": trainer.optimizer.state_dict(),
+            "seed": args.seed,
+            "budget": args.budget,
+            "actual_tokens": total_tokens,
+            "batch_size": batch_size,
+            "freeze_record_sha256": protocol["freeze_sha256"],
+            "config": config.__dict__,
+        },
+        trainer_path,
+    )
+    validation_examples = build_memorization_validation(
+        corpus["train"], protocol["validation_entities"]
+    )
+    diagnostic = {
+        "schema_version": 1,
+        "experiment_kind": (
+            "exploratory_diagnostic" if args.diagnostic else "exploratory"
+        ),
+        "model_kind": "plain",
+        "route_mode": "oracle_head",
+        "gate_or_credential": False,
+        "seed": args.seed,
+        "actual_tokens": total_tokens,
+        "budget": args.budget,
+        "batch_size": batch_size,
+        "cache_mode": cache_mode,
+        "train": build_sample_diagnostics(
+            model, corpus["train"], tokenizer, device, max_new_tokens, cache_mode
+        ),
+        "validation": build_sample_diagnostics(
+            model, validation_examples, tokenizer, device, max_new_tokens, cache_mode
+        ),
+    }
+    (out / "plain_diagnostic.json").write_text(
+        json.dumps(diagnostic, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
     summary = {
         "experiment_kind": "exploratory_plain_baseline",
         "research_result": False,
@@ -368,6 +419,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "test_entities": protocol["test_entities"],
         "learning_rate": protocol["learning_rate"],
         "history": history,
+        "final_checkpoint": "final.ckpt",
+        "diagnostic": "plain_diagnostic.json",
     }
     (out / "plain_exploratory_summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"

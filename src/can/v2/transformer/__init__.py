@@ -9,6 +9,7 @@ from .data import (
     collate_causal_lm_batch,
     generate_synthetic_corpus,
 )
+from .diagnostics import build_sample_diagnostics
 from .evaluator import (
     CapabilityMetrics,
     Phase5Evaluator,
@@ -131,4 +132,5 @@ __all__ = [
     "DirectReferenceEquivalence",
     "pretrain_go_no_go",
     "validate_mixed_routing",
+    "build_sample_diagnostics",
 ]

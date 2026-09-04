@@ -3,8 +3,12 @@
 ## 当前研究阶段
 
 **阶段**: V2 - Gate Layer 在计算图中间架构  
-**状态**: Phase 5 Plain Transformer exploratory 对照已实现，等待 Claude 验收后运行 GPU 对照
+**状态**: Phase 5 CAN/Plain E1 诊断增强已实现，等待 Claude 验收后运行服务器短版诊断
 **最后更新**: 2026-09-04
+
+**2026-09-04 E1 诊断增强**：两个 exploratory 入口均新增独立 `--diagnostic` 短预算模式。训练结束后分别保存 `final.ckpt`，记录模型配置、seed、预算、实际 token 数、batch size、freeze v3 SHA-256 和优化器/模型状态；同时生成独立的逐样本 `diagnostic.json` / `plain_diagnostic.json`，包含 prompt/answer、路由 head、生成结果、exact match、首个差异位置、EOS/停止原因、teacher-forced 逐位置正确性和 refusal 分类。Plain 输出明确标记 `route_mode=oracle_head`、`gate_or_credential=false`，不冒充真实拒答路由。诊断输出与正式 E1 summary 分离，默认拒绝覆盖，且不读取 test split。
+
+**本地验证**：Plain diagnostic CPU 边界运行成功，生成 `final.ckpt` 和 `plain_diagnostic.json`；预算小于完整 epoch 时 `actual_tokens=0`，属于预期边界行为。相关 Plain/入口回归测试 `32 passed`，脚本与模块通过 `py_compile`、black、isort。尚未在服务器运行 GPU 诊断，未记录正式实验结果。
 
 **Phase 3 进度**: evaluator、三个 Stage C best checkpoint 的官方 test split 正式评估及 Phase 3.6 可信进程内 response envelope 均已完成并通过验收。服务层包含真实 credential 输入、固定长度概率响应、稀疏路由契约校验、整批 fail-closed 和 30 项专项测试。
 
