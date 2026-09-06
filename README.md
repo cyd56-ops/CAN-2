@@ -28,9 +28,10 @@ CAN 是一个防御性科研原型，研究将**固定的 toy LWE-inspired 关�
 - Phase 2：CIFAR-10 三阶段训练已在 RTX A4000 上完成，3 个 seed 均生成 Stage A/B/C checkpoint；
 - Phase 3：test evaluator、单 checkpoint CLI、manifest/SHA-256 校验、Stage C 三 seed 聚合、
   latency 测量和离线测试已完成；
-- 当前唯一下一步：审阅并冻结 Phase 4 CIFAR-100 能力分级扩展方案；
+- 当前唯一下一步：请 Claude 审阅 Phase 5.5/T2 标准自然语言任务方案，方案通过后实现 T2-NL-P-CAP/MEM pilot；
 - Phase 3.6：可信进程内 response envelope 已实现并通过 Claude 验收；
-- Phase 4 CIFAR-100 与 Phase 5 ImageNet 尚未开始。
+- Phase 4 CIFAR-100 仅保留为 optional 兼容性 smoke；Phase 5 E1/E2 exploratory 已完成并归档。
+- Phase 5.5/T2 标准自然语言外部有效性已进入方案审阅；Phase 5.5-TS Teacher–Student 扩展仍为独立后续轨道，尚未开始。
 
 权威动态状态见 [`PROJECT_WORKLOG.md`](PROJECT_WORKLOG.md)，主张与证据台账见
 [`docs/RESEARCH_DESIGN.md`](docs/RESEARCH_DESIGN.md) 第 7 节。

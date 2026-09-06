@@ -3,8 +3,36 @@
 ## 当前研究阶段
 
 **阶段**: V2 - Gate Layer 在计算图中间架构  
-**状态**: Phase 5 E2-A/B 已完成服务器实验，E2-C prompt 泛化消融已实现并通过本地验证，等待 Claude 验收
-**最后更新**: 2026-09-04
+**状态**: Phase 5 E1/E2 exploratory 实验已完成并归档；Phase 5.5/T2 首个实现里程碑已通过 Claude 验收，下一步为训练/evaluator CLI 第二里程碑设计；Teacher–Student 扩展仍为独立后续轨道，尚未实现
+**最后更新**: 2026-09-06
+
+**2026-09-06 Phase 5.5/T2 方案提交**：新增 `docs/PHASE5_T2_NATURAL_LANGUAGE_PLAN.md`，并在
+`docs/DESIGN_PROPOSALS.md` 增加 Phase 5.5/T2 设计。T2 与已有 Teacher–Student Phase 5.5 轨道
+明确分离，目标是检验有语义自然语言 QA 上的从零训练、Plain/CAN 公平对照、protected utility、
+invalid refusal、private leakage 和 prompt 泛化。方案采用两层协议：先进行不含敏感信息的受控
+语义 QA pilot（T2-NL-P），通过后才考虑完成许可证审计的外部 QA adapter（T2-NL-E）。数据字段、
+实体/source 隔离、C0/C1/C2 prompt、Plain `oracle_head` 限制、指标、validation gate、三 seed
+统计、test 一次性纪律、manifest/hash 和失败处理均已预先定义。T2 必须建立独立
+`phase5_t2_freeze_v1`，不得修改或复用 `phase5-freeze-v3`；方案提交时尚未实现代码、未创建
+freeze、未启动 GPU 训练。
+
+**2026-09-06 Phase 5.5/T2 首个实现里程碑**：新增
+`src/can/v2/transformer/t2_data.py` 与 `t2_metrics.py`。数据层实现严格 `T2Example` schema、
+确定性 CAP/MEM corpus、source/corpus SHA-256、四路 split 与 C0/C1/C2 模板污染检查、
+answer-only causal LM dataset/collate，以及每组固定 `2 valid + 2 invalid` 的四元组 batch
+sampler。指标层实现 NFKC/casefold/标点与英文冠词规范化、normalized EM、token
+precision/recall/F1、edit similarity，以及 refusal、CAP unauthorized answer、MEM private fact
+leakage、public fallback 和 other 的互斥统计；protected answer 检测使用完整 token span，避免短
+别名命中较长单词内部而产生泄漏误报。新增两份专项测试，共 `74 passed`；完整
+`tests/v2` 为 `369 passed`。Black、isort、compileall 与 `git diff --check` 通过。由于本机
+Python 3.11.8、coverage 7.13.5、NumPy 2.0.0 组合在 pytest-cov 导入阶段触发 Windows access
+violation，改用 Python 标准库 `trace` 复核行覆盖率：`t2_data.py 95%`、`t2_metrics.py 92%`。
+本里程碑未创建 freeze、未接外部数据、未运行 GPU，也未读取正式 test 结果。
+
+**2026-09-06 Phase 5.5/T2 首个里程碑 Claude 验收**：T2-NL-P-CAP/MEM 数据协议、
+四路 split/污染检查、四元组 sampler、自然语言指标及专项测试已通过 Claude 验收。当前代码
+可以形成独立 Git checkpoint；下一阶段先设计 Plain/CAN 成对训练、周期 dev/validation、
+checkpoint/resume、manifest 及 test 一次性纪律的 CLI 接线，不直接启动 GPU 或创建 freeze。
 
 **2026-09-04 E1 诊断增强**：两个 exploratory 入口均新增独立 `--diagnostic` 短预算模式。训练结束后分别保存 `final.ckpt`，记录模型配置、seed、预算、实际 token 数、batch size、freeze v3 SHA-256 和优化器/模型状态；同时生成独立的逐样本 `diagnostic.json` / `plain_diagnostic.json`，包含 prompt/answer、路由 head、生成结果、exact match、首个差异位置、EOS/停止原因、teacher-forced 逐位置正确性和 refusal 分类。Plain 输出明确标记 `route_mode=oracle_head`、`gate_or_credential=false`，不冒充真实拒答路由。诊断输出与正式 E1 summary 分离，默认拒绝覆盖，且不读取 test split。
 
@@ -116,7 +144,7 @@
 
 **2026-09-04 E2-A/B 服务器结果**：seed `20260903` 的 Plain/CAN E2-A structured/same 均在 `498576 / 500000` tokens 后达到 protected-public、protected-private、public EM/token accuracy 全部 `1.0`，refusal rate `1.0` 且 private leakage `0.0`。随后 Plain/CAN E2-B random-short/same 均在 `997920 / 1000000` tokens 后达到相同的全满指标，各保存 378 条训练 history 和 19 条周期 validation；checkpoint manifest、freeze v3 SHA-256 与 `research_result=false` 均正常。结果证明当前管线能学习结构化映射并记忆 12 个训练实体的三位随机 code，且未观察到 CAN 相对 Plain 的退化；这是 memorization exploratory 结果，不代表未见实体泛化或安全保证。
 
-**2026-09-04 E2-C 实现口径**：prompt 消融固定映射为 C0=`same`、C1=`paraphrase`、C2=`multi-paraphrase`。C2 为每个实体生成三套完整 triplet，E2 专用 sampler 按 `(entity_id, prompt_type)` 分组；C1/C2 使用第四套未见模板 validation。所有输出新增 `prompt_group`，确保三组结果不可混淆。C2 Plain CPU smoke 生成 108 条训练样本和 12 条 held-out validation 样本，summary、diagnostic 与 manifest 的 C2 身份一致；专项测试增至 8 项，全量 `tests/v2` 为 `295 passed`。尚未运行服务器 E2-C。
+**2026-09-04 E2-C 实现与服务器结果**：prompt 消融固定映射为 C0=`same`、C1=`paraphrase`、C2=`multi-paraphrase`。C2 为每个实体生成三套完整 triplet，E2 专用 sampler 按 `(entity_id, prompt_type)` 分组；C1/C2 使用第四套未见模板 validation。所有输出新增 `prompt_group`，确保三组结果不可混淆。C2 Plain CPU smoke 生成 108 条训练样本和 12 条 held-out validation 样本，summary、diagnostic 与 manifest 的 C2 身份一致；专项测试增至 8 项，全量 `tests/v2` 为 `295 passed`。服务器 Plain/CAN 六组已完成并归档：C0 同模板两者均达到 EM/refusal 目标；C1 未见模板两者均退化为 EM/refusal 0；C2 多模板训练带来局部 token 指标改善，但 held-out prompt 的 EM/refusal 仍为 0。Plain 与 CAN 趋势接近，因此当前负向结果主要定位为从零训练小模型的 prompt 泛化限制，不能归因于 Gate，也不构成正式安全结论。
 
 **2026-09-01 数据协议修订**：`generate_synthetic_corpus()` 的 private prompt 已移除 `PRIVATE-xxxxxx` 私有答案文本，仅保留实体查询；私有答案只作为监督 target，invalid credential 对同一 prompt 使用 `ACCESS-DENIED`。此修订消除 prompt 复制造成的 private 能力评估假阳性；旧 checkpoint/旧语料结果不得与新协议混合比较。
 
@@ -689,6 +717,32 @@ Phase 5 不声称 toy LWE/ML-DSA 不可伪造、Replay 防御、白盒不可绕�
 
 ---
 
+### Phase 5.5-TS: Teacher–Student 公共模型与认证完整模型对照 [PLANNED]
+
+Phase 5.5 不新建独立工程，而是在 Phase 5 已冻结的 tokenizer、数据生成协议、Transformer 配置、Gate 语义、response schema、评估器和 manifest 体系上增加一个可归因的 Teacher–Student 对照。它回答的问题是：公共能力是否可以由完整模型蒸馏为独立的小模型，以及 credential 是否只控制完整模型受保护路径的执行。
+
+**模型组**：
+
+- `Teacher T`：Phase 5 T-pretrain 产生并冻结的完整 Transformer，作为 protected direct reference；
+- `Public Student S`：独立的小型 Transformer，只使用 public/refusal 分布和冻结 teacher 的公开目标进行蒸馏；
+- `CAN(T,S)`：同一入口中的三态组合，PUBLIC 执行 `S`，PROTECTED 执行冻结 `T` 的完整路径，DENY 不执行任一业务路径；
+- `CAN-shared-prefix`：Phase 5 原有 early-exit 结构，作为共享前缀基线，不与独立学生模型混写。
+
+**实验边界**：Teacher–Student 结果必须与 Phase 5 shared-prefix 结果分开报告；学生模型不得被称为密码学隔离模型。TM-API、TM-REP、TM-CP 下仍需报告公开输出泄漏、表示探针和有限预算恢复；TM-WB、replay 防御和 toy LWE 不可伪造性仍不在主张范围内。
+
+**实施顺序**：
+
+1. 完成 E2-C Claude 验收并运行 Plain/CAN 成对消融，冻结 Phase 5 baseline；
+2. 从通过 go/no-go 的 T-pretrain checkpoint 构造只读 Teacher manifest；
+3. 训练独立 Public Student，固定 public/refusal 数据、seed、预算和蒸馏温度；
+4. 组合 `CAN(T,S)`，验证 valid credential 只进入 Teacher，invalid public 只进入 Student，deny 不执行任何路径；
+5. 与 `Plain Teacher`、`Plain Student`、`CAN-shared-prefix` 做配对比较；
+6. 完成三 seed validation/test、direct-reference 等价、public utility、private refusal、延迟/吞吐、probe AUC 和恢复曲线后，才评估 Phase 6。
+
+**首轮验收门**：protected 输出与 Teacher direct reference 等价；PUBLIC 不调用 Teacher protected suffix；DENY 对 Student 和 Teacher 均 zero-call；Student 的 public utility 达到 validation 冻结阈值；所有模型、数据、tokenizer、teacher hash 和蒸馏配置进入独立 manifest。Phase 5.5 不得以 Student 的低恢复率推出密码学安全。
+
+---
+
 ### Phase 6: 外部有效性扩展 [OPTIONAL]
 
 只有 Phase 5 最小原型闭合并完成泄漏/恢复分析后，才重新评估：
@@ -779,10 +833,13 @@ C-003、C-006、C-011 与 C-013 的 satisfied 状态均限定于可信进程内�
 - [x] **Phase 5 T0：小型 Transformer CPU 最小原型代码实现并通过 Claude 验收**
 - [x] **Phase 5 T1：evaluator、CLI、KV-cache 与正式 smoke 准备已完成并通过 Claude 验收**
 - [x] **Phase 5 正式训练入口：token budget、双 head、go/no-go、resume 与失败诊断已完成并通过 Claude 验收**
+- [x] **Phase 5.5-TS Teacher–Student 路线设计：已纳入同一工程，尚未实现**
 
 ### 下一步（唯一下一步）
 
-**请 Claude 验收 E2-C 的 C0/C1/C2 prompt 模式、E2 专用 sampler、held-out validation 与结果身份字段；验收通过后再提交推送，并在服务器运行 Plain/CAN 成对消融。**
+**设计 `T2-NL-P` 训练/evaluator CLI 第二里程碑：明确 Plain/CAN 成对训练接口、train/dev/validation/test 读取状态机、周期评估、checkpoint/resume、manifest/hash、失败输出和 CPU smoke 验收门；方案经用户确认实现者后再修改代码。**
+
+本里程碑不创建 `phase5_t2_freeze_v1`、不接入外部数据、不启动 GPU 训练，也不读取或生成正式 test 结果。已有 Teacher–Student Phase 5.5-TS 轨道保持独立，待 T2 pilot 和基线结论后再决定是否启动。
 
 审阅重点：计算图内 Gate 位置和每请求一次的硬路由、同 tokenizer/vocabulary/prompt/停止规则、
 公开与私有/拒答数据生成及实体隔离、Stage A/B/C 训练协议、TM-API/TM-REP/TM-CP 访问条件、
@@ -819,9 +876,10 @@ P0 对照、GPU 显存和最小原型资源预算。
      参数化、evaluator、zero-call 和版本化 response schema；
    - smoke test 结果不用于 C-012 正向结论或“真实能力隔离”主张。
 
-5. **何时扩展 Phase 6？**
-   - 只有 Phase 5 最小原型闭合并完成泄漏/恢复分析后，才评估 MoE、sandbox tool calling、
-     外部 benchmark、更大开源底座或 ImageNet；
+5. **何时扩展 Phase 5.5/Phase 6？**
+   - Phase 5 baseline 闭合后先执行同一工程内的 Teacher–Student 对照；
+   - 只有 Phase 5.5 完成泄漏与恢复分析后，才评估 MoE、sandbox tool calling、外部 benchmark、
+     更大开源底座或 ImageNet；
    - 不把多级 Gate 或更大数据集规模本身视为安全证据。
 
 ---
@@ -1059,12 +1117,13 @@ Scope: Research prototype, white-box defense out of scope
 - **Phase 1-2**：CIFAR-10（架构与训练原型，10→2 类）
 - **Phase 4**：CIFAR-100 兼容性 smoke test（可选，100→20 类，不承担能力隔离主结论）
 - **Phase 5**：小型 decoder-only Transformer（当前主线，同 vocabulary/prompt 的能力分级与泄漏评估）
-- **Phase 6**：MoE、工具调用、外部 benchmark、较大底座或 ImageNet（可选，Phase 5 后再评估）
+- **Phase 5.5**：冻结 Teacher、独立 Public Student 与 `CAN(T,S)` 对照（复用 Phase 5 工程，不新建目录）
+- **Phase 6**：MoE、工具调用、外部 benchmark、较大底座或 ImageNet（可选，Phase 5.5 后再评估）
 
 **为什么选择这个顺序**：
 1. CIFAR-10 快速验证架构可行性（1-2 天训练）
 2. Phase 4 仅作为低成本兼容性检查，不承担同词表能力分级或泄漏结论
-3. Phase 5 先闭合最小 Transformer；Phase 6 的 MoE、工具调用和 ImageNet 仅在结果与资源允许时考虑
+3. Phase 5 先闭合最小 Transformer，再以 Phase 5.5 检验独立公共学生与认证完整路径；Phase 6 的 MoE、工具调用和 ImageNet 仅在结果与资源允许时考虑
 
 **能力差距对比**：
 - CIFAR-10：10 类(92%) → 2 类(65%)，差距 27%，但绝对类别数少

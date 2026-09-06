@@ -3759,3 +3759,132 @@ Smoke 的 T-pretrain **不适用 §5.6 的 go/no-go 门槛**：50k tokens 下 EM
 T1 验收通过后依次：GPU smoke benchmark 测量显存/tokens·s⁻¹/时长 → 冻结正式 token/step budget 与 early stopping → 与用户确认 GPU 环境 → 单 seed 验证 → 三 seed 正式训练与一次性 test 评估 → probe / recovery 正式实验 → 论文撰写。
 
 ---
+
+## Phase 5.5-TS: Teacher–Student 公共模型与认证完整模型对照 [PLANNED]
+
+Phase 5.5 复用 Phase 5 的工程和实验契约，不新建独立目录或替换现有 Transformer 主线。其目标是区分“同一模型的 early-exit 公共路径”和“独立蒸馏公共学生模型”两种能力分级实现。
+
+### 5.5.1 模型定义
+
+- `Teacher T`：由通过 Phase 5 T-pretrain go/no-go 的 checkpoint 重建并冻结，作为完整 protected direct reference；
+- `Public Student S`：独立小型 decoder-only Transformer，只学习 public/refusal 目标，并在公开分布上接受冻结 `T` 的蒸馏监督；
+- `CAN(T,S)`：PUBLIC 执行 `S`，PROTECTED 在认证提交后执行 `T` 的完整路径，DENY 不执行 `S` 或 `T`；
+- `CAN-shared-prefix`：Phase 5 原有 early-exit 结构，作为共享前缀基线独立报告。
+
+学生模型可以更小，但 tokenizer、prompt 规范、停止规则和 public response schema 必须保持兼容。Teacher、Student 和组合模型分别保存配置、数据摘要、split hash、seed、训练预算和 SHA-256 manifest。
+
+### 5.5.2 实施顺序
+
+1. 先完成 Phase 5 E2-C 审阅及 Plain/CAN 成对消融，并冻结 Phase 5 baseline；
+2. 从冻结的 T-pretrain checkpoint 创建只读 Teacher manifest；
+3. 训练独立 Public Student，固定 public/refusal 数据、蒸馏温度、seed 和 token budget；
+4. 实现 `CAN(T,S)` 三态入口和执行计数；
+5. 与 Plain Teacher、Plain Student 和 `CAN-shared-prefix` 进行配对比较；
+6. 完成多 seed、direct-reference、public utility、private refusal、延迟/吞吐、probe AUC 和预算化恢复实验后，再评估 Phase 6。
+
+### 5.5.3 验收门与边界
+
+- valid credential 只执行 Teacher protected path，且输出与 Teacher direct reference 等价；
+- invalid public 请求只执行 Student，不能调用 Teacher protected suffix；
+- DENY 对 Student 和 Teacher 均 zero-call，不返回 partial output；
+- Student 的 public utility 达到 validation 冻结阈值；
+- 学生模型对 private 能力的恢复率、表示 probe 和 API 泄漏分别报告；
+- protected Teacher、Student 和路由组合的 provenance、teacher hash、tokenizer hash、数据版本和蒸馏配置可复现。
+
+Phase 5.5 不改变 toy LWE、replay、TM-WB、checkpoint 机密性和生产访问控制的限制。Student 的低恢复率只能作为实验观察，不能表述为密码学安全保证。
+
+---
+
+## Phase 5.5/T2：标准自然语言任务外部有效性 [PROPOSED]
+
+> 本节是独立于 Teacher–Student 轨道的自然语言外部有效性方案。它只定义研究契约，尚未实现、尚未冻结、尚未启动 GPU 实验。完整协议见 `docs/PHASE5_T2_NATURAL_LANGUAGE_PLAN.md`。
+
+### 5.5/T2.0 目标与边界
+
+Phase 5 E1/E2 已证明当前小型 decoder 可以在受控 code 任务上学习和记忆，但未见 prompt 泛化不足。
+T2 改用有语义的自然语言 QA，检验从零训练能力、Plain/CAN 公平对照、protected utility、
+invalid refusal 和 prompt 泛化。T2 是 exploratory / external-validity 轨道，不替代 Phase 3
+的 CIFAR 能力分级，不把结果解释为 toy LWE 密码学安全或通用语言能力证明。
+
+现有 Teacher–Student Phase 5.5 方案继续保留；T2 不与其共用输出目录或 claim。由于 T2 改变
+数据源、答案语义、scope 标签和生成分布，必须创建独立的 `phase5_t2_freeze_v1`，不得修改或
+复用 `phase5-freeze-v3`。
+
+### 5.5/T2.1 两类证据轨道与外部 adapter
+
+1. **T2-NL-P-CAP**：context 包含完成任务所需的非秘密事实，public 问题为单跳抽取/改写，
+   protected 问题为预先标注的多跳组合、比较或约束推理；invalid protected 使用相同 prompt
+   但输出稳定 `ACCESS-DENIED`。该轨道测量计算能力分级，不主张 context 中事实的机密性。
+2. **T2-NL-P-MEM**：有语义的 public/protected facts 在训练阶段显式教授，评估 prompt 不含
+   protected answer。主评估使用训练阶段见过的实体与事实、冻结的 held-out 问法；未见实体
+   的随机事实属于不可识别目标，只能作为预期失败对照，不能进入 go/no-go。该轨道单独测量
+   记忆、泄漏、probe 和有限预算恢复，不与 CAP 的能力指标合并。
+3. **T2-NL-E adapter**：pilot 和验证闭环通过后，才允许接入完成许可证审计、版本固定、可离线
+   获取的公开 QA 数据。外部数据原生没有单跳/多跳能力配对或 protected/refusal 标签时，必须
+   由预先登记且可审计的配对层提供；无法可信配对的样本只能评估 public utility。
+
+每条样本至少记录 `sample_id`、`entity_id`、`question_id`、`suite_id`、`scope`、
+`credential_class`、`prompt`、`target`、`answer_id`、`prompt_template_id`、`reasoning_depth`、
+`source_id/source_sha256`、`generator_version`、`seed` 和 `split`。split 固定为
+train/dev/validation/test：调试和门槛校准只读 train/dev；freeze 后锁定 validation 只执行
+go/no-go；test 只能在最终冻结评估中读取一次。CAP 按 source group 隔离，MEM 按事实是否见过
+和 prompt holdout 显式区分，禁止用同一条“实体隔离”规则混写两种任务。
+
+### 5.5/T2.2 Prompt、模型与对照
+
+prompt 消融沿用 C0/C1/C2，但模板改为自然语言：C0 为同模板，C1 为未见语义等价改写，C2
+为至少三套训练模板和一套 held-out validation 模板。模板集合 hash、held-out ID 和
+`prompt_group` 必须进入每个结果 manifest，三组不得混合聚合。
+
+CAN 复用 decoder-only 主体和 credential-only Gate：判决只读 credential 与冻结 LWE 公共参数，
+每序列只提交一次 route，invalid protected 对 protected blocks 保持 zero-call。Plain 使用相同
+Transformer 配置、tokenizer、数据、seed、optimizer、batch size、预算和 validation 规则，但
+不含 LWE、credential、Gate 或授权判决；若保留 public/protected 两个 head，评估器按 scope 选择
+并写明 `route_mode="oracle_head"`，不得把 Plain 的 oracle 选择解释为授权能力。
+
+预训练权重、tokenizer、最大上下文、normalizer、数据源、scope loss 权重、解码策略、batch size、
+token budget、prompt 集合或 validation split 任一变化，都必须新建 T2 实验 ID。
+
+### 5.5/T2.3 训练、指标与门槛
+
+第一轮从零初始化，沿用 T-pretrain → go/no-go → A/B/C 的可审计生命周期；另设公开预训练
+decoder 或确定性 oracle 作为 task-solvability 校准基线，但不进入 Plain/CAN 同构性能差值。
+T2 不直接沿用
+v3 的数值预算。先用 CPU smoke 和单 GPU benchmark 测量 `non_padding_input_tokens/s`、显存及
+validation 时长，再在 `phase5_t2_freeze_v1` 中冻结。未通过 validation gate 时，不构造 teacher、
+不进入 A/B/C、不读取 test。
+
+指标同时报告 normalized EM、token F1、edit similarity、teacher-forced loss/accuracy、生成
+长度/EOS、protected valid utility、invalid refusal、public-scope compliance、
+route/zero-call、KV-cache 和 direct-reference 等价性。答案 normalizer 与 canonical alias set
+必须在 test 前冻结。CAP 额外报告 unauthorized protected-answer rate，并明确它不是事实机密性；
+MEM 才报告 private fact leakage。CAP 先按 source group、MEM 先按 entity 聚合，再报告至少 3 个
+seed 的 mean、standard deviation、95% CI 和失败运行。
+
+T2-NL-P 的起始 validation 门槛为 public token F1 `>=0.70`、protected token F1 `>=0.60`、
+invalid refusal `>=0.90`、unauthorized protected-answer rate `<=0.05`、public-scope compliance
+`>=0.90`，并要求所有数值有限、路由和 reference 硬门槛通过。门槛只能用 train/dev 校准，
+随后写入 freeze record；validation 只执行锁定的 go/no-go，不能再参与调参；
+它们是继续实验的工程 gate，不是自然语言能力的普适定义。
+
+### 5.5/T2.4 交付与实施顺序
+
+交付包括版本化 T2 数据/外部 adapter、normalizer 与指标模块、Plain/CAN 训练和 evaluator CLI、
+专项测试、CPU smoke、GPU benchmark、独立 freeze record、manifest、summary、diagnostic 和
+工作日志。建议顺序为：Claude 审阅方案 → 实现 T2-NL-P-CAP/MEM 与测试 → CPU smoke/单 seed
+train/dev pilot → 冻结配置并在 validation 执行 go/no-go → Plain/CAN × C0/C1/C2 三 seed →
+汇总 claim/evidence → 需要时再实现
+许可审计后的 T2-NL-E。所有结果标记 exploratory；不得覆盖 Phase 5 E1/E2、freeze v3 或现有
+Teacher–Student 输出。
+
+### 5.5/T2.5 风险与限制
+
+- 自然语言别名会使 EM 失真，因此必须冻结 normalizer 并同时报告 token F1/edit；
+- 受控事实卡片仍可能过于模板化，只能支持 pilot，不能单独支撑外部有效性主张；
+- 外部 QA 不自带 protected/refusal 标签，缺少可信配对时只能报告 public utility；
+- 未见实体且请求中不含 protected fact 时，目标不可识别；CAP 必须提供 context，MEM 主评估只使用已学习事实；
+- CAP context 已含任务事实，因此 unauthorized answer 只代表能力路由失败，不能写成事实泄漏；
+- 从零训练失败时先检查 token/F1、prompt 分组和 Plain 对照，不得直接归因于 Gate；
+- 数据、模板、答案处理或许可信息不完整时 fail-closed，禁止进入正式 test 或论文主结果。
+
+---
