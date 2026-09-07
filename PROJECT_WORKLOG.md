@@ -3,8 +3,8 @@
 ## 当前研究阶段
 
 **阶段**: V2 - Gate Layer 在计算图中间架构  
-**状态**: Phase 5 E1/E2 exploratory 实验已完成并归档；Phase 5.5/T2 首个实现里程碑已通过 Claude 验收，下一步为训练/evaluator CLI 第二里程碑设计；Teacher–Student 扩展仍为独立后续轨道，尚未实现
-**最后更新**: 2026-09-06
+**状态**: Phase 5 E1/E2 exploratory 实验已完成并归档；Phase 5.5/T2 首个实现里程碑和 T2 训练/evaluator CLI 第二里程碑均已通过 Claude 验收；下一步为服务器 benchmark 与冻结前 dev pilot；Teacher–Student 扩展仍为独立后续轨道，尚未实现
+**最后更新**: 2026-09-07
 
 **2026-09-06 Phase 5.5/T2 方案提交**：新增 `docs/PHASE5_T2_NATURAL_LANGUAGE_PLAN.md`，并在
 `docs/DESIGN_PROPOSALS.md` 增加 Phase 5.5/T2 设计。T2 与已有 Teacher–Student Phase 5.5 轨道
@@ -33,6 +33,38 @@ violation，改用 Python 标准库 `trace` 复核行覆盖率：`t2_data.py 95%
 四路 split/污染检查、四元组 sampler、自然语言指标及专项测试已通过 Claude 验收。当前代码
 可以形成独立 Git checkpoint；下一阶段先设计 Plain/CAN 成对训练、周期 dev/validation、
 checkpoint/resume、manifest 及 test 一次性纪律的 CLI 接线，不直接启动 GPU 或创建 freeze。
+
+**2026-09-06 Phase 5.5/T2 CLI 第二里程碑方案**：新增
+`docs/PHASE5_T2_CLI_IMPLEMENTATION_PLAN.md`，明确第二里程碑仅实现 T-pretrain train/dev
+pilot、冻结后 validation 接线和一次性 test 状态机，不提前实现 A/B/C 或外部 adapter。方案要求
+新增 T2 专用 trainer/evaluator/runtime，避免旧 trainer 的三 scope 语义和旧 freeze 的 batch
+三倍数规则污染 T2 四元组；同时冻结 Plain/CAN 配对初始化与 batch 顺序、batch 级 token budget
+恢复、credential/secret 边界、manifest/hash、读 test 前原子 ledger、输出 schema、至少 35 项专项
+测试和新模块 `>=90%` 覆盖率。当前仅完成设计，未修改训练代码、未创建 freeze、未运行 GPU，
+也未读取 validation/test。
+
+**2026-09-06 Phase 5.5/T2 CLI 实现启动**：用户已确认由 Codex 实现第二里程碑。实现范围固定为
+按 split 延迟生成、T2 专用 T-pretrain trainer/evaluator/runtime、Plain/CAN 成对训练 CLI、
+dev/validation/test 状态机、checkpoint/resume、manifest/hash 和专项测试。本轮只运行本地 CPU
+fixture/smoke；不得创建正式 freeze、运行 GPU、读取正式 validation/test 或进入 A/B/C。
+
+**2026-09-06 T2 CLI 第二里程碑实现完成**：新增 `t2_training.py`、`t2_checkpoint.py`、
+`t2_runtime.py`、`t2_evaluator.py` 以及 `scripts/train_phase5_t2.py`、
+`scripts/eval_phase5_t2.py`。实现 Plain/CAN 成对 T-pretrain、四元组 batch、按 batch 的 token
+budget、周期 dev/validation、checkpoint/resume、模型/数据/配置身份校验、CAN 公共 key 摘要与
+secret 边界、独立 manifest/hash、一次性 test access ledger、受管输出覆盖保护和逐样本诊断。
+训练 CLI 默认只显示一个 token-budget 进度条，validation 使用普通日志，不创建嵌套进度条。
+本地验证：T2 专项测试 `118 passed`；完整 `tests/v2` 为 `428 passed`；新增模块通过
+`compileall`，`git diff --check` 通过。CPU Plain/CAN pair smoke、共享初始可训练 tensor 摘要、
+batch-order 摘要、checkpoint/manifest/summary/diagnostic 产物和 dev split 隔离均已验证。
+本里程碑仍未创建 `phase5_t2_freeze_v1`，未运行 GPU、未读取正式 validation/test，未实现 A/B/C
+阶段；这些限制不是实验结果。
+
+**2026-09-07 T2 CLI 第二里程碑 Claude 验收通过**：Claude 已确认 T2 专用 data/trainer/
+evaluator/runtime/checkpoint、Plain/CAN 成对 T-pretrain、四元组 batch、token budget、resume、
+manifest/hash、split 状态机、test ledger 和诊断输出符合第二里程碑范围。验收后的本地回归仍为
+T2 专项 `118 passed`、完整 `tests/v2` `428 passed`；未创建 `phase5_t2_freeze_v1`，未运行 GPU、
+未读取正式 validation/test，A/B/C 仍未实现。
 
 **2026-09-04 E1 诊断增强**：两个 exploratory 入口均新增独立 `--diagnostic` 短预算模式。训练结束后分别保存 `final.ckpt`，记录模型配置、seed、预算、实际 token 数、batch size、freeze v3 SHA-256 和优化器/模型状态；同时生成独立的逐样本 `diagnostic.json` / `plain_diagnostic.json`，包含 prompt/answer、路由 head、生成结果、exact match、首个差异位置、EOS/停止原因、teacher-forced 逐位置正确性和 refusal 分类。Plain 输出明确标记 `route_mode=oracle_head`、`gate_or_credential=false`，不冒充真实拒答路由。诊断输出与正式 E1 summary 分离，默认拒绝覆盖，且不读取 test split。
 
@@ -837,9 +869,9 @@ C-003、C-006、C-011 与 C-013 的 satisfied 状态均限定于可信进程内�
 
 ### 下一步（唯一下一步）
 
-**设计 `T2-NL-P` 训练/evaluator CLI 第二里程碑：明确 Plain/CAN 成对训练接口、train/dev/validation/test 读取状态机、周期评估、checkpoint/resume、manifest/hash、失败输出和 CPU smoke 验收门；方案经用户确认实现者后再修改代码。**
+**在服务器执行 T2 GPU benchmark，并运行 CAP/C0、单 seed、Plain+CAN 的短版 dev pilot；根据 benchmark 与 dev 结果设计并审阅 `phase5_t2_freeze_v1`。**
 
-本里程碑不创建 `phase5_t2_freeze_v1`、不接入外部数据、不启动 GPU 训练，也不读取或生成正式 test 结果。已有 Teacher–Student Phase 5.5-TS 轨道保持独立，待 T2 pilot 和基线结论后再决定是否启动。
+在正式 freeze 前不创建 `phase5_t2_freeze_v1`、不接入外部数据、不启动 GPU 长训练，也不读取或生成正式 test 结果；当前 GPU 仅限 benchmark 和短版 dev pilot。已有 Teacher–Student Phase 5.5-TS 轨道保持独立，待 T2 pilot 和基线结论后再决定是否启动。
 
 审阅重点：计算图内 Gate 位置和每请求一次的硬路由、同 tokenizer/vocabulary/prompt/停止规则、
 公开与私有/拒答数据生成及实体隔离、Stage A/B/C 训练协议、TM-API/TM-REP/TM-CP 访问条件、

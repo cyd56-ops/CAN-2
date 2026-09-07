@@ -309,6 +309,9 @@ test split 读取纪律不允许降级。未达到 validation 门槛时，不实
 
 ## 13. 实施顺序
 
+训练/evaluator CLI 的第二里程碑详细接口、状态机和验收门见
+`docs/PHASE5_T2_CLI_IMPLEMENTATION_PLAN.md`。
+
 1. Claude 审阅本方案，重点确认 protected 配对层、门槛、数据许可边界和 Plain 对照语义；
 2. 实现 T2-NL-P-CAP/MEM 数据生成器、normalizer、指标和最小测试；
 3. CPU smoke 与单 seed短预算 train/dev pilot；

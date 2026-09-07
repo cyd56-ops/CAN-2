@@ -374,32 +374,12 @@ def generate_t2_cap_corpus(
         "validation": validation_sources,
         "test": test_sources,
     }
-    _validate_seed_and_counts(seed, counts)
-    if prompt_group not in set(T2_PROMPT_GROUPS):
-        raise ValueError("prompt_group 必须为 C0、C1 或 C2")
-    rng = np.random.default_rng(seed)
-    corpus: Dict[str, List[T2Example]] = {}
-    offset = 0
-    for split in T2_SPLITS:
-        rows: List[T2Example] = []
-        for local_index in range(counts[split]):
-            source_index = offset + local_index
-            source_id = f"t2-cap-source-{source_index:05d}"
-            record = _source_record(source_index, rng)
-            for template_id in _template_ids(prompt_group, split, "cap"):
-                rows.extend(
-                    _build_rows(
-                        record=record,
-                        suite_id=T2_CAP_SUITE,
-                        split=split,
-                        template_id=template_id,
-                        prompt_group=prompt_group,
-                        seed=seed,
-                        source_id=source_id,
-                    )
-                )
-        corpus[split] = rows
-        offset += counts[split]
+    corpus = {
+        split: generate_t2_split(
+            T2_CAP_SUITE, split, seed, counts, prompt_group=prompt_group
+        )
+        for split in T2_SPLITS
+    }
     validate_t2_corpus(corpus, expected_suite=T2_CAP_SUITE)
     return corpus
 
@@ -412,31 +392,119 @@ def generate_t2_mem_corpus(
 ) -> Dict[str, List[T2Example]]:
     """生成已见事实、held-out 问法的闭卷记忆与泄漏语料。"""
 
-    _validate_seed_and_counts(seed, {split: entity_count for split in T2_SPLITS})
-    if prompt_group not in set(T2_PROMPT_GROUPS):
-        raise ValueError("prompt_group 必须为 C0、C1 或 C2")
-    rng = np.random.default_rng(seed)
-    records = [_source_record(index, rng) for index in range(entity_count)]
-    corpus: Dict[str, List[T2Example]] = {}
-    for split in T2_SPLITS:
-        rows: List[T2Example] = []
-        for index, record in enumerate(records):
-            source_id = f"t2-mem-source-{index:05d}"
-            for template_id in _template_ids(prompt_group, split, "mem"):
-                rows.extend(
-                    _build_rows(
-                        record=record,
-                        suite_id=T2_MEM_SUITE,
-                        split=split,
-                        template_id=template_id,
-                        prompt_group=prompt_group,
-                        seed=seed,
-                        source_id=source_id,
-                    )
-                )
-        corpus[split] = rows
+    counts = {split: entity_count for split in T2_SPLITS}
+    corpus = {
+        split: generate_t2_split(
+            T2_MEM_SUITE, split, seed, counts, prompt_group=prompt_group
+        )
+        for split in T2_SPLITS
+    }
     validate_t2_corpus(corpus, expected_suite=T2_MEM_SUITE)
     return corpus
+
+
+def generate_t2_split(
+    suite_id: str,
+    split: str,
+    seed: int,
+    split_counts: Mapping[str, int],
+    *,
+    prompt_group: str = "C0",
+) -> List[T2Example]:
+    """只生成指定 T2 split，并保持完整 corpus 的确定性 source 编号。"""
+
+    if suite_id not in {T2_CAP_SUITE, T2_MEM_SUITE}:
+        raise ValueError("suite_id 必须为 t2_nl_cap 或 t2_nl_mem")
+    if split not in set(T2_SPLITS):
+        raise ValueError("split 必须为 train/dev/validation/test")
+    _validate_seed_and_counts(seed, split_counts)
+    if prompt_group not in set(T2_PROMPT_GROUPS):
+        raise ValueError("prompt_group 必须为 C0、C1 或 C2")
+    if suite_id == T2_MEM_SUITE and len(set(split_counts.values())) != 1:
+        raise ValueError("MEM 四路 split 必须使用相同实体数量")
+
+    rng = np.random.default_rng(seed)
+    if suite_id == T2_CAP_SUITE:
+        offset = sum(split_counts[name] for name in T2_SPLITS[: T2_SPLITS.index(split)])
+        end = offset + split_counts[split]
+        # 为保持 RNG 序列稳定，只推进此前 source，不构造此前 split 的样本。
+        records = [_source_record(index, rng) for index in range(end)]
+        selected = enumerate(records[offset:], start=offset)
+        prefix = "cap"
+    else:
+        entity_count = split_counts[split]
+        records = [_source_record(index, rng) for index in range(entity_count)]
+        selected = enumerate(records)
+        prefix = "mem"
+
+    rows: List[T2Example] = []
+    for source_index, record in selected:
+        source_id = f"t2-{prefix}-source-{source_index:05d}"
+        for template_id in _template_ids(prompt_group, split, prefix):
+            rows.extend(
+                _build_rows(
+                    record=record,
+                    suite_id=suite_id,
+                    split=split,
+                    template_id=template_id,
+                    prompt_group=prompt_group,
+                    seed=seed,
+                    source_id=source_id,
+                )
+            )
+    _validate_t2_split(rows, expected_split=split, expected_suite=suite_id)
+    return rows
+
+
+def _validate_t2_split(
+    examples: Sequence[T2Example], *, expected_split: str, expected_suite: str
+) -> None:
+    """验证单个 T2 split 的 schema、身份和四元组配对。"""
+
+    if isinstance(examples, (str, bytes)) or not isinstance(examples, Sequence):
+        raise TypeError("examples 必须是 T2Example 序列")
+    if not examples or any(not isinstance(row, T2Example) for row in examples):
+        raise ValueError("examples 必须是非空 T2Example 序列")
+    if any(row.split != expected_split for row in examples):
+        raise ValueError("样本 split 与 expected_split 不一致")
+    if any(row.suite_id != expected_suite for row in examples):
+        raise ValueError("样本 suite 与 expected_suite 不一致")
+    for field_name in ("seed", "generator_version", "prompt_group"):
+        if len({getattr(row, field_name) for row in examples}) != 1:
+            raise ValueError(f"单个 split 不能混合 {field_name}")
+    sample_ids = [row.sample_id for row in examples]
+    if len(sample_ids) != len(set(sample_ids)):
+        raise ValueError("单个 split 的 sample_id 不能重复")
+    groups: Dict[Tuple[str, str], Dict[str, T2Example]] = {}
+    for row in examples:
+        key = (row.source_id, row.prompt_template_id)
+        scoped = groups.setdefault(key, {})
+        if row.scope in scoped:
+            raise ValueError("单个 split 的 source/template/scope 不能重复")
+        scoped[row.scope] = row
+    for scoped in groups.values():
+        if set(scoped) != set(T2_SCOPES):
+            raise ValueError("单个 split 的 source/template 必须包含完整四元组")
+        if scoped["public"].prompt != scoped["protected_public"].prompt:
+            raise ValueError("public 与 protected_public prompt 必须一致")
+        if scoped["protected_private"].prompt != scoped["refusal"].prompt:
+            raise ValueError("protected_private 与 refusal prompt 必须一致")
+
+
+def t2_split_sha256(examples: Sequence[T2Example]) -> str:
+    """验证单个 T2 split 并计算与列表顺序无关的 SHA-256。"""
+
+    if not examples or not isinstance(examples[0], T2Example):
+        raise ValueError("examples 必须是非空 T2Example 序列")
+    first = examples[0]
+    _validate_t2_split(
+        examples, expected_split=first.split, expected_suite=first.suite_id
+    )
+    payload = [asdict(row) for row in sorted(examples, key=lambda item: item.sample_id)]
+    encoded = json.dumps(
+        payload, sort_keys=True, ensure_ascii=False, separators=(",", ":")
+    )
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def validate_t2_corpus(
@@ -787,6 +855,8 @@ __all__ = [
     "collate_t2_causal_lm_batch",
     "generate_t2_cap_corpus",
     "generate_t2_mem_corpus",
+    "generate_t2_split",
     "t2_corpus_sha256",
+    "t2_split_sha256",
     "validate_t2_corpus",
 ]

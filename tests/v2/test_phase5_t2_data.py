@@ -14,7 +14,9 @@ from src.can.v2.transformer import (
     collate_t2_causal_lm_batch,
     generate_t2_cap_corpus,
     generate_t2_mem_corpus,
+    generate_t2_split,
     t2_corpus_sha256,
+    t2_split_sha256,
     validate_t2_corpus,
 )
 
@@ -36,6 +38,67 @@ def test_cap_corpus_is_deterministic_and_seeded() -> None:
     assert first == second
     assert t2_corpus_sha256(first) == t2_corpus_sha256(second)
     assert t2_corpus_sha256(first) != t2_corpus_sha256(changed)
+
+
+@pytest.mark.parametrize(
+    "prompt_group,expected_hash",
+    [
+        ("C0", "18b0ba93c354e1d6bc2f314e0a19601d62172055426d1207edcfcd02f3752b20"),
+        ("C1", "b9c173052c9de2b7de8e9aec09f343fb6bf785085fe39204cfea59de2ad617c3"),
+        ("C2", "c272c7684593bb93999fc822b0ca26976e99126d777b0f40cd865b1f491093c3"),
+    ],
+)
+def test_cap_lazy_split_preserves_frozen_corpus_hash(
+    prompt_group: str, expected_hash: str
+) -> None:
+    """CAP 改为延迟 split 组合后不得改变既有 corpus 内容。"""
+
+    corpus = generate_t2_cap_corpus(151, 3, 2, 2, 2, prompt_group=prompt_group)
+    assert t2_corpus_sha256(corpus) == expected_hash
+    counts = {"train": 3, "dev": 2, "validation": 2, "test": 2}
+    for split, rows in corpus.items():
+        generated = generate_t2_split(
+            T2_CAP_SUITE, split, 151, counts, prompt_group=prompt_group
+        )
+        assert generated == rows
+        assert t2_split_sha256(generated) == t2_split_sha256(rows)
+
+
+@pytest.mark.parametrize(
+    "prompt_group,expected_hash",
+    [
+        ("C0", "52cee573cb40242b209ad6b68c426924e82ea43d9a4c828cd054adfc21a9feee"),
+        ("C1", "e3a04d2449387f5b0ab55379f02c30fad85fd76e7ec45638540c05dbb2d86227"),
+        ("C2", "2bed615e2864e5cc6adb2272e5ae40c5214b15a3f5233dea58a79fff5779f0fc"),
+    ],
+)
+def test_mem_lazy_split_preserves_frozen_corpus_hash(
+    prompt_group: str, expected_hash: str
+) -> None:
+    """MEM 延迟 split 必须复用既有事实并保持 corpus hash。"""
+
+    corpus = generate_t2_mem_corpus(151, 3, prompt_group=prompt_group)
+    assert t2_corpus_sha256(corpus) == expected_hash
+    counts = {split: 3 for split in ("train", "dev", "validation", "test")}
+    for split, rows in corpus.items():
+        assert (
+            generate_t2_split(
+                T2_MEM_SUITE, split, 151, counts, prompt_group=prompt_group
+            )
+            == rows
+        )
+
+
+def test_lazy_split_rejects_invalid_identity_and_mem_counts() -> None:
+    """延迟生成必须拒绝错误 suite/split 和不等长 MEM 实体规划。"""
+
+    counts = {"train": 2, "dev": 1, "validation": 1, "test": 1}
+    with pytest.raises(ValueError, match="suite_id"):
+        generate_t2_split("unknown", "train", 1, counts)
+    with pytest.raises(ValueError, match="split"):
+        generate_t2_split(T2_CAP_SUITE, "holdout", 1, counts)
+    with pytest.raises(ValueError, match="相同实体数量"):
+        generate_t2_split(T2_MEM_SUITE, "train", 1, counts)
 
 
 def test_cap_splits_are_source_and_entity_disjoint() -> None:
