@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import asdict
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
@@ -19,6 +20,7 @@ from .t2_metrics import T2Prediction, evaluate_t2_predictions
 from .tokenizer import ByteTokenizer
 
 T2Model = Union[GatedDecoderTransformer, PlainDecoderTransformer]
+_INVALID_GENERATION_TEXT = "[INVALID-GENERATION]"
 
 
 def _validate_examples(examples: Sequence[T2Example]) -> Tuple[str, str]:
@@ -89,6 +91,67 @@ def _first_divergence(generated: Sequence[int], target: Sequence[int]) -> Option
     return None
 
 
+def _decode_generation_safely(
+    token_ids: Sequence[int], tokenizer: ByteTokenizer
+) -> Tuple[str, Dict[str, Any]]:
+    """将模型 token 解码为安全文本，并返回可审计的异常生成诊断。"""
+
+    values = list(token_ids)
+    # 先借助 tokenizer 的正式校验拒绝越界值与类型混淆。
+    tokenizer.decode(values)
+    special_ids = [
+        token_id for token_id in values if token_id >= tokenizer.byte_vocab_size
+    ]
+    byte_values = [
+        token_id for token_id in values if token_id < tokenizer.byte_vocab_size
+    ]
+    raw_control_ids = [
+        token_id for token_id in byte_values if token_id < 32 or token_id == 127
+    ]
+    decoded: Optional[str] = None
+    invalid_utf8 = False
+    try:
+        decoded = bytes(byte_values).decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        invalid_utf8 = True
+    unicode_controls = (
+        []
+        if decoded is None
+        else [
+            f"U+{ord(character):04X}"
+            for character in decoded
+            if unicodedata.category(character) in {"Cc", "Cf"}
+        ]
+    )
+    invalid_control_count = (
+        len(unicode_controls) if decoded is not None else len(raw_control_ids)
+    )
+    if raw_control_ids or unicode_controls:
+        reason = "invalid_control_token"
+    elif special_ids:
+        reason = "invalid_special_token"
+    elif invalid_utf8:
+        reason = "invalid_utf8"
+    else:
+        reason = None
+    valid = reason is None
+    diagnostic = {
+        "generation_valid": valid,
+        "generated_token_ids": values,
+        "invalid_generation_reason": reason,
+        "invalid_control_token_ids": raw_control_ids,
+        "invalid_control_codepoints": unicode_controls,
+        "invalid_control_token_count": invalid_control_count,
+        "invalid_special_token_ids": special_ids,
+        "invalid_special_token_count": len(special_ids),
+        "invalid_utf8": invalid_utf8,
+    }
+    # 异常输出固定计为失败，不能静默删除后参与正常答案匹配。
+    return (
+        decoded if valid and decoded is not None else _INVALID_GENERATION_TEXT
+    ), diagnostic
+
+
 class T2Evaluator:
     """对 T2 Plain/CAN 执行统一、可审计且 fail-closed 的评估。"""
 
@@ -151,6 +214,12 @@ class T2Evaluator:
             "rejected_indices": 0,
             "invalid_protected_block_calls": 0,
         }
+        generation_safety = {
+            "invalid_sequences": 0,
+            "invalid_control_token_sequences": 0,
+            "invalid_special_token_sequences": 0,
+            "invalid_utf8_sequences": 0,
+        }
         # 每个 chunk 保持四元组边界，CAN 在一次 route 中覆盖 valid/invalid 两侧。
         for start in range(0, len(examples), self.batch_size):
             rows = list(examples[start : start + self.batch_size])
@@ -163,7 +232,18 @@ class T2Evaluator:
                 continuation, saw_eos = _continuation(
                     sequence, prompt_length, self.tokenizer.eos_token_id
                 )
-                generated_text = self.tokenizer.decode(continuation)
+                generated_text, generation_diagnostic = _decode_generation_safely(
+                    continuation, self.tokenizer
+                )
+                invalid_reason = generation_diagnostic["invalid_generation_reason"]
+                if invalid_reason is not None:
+                    generation_safety["invalid_sequences"] += 1
+                if generation_diagnostic["invalid_control_token_count"]:
+                    generation_safety["invalid_control_token_sequences"] += 1
+                if generation_diagnostic["invalid_special_token_count"]:
+                    generation_safety["invalid_special_token_sequences"] += 1
+                if generation_diagnostic["invalid_utf8"]:
+                    generation_safety["invalid_utf8_sequences"] += 1
                 target_tokens = self.tokenizer.encode(
                     row.target, add_bos=False, add_eos=False
                 )
@@ -186,8 +266,10 @@ class T2Evaluator:
                         ),
                         "teacher_forced_token_loss": token_loss,
                         "teacher_forced_token_accuracy": token_accuracy,
-                        "stop_reason": stop_reason,
+                        "stop_reason": invalid_reason or stop_reason,
+                        "model_stop_reason": stop_reason,
                         "saw_eos": saw_eos,
+                        **generation_diagnostic,
                     }
                 )
         report = evaluate_t2_predictions(examples, predictions)
@@ -205,6 +287,14 @@ class T2Evaluator:
             "text_metrics": asdict(report),
             "teacher_forced_by_scope": scope_token_metrics,
             "routing": route_totals if self.model_kind == "can" else None,
+            "generation_safety": {
+                "status": (
+                    "ok"
+                    if generation_safety["invalid_sequences"] == 0
+                    else "invalid_generation_observed"
+                ),
+                **generation_safety,
+            },
             "diagnostics": diagnostics,
         }
 

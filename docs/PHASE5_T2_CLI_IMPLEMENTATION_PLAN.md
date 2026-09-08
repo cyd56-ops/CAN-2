@@ -105,6 +105,9 @@ manifest，但不执行模型 test 评估。
   block zero-call；
 - Plain 固定记录 `route_mode="oracle_head"`、`gate_or_credential=false`，不得输出伪造 FAR/FRR；
 - 默认不保存 raw logits/probabilities，只保存严格受限的逐样本文本诊断；
+- 模型若生成控制字符、continuation 中的异常特殊 token 或非法 UTF-8，不得在深层文本 schema
+  崩溃或静默删除；指标固定使用失败占位文本，逐样本诊断记录原 token IDs、异常类型与计数，
+  汇总结果记录 generation-safety 计数；
 - CAP 和 MEM 分开输出，禁止合并为单个 `protected_accuracy`。
 
 ### 3.3 `src/can/v2/transformer/t2_runtime.py`

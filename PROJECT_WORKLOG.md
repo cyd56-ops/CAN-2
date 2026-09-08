@@ -3,8 +3,8 @@
 ## 当前研究阶段
 
 **阶段**: V2 - Gate Layer 在计算图中间架构  
-**状态**: Phase 5 E1/E2 exploratory 实验已完成并归档；Phase 5.5/T2 首个实现里程碑和 T2 训练/evaluator CLI 第二里程碑均已通过 Claude 验收；下一步为服务器 benchmark 与冻结前 dev pilot；Teacher–Student 扩展仍为独立后续轨道，尚未实现
-**最后更新**: 2026-09-07
+**状态**: Phase 5 E1/E2 exploratory 实验已完成并归档；Phase 5.5/T2 首个实现里程碑和 T2 训练/evaluator CLI 第二里程碑均已通过 Claude 验收；服务器 GPU smoke 暴露的生成控制字符边界缺陷已修复并通过本地回归，待服务器拉取后重跑；Teacher–Student 扩展仍为独立后续轨道，尚未实现
+**最后更新**: 2026-09-08
 
 **2026-09-06 Phase 5.5/T2 方案提交**：新增 `docs/PHASE5_T2_NATURAL_LANGUAGE_PLAN.md`，并在
 `docs/DESIGN_PROPOSALS.md` 增加 Phase 5.5/T2 设计。T2 与已有 Teacher–Student Phase 5.5 轨道
@@ -65,6 +65,23 @@ evaluator/runtime/checkpoint、Plain/CAN 成对 T-pretrain、四元组 batch、t
 manifest/hash、split 状态机、test ledger 和诊断输出符合第二里程碑范围。验收后的本地回归仍为
 T2 专项 `118 passed`、完整 `tests/v2` `428 passed`；未创建 `phase5_t2_freeze_v1`，未运行 GPU、
 未读取正式 validation/test，A/B/C 仍未实现。
+
+**2026-09-08 T2 GPU smoke 负向结果与修复目标**：服务器从 `last.ckpt` 成功恢复 Plain 训练至
+`3623/4000` tokens，随后在最终 dev evaluation 中因生成 byte token `0` 被解码为 NUL，触发
+`T2Prediction` 的严格文本边界而终止。该问题不属于 CUDA、loss 或 resume 失败；根因是 evaluator
+没有在模型 token 输出与外部文本指标之间处理不可输出控制 token。当前目标是保持严格边界，
+将控制 token、异常特殊 token 和非法 UTF-8 显式映射为确定性失败占位文本，并在逐样本诊断中
+记录原 token、类型、计数和停止原因；不得静默删除或把异常生成计为正确答案。修复完成前暂停
+T2 benchmark、dev pilot、freeze 和正式 validation/test。
+
+**2026-09-08 T2 生成控制字符边界修复完成**：`T2Evaluator` 现在在模型 token 与外部文本指标
+之间执行显式安全解码。正常 UTF-8 文本保持原样；C0/DEL 或 Unicode 控制字符、continuation
+中的 BOS/PAD/UNK 等异常特殊 token、非法 UTF-8 均固定映射为 `[INVALID-GENERATION]`，因此只会
+计为错误答案，不会静默删除或绕过 `T2Prediction` 边界。逐样本诊断新增原 token IDs、异常原因、
+控制/特殊 token 及计数、UTF-8 状态、模型原始停止原因；汇总新增 `generation_safety`。新增四项
+集成回归覆盖 NUL、U+0080、PAD 和非法 UTF-8。验证结果：evaluator `17 passed`，全部 T2 专项
+`137 passed`，完整 `tests/v2` `432 passed`；Black、isort、compileall 和 `git diff --check`
+通过。服务器旧失败目录保留为负向证据，修复提交后须以新输出目录重跑 smoke。
 
 **2026-09-04 E1 诊断增强**：两个 exploratory 入口均新增独立 `--diagnostic` 短预算模式。训练结束后分别保存 `final.ckpt`，记录模型配置、seed、预算、实际 token 数、batch size、freeze v3 SHA-256 和优化器/模型状态；同时生成独立的逐样本 `diagnostic.json` / `plain_diagnostic.json`，包含 prompt/answer、路由 head、生成结果、exact match、首个差异位置、EOS/停止原因、teacher-forced 逐位置正确性和 refusal 分类。Plain 输出明确标记 `route_mode=oracle_head`、`gate_or_credential=false`，不冒充真实拒答路由。诊断输出与正式 E1 summary 分离，默认拒绝覆盖，且不读取 test split。
 
@@ -869,9 +886,9 @@ C-003、C-006、C-011 与 C-013 的 satisfied 状态均限定于可信进程内�
 
 ### 下一步（唯一下一步）
 
-**在服务器执行 T2 GPU benchmark，并运行 CAP/C0、单 seed、Plain+CAN 的短版 dev pilot；根据 benchmark 与 dev 结果设计并审阅 `phase5_t2_freeze_v1`。**
+**服务器拉取包含 T2 安全解码修复的新提交，以新输出目录重跑 CAP/C0、Plain+CAN GPU smoke；通过后再运行短版 dev pilot。**
 
-在正式 freeze 前不创建 `phase5_t2_freeze_v1`、不接入外部数据、不启动 GPU 长训练，也不读取或生成正式 test 结果；当前 GPU 仅限 benchmark 和短版 dev pilot。已有 Teacher–Student Phase 5.5-TS 轨道保持独立，待 T2 pilot 和基线结论后再决定是否启动。
+新 smoke 通过前不继续 benchmark/dev pilot；正式 freeze 前不创建 `phase5_t2_freeze_v1`、不接入外部数据、不启动 GPU 长训练，也不读取或生成正式 test 结果。已有 Teacher–Student Phase 5.5-TS 轨道保持独立，待 T2 pilot 和基线结论后再决定是否启动。
 
 审阅重点：计算图内 Gate 位置和每请求一次的硬路由、同 tokenizer/vocabulary/prompt/停止规则、
 公开与私有/拒答数据生成及实体隔离、Stage A/B/C 训练协议、TM-API/TM-REP/TM-CP 访问条件、

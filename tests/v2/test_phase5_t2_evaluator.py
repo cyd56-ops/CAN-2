@@ -12,6 +12,7 @@ from src.can.v2.transformer import (
     ByteTokenizer,
     GatedDecoderTransformer,
     PlainDecoderTransformer,
+    PlainGenerationOutput,
     T2Evaluator,
     TransformerConfig,
     generate_t2_cap_corpus,
@@ -224,3 +225,71 @@ def test_evaluator_rejects_duplicate_sample_id() -> None:
     )
     with pytest.raises(ValueError, match="sample_id"):
         evaluator.evaluate(rows)
+
+
+@pytest.mark.parametrize(
+    "generated_suffix,expected_reason,expected_control_count",
+    [
+        ((0,), "invalid_control_token", 1),
+        ((0xC2, 0x80), "invalid_control_token", 1),
+        ((ByteTokenizer.pad_token_id,), "invalid_special_token", 0),
+        ((0xFF,), "invalid_utf8", 0),
+    ],
+)
+def test_evaluator_records_invalid_generated_tokens_without_crashing(
+    monkeypatch,
+    generated_suffix,
+    expected_reason: str,
+    expected_control_count: int,
+) -> None:
+    """控制、特殊及非法 UTF-8 token 必须稳定计为失败并留下诊断。"""
+
+    model = PlainDecoderTransformer(_config())
+
+    def fake_generate(
+        input_ids,
+        head,
+        attention_mask=None,
+        max_new_tokens=16,
+        eos_token_id=ByteTokenizer.eos_token_id,
+        pad_token_id=ByteTokenizer.pad_token_id,
+        cache_mode="none",
+    ):
+        """返回带指定异常后缀的确定性生成结果。"""
+
+        del max_new_tokens, eos_token_id, pad_token_id, cache_mode
+        assert attention_mask is not None
+        lengths = attention_mask.sum(dim=1).tolist()
+        sequences = tuple(
+            tuple(input_ids[index, : int(length)].tolist()) + generated_suffix
+            for index, length in enumerate(lengths)
+        )
+        return PlainGenerationOutput(
+            token_ids=sequences,
+            head=head,
+            stop_reasons=("max_new_tokens",) * len(sequences),
+            cache_lengths=(),
+        )
+
+    monkeypatch.setattr(model, "generate", fake_generate)
+    result = T2Evaluator(
+        model,
+        ByteTokenizer(),
+        torch.device("cpu"),
+        max_new_tokens=max(1, len(generated_suffix)),
+        batch_size=4,
+    ).evaluate(_rows())
+
+    assert result["status"] == "ok"
+    assert result["generation_safety"]["status"] == "invalid_generation_observed"
+    assert result["generation_safety"]["invalid_sequences"] == 4
+    assert result["generation_safety"][f"{expected_reason}_sequences"] == 4
+    for diagnostic in result["diagnostics"]:
+        assert diagnostic["generation_valid"] is False
+        assert diagnostic["generated_text"] == "[INVALID-GENERATION]"
+        assert "\x00" not in diagnostic["generated_text"]
+        assert diagnostic["generated_token_ids"] == list(generated_suffix)
+        assert diagnostic["invalid_generation_reason"] == expected_reason
+        assert diagnostic["invalid_control_token_count"] == expected_control_count
+        assert diagnostic["stop_reason"] == expected_reason
+        assert diagnostic["model_stop_reason"] == "max_new_tokens"
