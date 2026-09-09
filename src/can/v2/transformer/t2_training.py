@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Mapping, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
-from torch import Tensor
+from torch import Tensor, nn
 
 from ..layers.gate_layer import ReasonCode
 from ..training.data import CredentialGenerator
@@ -141,14 +141,170 @@ def _validate_common(
         raise ValueError("optimizer 必须覆盖当前模型的全部参数")
 
 
+def t2_parameter_groups(model: nn.Module) -> Dict[str, Tuple[nn.Parameter, ...]]:
+    """把 T2 模型的可训练参数划分为互斥且完整的三条路径。
+
+    参数:
+        model: Plain 或 CAN Decoder Transformer。
+
+    返回:
+        ``shared_prefix``、``protected_path`` 和 ``public_path`` 参数元组。
+    """
+
+    if not isinstance(model, (GatedDecoderTransformer, PlainDecoderTransformer)):
+        raise TypeError("model 必须是 T2 Plain/CAN Transformer")
+    shared_modules: List[nn.Module] = [
+        model.token_embedding,
+        model.position_embedding,
+        *list(model.blocks[: model.config.cut_layer]),
+    ]
+    protected_modules: List[nn.Module] = [
+        *list(model.blocks[model.config.cut_layer :]),
+        model.protected_norm,
+        model.protected_head,
+    ]
+    public_modules: List[nn.Module] = [model.public_norm, model.public_head]
+
+    def collect(modules: Sequence[nn.Module]) -> Tuple[nn.Parameter, ...]:
+        """按模型注册顺序收集模块的可训练参数并去重。"""
+
+        seen = set()
+        values: List[nn.Parameter] = []
+        for module in modules:
+            for parameter in module.parameters():
+                if parameter.requires_grad and id(parameter) not in seen:
+                    seen.add(id(parameter))
+                    values.append(parameter)
+        return tuple(values)
+
+    groups = {
+        "shared_prefix": collect(shared_modules),
+        "protected_path": collect(protected_modules),
+        "public_path": collect(public_modules),
+    }
+    group_ids = [{id(parameter) for parameter in values} for values in groups.values()]
+    if any(
+        group_ids[left] & group_ids[right]
+        for left in range(3)
+        for right in range(left + 1, 3)
+    ):
+        raise RuntimeError("T2 gradient 参数组必须互斥")
+    expected = {
+        id(parameter) for parameter in model.parameters() if parameter.requires_grad
+    }
+    observed = set().union(*group_ids)
+    if observed != expected:
+        raise RuntimeError("T2 gradient 参数组未完整覆盖可训练参数")
+    return groups
+
+
+def _gradient_norms(
+    groups: Mapping[str, Sequence[nn.Parameter]],
+) -> Dict[str, float]:
+    """计算反向传播后各互斥参数组的全局 L2 梯度范数。"""
+
+    result: Dict[str, float] = {}
+    for name, parameters in groups.items():
+        squared = 0.0
+        for parameter in parameters:
+            if parameter.grad is None:
+                continue
+            gradient = parameter.grad.detach()
+            if not bool(torch.isfinite(gradient).all().item()):
+                raise FloatingPointError("T2 T-pretrain 出现非有限梯度")
+            squared += float(torch.sum(gradient.double() ** 2).item())
+        value = float(squared**0.5)
+        if not np.isfinite(value):
+            raise FloatingPointError("T2 gradient norm 非有限")
+        result[name] = value
+    return result
+
+
+def _scope_observations(
+    protected_logits: Tensor,
+    public_logits: Tensor,
+    labels: Tensor,
+    scopes: Sequence[str],
+) -> Tuple[Dict[str, float], Dict[str, int]]:
+    """从 detached logits 计算四 scope loss 与答案 token 数。"""
+
+    losses: Dict[str, float] = {}
+    token_counts: Dict[str, int] = {}
+    with torch.no_grad():
+        protected_values = protected_logits.detach()
+        public_values = public_logits.detach()
+        for scope in T2_SCOPES:
+            mask = torch.tensor(
+                [value == scope for value in scopes],
+                dtype=torch.bool,
+                device=labels.device,
+            )
+            logits = (
+                protected_values
+                if scope in {"protected_public", "protected_private"}
+                else public_values
+            )
+            value = float(masked_causal_lm_loss(logits, labels, mask).item())
+            answer_mask = mask[:, None] & (labels[:, 1:] != -100)
+            token_count = int(answer_mask.sum().item())
+            if token_count <= 0 or not np.isfinite(value):
+                raise FloatingPointError("T2 出现非有限 loss 或缺少答案 token")
+            losses[scope] = value
+            token_counts[scope] = token_count
+    return losses, token_counts
+
+
+def _masked_summary(values: Tensor, mask: Tensor, name: str) -> Dict[str, float]:
+    """计算非空有限 Tensor 子集的 min/mean/max。"""
+
+    selected = values.detach()[mask]
+    if selected.numel() == 0:
+        raise ValueError(f"{name} 统计子集不能为空")
+    if not bool(torch.isfinite(selected).all().item()):
+        raise FloatingPointError(f"{name} 包含非有限值")
+    return {
+        "min": float(selected.min().item()),
+        "mean": float(selected.mean().item()),
+        "max": float(selected.max().item()),
+    }
+
+
+def _gate_observations(decision: object, masks: T2ScopeMasks) -> Dict[str, Any]:
+    """按真实 valid/invalid 判决汇总 Gate signal 与 error norm。"""
+
+    if not hasattr(decision, "gate_signal") or not hasattr(decision, "evidence"):
+        raise TypeError("decision 缺少 Gate 观测字段")
+    gate_signal = decision.gate_signal
+    error_norm = decision.evidence.error_norm
+    return {
+        "valid": {
+            "count": int(masks.valid.sum().item()),
+            "signal": _masked_summary(gate_signal, masks.valid, "valid gate_signal"),
+            "error_norm": _masked_summary(error_norm, masks.valid, "valid error_norm"),
+        },
+        "invalid": {
+            "count": int(masks.invalid.sum().item()),
+            "signal": _masked_summary(
+                gate_signal, masks.invalid, "invalid gate_signal"
+            ),
+            "error_norm": _masked_summary(
+                error_norm, masks.invalid, "invalid error_norm"
+            ),
+        },
+    }
+
+
 def _finish_step(
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
     loss: Tensor,
     attention_mask: Tensor,
     global_step: int,
-) -> Dict[str, float]:
-    """检查 loss/梯度、执行 optimizer step 并返回 batch 指标。"""
+    *,
+    observations: Optional[Mapping[str, object]] = None,
+    collect_diagnostics: bool = True,
+) -> Dict[str, Any]:
+    """检查 loss/梯度、采集诊断、执行 optimizer step 并返回指标。"""
 
     if not bool(torch.isfinite(loss).item()):
         raise FloatingPointError("T2 T-pretrain 出现非有限 loss")
@@ -159,13 +315,22 @@ def _finish_step(
         for parameter in model.parameters()
     ):
         raise FloatingPointError("T2 T-pretrain 出现非有限梯度")
+    gradient_norms = (
+        _gradient_norms(t2_parameter_groups(model)) if collect_diagnostics else None
+    )
     optimizer.step()
-    return {
+    result: Dict[str, Any] = {
         "loss": float(loss.detach().item()),
         "samples": float(attention_mask.shape[0]),
         "tokens": float(count_non_padding_input_tokens(attention_mask)),
         "global_step": float(global_step + 1),
     }
+    if collect_diagnostics:
+        result["total_loss"] = result["loss"]
+        result["gradient_norms"] = gradient_norms
+        if observations is not None:
+            result.update(dict(observations))
+    return result
 
 
 class T2CanPretrainer:
@@ -179,6 +344,7 @@ class T2CanPretrainer:
         credential_generator: CredentialGenerator,
         protected_weight: float = 1.0,
         public_weight: float = 1.0,
+        collect_diagnostics: bool = True,
     ) -> None:
         """初始化 CAN T2 trainer 并校验模型、生成器和权重。"""
 
@@ -187,15 +353,18 @@ class T2CanPretrainer:
         if not isinstance(credential_generator, CredentialGenerator):
             raise TypeError("credential_generator 必须是 CredentialGenerator")
         _validate_common(model, optimizer, device, protected_weight, public_weight)
+        if not isinstance(collect_diagnostics, bool):
+            raise TypeError("collect_diagnostics 必须是 bool")
         self.model = model.to(device)
         self.optimizer = optimizer
         self.device = device
         self.credential_generator = credential_generator
         self.protected_weight = float(protected_weight)
         self.public_weight = float(public_weight)
+        self.collect_diagnostics = collect_diagnostics
         self.global_step = 0
 
-    def train_batch(self, batch: Mapping[str, object]) -> Dict[str, float]:
+    def train_batch(self, batch: Mapping[str, object]) -> Dict[str, Any]:
         """训练一个完整 T2 四元组 batch，并核对 Gate 决策。"""
 
         self.model.train()
@@ -230,12 +399,31 @@ class T2CanPretrainer:
         )
         public_loss = masked_causal_lm_loss(output.public_logits, labels, masks.public)
         loss = self.protected_weight * protected_loss + self.public_weight * public_loss
+        if not bool(torch.isfinite(loss).item()):
+            raise FloatingPointError("T2 T-pretrain 出现非有限 loss")
+        observations: Optional[Dict[str, object]] = None
+        if self.collect_diagnostics:
+            scope_losses, scope_tokens = _scope_observations(
+                output.protected_logits,
+                output.public_logits,
+                labels,
+                scopes,
+            )
+            observations = {
+                "protected_head_loss": float(protected_loss.detach().item()),
+                "public_head_loss": float(public_loss.detach().item()),
+                "scope_losses": scope_losses,
+                "scope_answer_tokens": scope_tokens,
+                "gate": _gate_observations(output.decision, masks),
+            }
         metrics = _finish_step(
             self.model,
             self.optimizer,
             loss,
             attention_mask,
             self.global_step,
+            observations=observations,
+            collect_diagnostics=self.collect_diagnostics,
         )
         self.global_step += 1
         return metrics
@@ -251,39 +439,62 @@ class T2PlainPretrainer:
         device: torch.device,
         protected_weight: float = 1.0,
         public_weight: float = 1.0,
+        collect_diagnostics: bool = True,
     ) -> None:
         """初始化 Plain T2 trainer 并校验模型和监督权重。"""
 
         if not isinstance(model, PlainDecoderTransformer):
             raise TypeError("model 必须是 PlainDecoderTransformer")
         _validate_common(model, optimizer, device, protected_weight, public_weight)
+        if not isinstance(collect_diagnostics, bool):
+            raise TypeError("collect_diagnostics 必须是 bool")
         self.model = model.to(device)
         self.optimizer = optimizer
         self.device = device
         self.protected_weight = float(protected_weight)
         self.public_weight = float(public_weight)
+        self.collect_diagnostics = collect_diagnostics
         self.global_step = 0
 
-    def train_batch(self, batch: Mapping[str, object]) -> Dict[str, float]:
+    def train_batch(self, batch: Mapping[str, object]) -> Dict[str, Any]:
         """使用与 CAN 相同的四元组 mask 训练一个 Plain batch。"""
 
         self.model.train()
-        input_ids, labels, attention_mask, _, masks = _prepare_t2_batch(
+        input_ids, labels, attention_mask, scopes, masks = _prepare_t2_batch(
             batch, self.device
         )
         self.optimizer.zero_grad(set_to_none=True)
         output = self.model(input_ids, attention_mask)
-        loss = self.protected_weight * masked_causal_lm_loss(
+        protected_loss = masked_causal_lm_loss(
             output.protected_logits, labels, masks.protected
-        ) + self.public_weight * masked_causal_lm_loss(
-            output.public_logits, labels, masks.public
         )
+        public_loss = masked_causal_lm_loss(output.public_logits, labels, masks.public)
+        loss = self.protected_weight * protected_loss + self.public_weight * public_loss
+        if not bool(torch.isfinite(loss).item()):
+            raise FloatingPointError("T2 T-pretrain 出现非有限 loss")
+        observations = None
+        if self.collect_diagnostics:
+            scope_losses, scope_tokens = _scope_observations(
+                output.protected_logits,
+                output.public_logits,
+                labels,
+                scopes,
+            )
+            observations = {
+                "protected_head_loss": float(protected_loss.detach().item()),
+                "public_head_loss": float(public_loss.detach().item()),
+                "scope_losses": scope_losses,
+                "scope_answer_tokens": scope_tokens,
+                "gate": None,
+            }
         metrics = _finish_step(
             self.model,
             self.optimizer,
             loss,
             attention_mask,
             self.global_step,
+            observations=observations,
+            collect_diagnostics=self.collect_diagnostics,
         )
         self.global_step += 1
         return metrics
@@ -294,4 +505,5 @@ __all__ = [
     "T2PlainPretrainer",
     "T2ScopeMasks",
     "build_t2_scope_masks",
+    "t2_parameter_groups",
 ]

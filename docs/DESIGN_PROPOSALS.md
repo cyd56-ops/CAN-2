@@ -3887,4 +3887,31 @@ Teacher–Student 输出。
 - 从零训练失败时先检查 token/F1、prompt 分组和 Plain 对照，不得直接归因于 Gate；
 - 数据、模板、答案处理或许可信息不完整时 fail-closed，禁止进入正式 test 或论文主结果。
 
+### 5.5/T2.6 200k pilot 后的诊断门 [IMPLEMENTED / PENDING ACCEPTANCE]
+
+seed `20260903` 的 CAP/C0 200k-token dev pilot 表明 Plain 已出现可学习信号，而 CAN 的最佳时点
+与 final checkpoint 明显分离并在后段回退。由于证据仅有单 seed、每 scope 4 个 dev 样本，当前
+结论只能是“该配置 NO-GO，不得冻结”，不能把差异直接归因于 Gate。
+
+继续扩大预算前，必须先完成 `docs/PHASE5_T2_DIAGNOSTIC_OVERFIT_PLAN.md` 定义的两项诊断门：
+
+1. summary schema 明确区分 best/final 时点与对应 evaluator 结果，并记录四 scope loss、Gate
+   signal 和路径 gradient norm；
+2. Plain、正常 soft-gated CAN 和 diagnostic-only direct-protected CAN 在同一个 train 四元组上
+   执行固定上限的过拟合对照，再按预注册决策表定位基本训练、soft Gate 或多 source 泛化问题。
+
+该诊断只物化 train，不建立 freeze、不读取 dev/validation/test，也不改变正式训练 objective。
+只有诊断通过并经 Claude 验收后，才能另行设计 scope 权重、curriculum、样本规模或三 seed pilot。
+
+诊断实现还必须满足四条细化约束：`can_direct` 只能使用真实 Gate 提交的 `decision.allow` 索引；
+四 scope loss 从 detached logits 计算且不得进入主 loss；正式入口跨 resume 使用单调绝对 step，
+selection score 严格改进才替换 best，tie 保留更早 checkpoint；512 updates 结束时允许记录
+`partial_progress`，但它仍属于未通过，不能替代连续三次全 scope 严格通过门槛。每 scope 首次
+通过时点只作描述性输出，不引入未经 pilot 支持的分歧硬阈值。
+
+2026-09-08 实现：新增 `t2_diagnostics.py` 与 `scripts/diagnose_phase5_t2_overfit.py`；
+正式 T2 trainer 增加 detached scope loss、Gate/error norm 和梯度观测，训练入口升级 summary v2，
+分别绑定 best/final checkpoint、评估摘要与逐样本诊断。CPU 回归 `468 passed`，待 Claude 验收；
+正式 GPU 过拟合诊断尚未运行，不能据此声称三个变体已达到记忆门槛。
+
 ---

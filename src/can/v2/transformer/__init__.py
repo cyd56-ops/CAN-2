@@ -65,6 +65,16 @@ from .reference import (
     validate_direct_reference,
     validate_generation_reference,
 )
+from .t2_checkpoint import (
+    T2_CHECKPOINT_SCHEMA_VERSION,
+    array_sha256,
+    capture_rng_state,
+    derive_lwe_keypair,
+    load_t2_checkpoint,
+    model_tensor_sha256,
+    restore_rng_state,
+    save_t2_checkpoint,
+)
 from .t2_data import (
     T2_CAP_SUITE,
     T2_GENERATOR_VERSION,
@@ -84,6 +94,19 @@ from .t2_data import (
     t2_split_sha256,
     validate_t2_corpus,
 )
+from .t2_diagnostics import (
+    T2_DIAGNOSTIC_PROTOCOL,
+    T2_DIAGNOSTIC_VARIANTS,
+    T2CanDirectPretrainer,
+    T2OverfitTracker,
+    classify_t2_overfit_outcome,
+    compact_t2_evaluation,
+    materialize_t2_diagnostic_quartet,
+    overfit_snapshot,
+    save_t2_diagnostic_checkpoint,
+    select_first_t2_quartet,
+)
+from .t2_evaluator import T2Evaluator
 from .t2_metrics import (
     T2_NORMALIZATION_VERSION,
     T2AccessMetrics,
@@ -95,21 +118,10 @@ from .t2_metrics import (
     normalize_t2_answer,
     score_t2_text,
 )
-from .t2_evaluator import T2Evaluator
-from .t2_checkpoint import (
-    T2_CHECKPOINT_SCHEMA_VERSION,
-    array_sha256,
-    capture_rng_state,
-    derive_lwe_keypair,
-    load_t2_checkpoint,
-    model_tensor_sha256,
-    restore_rng_state,
-    save_t2_checkpoint,
-)
 from .t2_runtime import (
-    T2RuntimeConfig,
     T2_RUNTIME_SCHEMA_VERSION,
     T2_TOKENIZER_VERSION,
+    T2RuntimeConfig,
     atomic_write_json,
     begin_test_access,
     file_sha256,
@@ -126,6 +138,7 @@ from .t2_training import (
     T2PlainPretrainer,
     T2ScopeMasks,
     build_t2_scope_masks,
+    t2_parameter_groups,
 )
 from .tokenizer import ByteTokenizer
 from .training import (
@@ -209,9 +222,13 @@ __all__ = [
     "T2_SPLITS",
     "T2AccessMetrics",
     "T2CanPretrainer",
+    "T2CanDirectPretrainer",
     "T2CausalLMDataset",
     "T2Example",
     "T2Evaluator",
+    "T2OverfitTracker",
+    "T2_DIAGNOSTIC_PROTOCOL",
+    "T2_DIAGNOSTIC_VARIANTS",
     "T2_CHECKPOINT_SCHEMA_VERSION",
     "T2RuntimeConfig",
     "T2_RUNTIME_SCHEMA_VERSION",
@@ -225,6 +242,9 @@ __all__ = [
     "T2TextScores",
     "evaluate_t2_predictions",
     "build_t2_scope_masks",
+    "classify_t2_overfit_outcome",
+    "compact_t2_evaluation",
+    "materialize_t2_diagnostic_quartet",
     "array_sha256",
     "capture_rng_state",
     "derive_lwe_keypair",
@@ -247,7 +267,11 @@ __all__ = [
     "generate_t2_mem_corpus",
     "generate_t2_split",
     "normalize_t2_answer",
+    "overfit_snapshot",
+    "save_t2_diagnostic_checkpoint",
     "score_t2_text",
+    "select_first_t2_quartet",
+    "t2_parameter_groups",
     "t2_corpus_sha256",
     "t2_split_sha256",
     "validate_t2_corpus",

@@ -296,6 +296,52 @@ def _selection_score(report: Mapping[str, Any]) -> float:
     return float(np.mean(values))
 
 
+def _strictly_improves(candidate: float, best: Optional[float]) -> bool:
+    """仅在有限候选分数严格更高时允许替换历史 best。"""
+
+    if not np.isfinite(candidate) or (best is not None and not np.isfinite(best)):
+        raise FloatingPointError("T2 best 比较不得包含非有限值")
+    return best is None or candidate > best
+
+
+def _compact_evaluation(report: Mapping[str, Any]) -> Dict[str, Any]:
+    """复制 evaluator 摘要并剥离单独保存的逐样本诊断。"""
+
+    required = {
+        "schema_version",
+        "status",
+        "model_kind",
+        "suite_id",
+        "split",
+        "route_mode",
+        "gate_or_credential",
+        "text_metrics",
+        "teacher_forced_by_scope",
+        "routing",
+        "generation_safety",
+        "diagnostics",
+    }
+    if set(report) != required:
+        raise ValueError("T2 evaluator report schema 不匹配")
+    return {key: value for key, value in report.items() if key != "diagnostics"}
+
+
+def _best_progress(
+    score: Optional[float],
+    at_tokens: Optional[int],
+    at_global_step: Optional[int],
+    evaluation: Optional[Mapping[str, Any]],
+) -> Dict[str, Any]:
+    """构造 checkpoint 中绑定最佳时点和摘要的稳定字段。"""
+
+    return {
+        "best_score": score,
+        "best_at_tokens": at_tokens,
+        "best_at_global_step": at_global_step,
+        "best_evaluation": None if evaluation is None else dict(evaluation),
+    }
+
+
 def _train_one(
     kind: str,
     config: T2RuntimeConfig,
@@ -331,6 +377,10 @@ def _train_one(
     consumed_sample_ids: List[str] = []
     history: List[Dict[str, Any]] = []
     best_score: Optional[float] = None
+    best_at_tokens: Optional[int] = None
+    best_at_global_step: Optional[int] = None
+    best_evaluation: Optional[Dict[str, Any]] = None
+    resume_count = 0
     credential_rng_state: Optional[Mapping[str, Any]] = None
     if resume:
         if not last_path.is_file():
@@ -344,6 +394,20 @@ def _train_one(
         best_score = (
             None if saved.get("best_score") is None else float(saved["best_score"])
         )
+        resume_count = int(saved.get("resume_count", 0)) + 1
+        if best_score is not None:
+            required_best = (
+                saved.get("best_at_tokens"),
+                saved.get("best_at_global_step"),
+                saved.get("best_evaluation"),
+            )
+            if any(value is None for value in required_best):
+                raise ValueError("旧版 checkpoint 缺少 schema v2 best 恢复字段")
+            best_at_tokens = int(saved["best_at_tokens"])
+            best_at_global_step = int(saved["best_at_global_step"])
+            if not isinstance(saved["best_evaluation"], Mapping):
+                raise ValueError("checkpoint best_evaluation 必须是 Mapping")
+            best_evaluation = dict(saved["best_evaluation"])
         consumed_sample_ids = list(saved.get("consumed_sample_ids", []))
         saved_history = saved.get("history", [])
         if not isinstance(saved_history, list):
@@ -355,6 +419,29 @@ def _train_one(
         credential_rng_state = payload["credential_rng_state"]
         if generator is not None and credential_rng_state is not None:
             generator.rng.bit_generator.state = dict(credential_rng_state)
+        if best_score is not None:
+            if (
+                not best_path.is_file()
+                or not (model_dir / "best_diagnostic.json").is_file()
+            ):
+                raise ValueError("resume 缺少与 best 进度绑定的 checkpoint/diagnostic")
+            best_payload = torch.load(best_path, map_location="cpu", weights_only=False)
+            best_saved = best_payload["progress"]
+            if any(
+                best_saved.get(key) != saved.get(key)
+                for key in (
+                    "best_score",
+                    "best_at_tokens",
+                    "best_at_global_step",
+                    "best_evaluation",
+                )
+            ):
+                raise ValueError("best 与 last 恢复状态不一致；保留目录排查中断写入")
+            if not (
+                0 < best_at_global_step <= trainer.global_step
+                and 0 < best_at_tokens <= total_tokens
+            ):
+                raise ValueError("best 绝对时点不在已完成训练范围内")
     bar = tqdm(
         total=config.token_budget,
         unit="tok",
@@ -403,8 +490,12 @@ def _train_one(
                     report = evaluator.evaluate(eval_rows)
                     history[-1]["evaluation"] = report["text_metrics"]
                     score = _selection_score(report)
-                    if best_score is None or score > best_score:
+                    compact_report = _compact_evaluation(report)
+                    if _strictly_improves(score, best_score):
                         best_score = score
+                        best_at_tokens = total_tokens
+                        best_at_global_step = trainer.global_step
+                        best_evaluation = compact_report
                         candidate_best = True
                     print(f"[{kind}] {eval_split} evaluation end", flush=True)
                     while next_validation <= total_tokens:
@@ -417,7 +508,13 @@ def _train_one(
                     "global_step": trainer.global_step,
                     "batch_order_sha256_prefix": batch_digest.hexdigest(),
                     "consumed_sample_ids": list(consumed_sample_ids),
-                    "best_score": best_score,
+                    "resume_count": resume_count,
+                    **_best_progress(
+                        best_score,
+                        best_at_tokens,
+                        best_at_global_step,
+                        best_evaluation,
+                    ),
                     "history": list(history),
                 }
                 credential_state = (
@@ -434,6 +531,10 @@ def _train_one(
                         metadata,
                         state,
                         credential_state,
+                    )
+                    atomic_write_json(
+                        model_dir / "best_diagnostic.json",
+                        {"diagnostics": report["diagnostics"]},
                     )
             if stop:
                 break
@@ -456,6 +557,13 @@ def _train_one(
     )
     final_report = evaluator.evaluate(eval_rows)
     final_score = _selection_score(final_report)
+    final_compact = _compact_evaluation(final_report)
+    final_is_best = _strictly_improves(final_score, best_score)
+    if final_is_best:
+        best_score = final_score
+        best_at_tokens = total_tokens
+        best_at_global_step = trainer.global_step
+        best_evaluation = final_compact
     final_state = {
         "epoch": epoch,
         "batch_offset": batch_offset,
@@ -464,20 +572,47 @@ def _train_one(
         "global_step": trainer.global_step,
         "batch_order_sha256_prefix": batch_digest.hexdigest(),
         "consumed_sample_ids": list(consumed_sample_ids),
-        "best_score": best_score,
+        "resume_count": resume_count,
+        **_best_progress(
+            best_score,
+            best_at_tokens,
+            best_at_global_step,
+            best_evaluation,
+        ),
         "history": list(history),
     }
     credential_state = (
         generator.rng.bit_generator.state if generator is not None else None
     )
-    if best_score is None or final_score > best_score:
-        best_score = final_score
-        final_state["best_score"] = best_score
+    if final_is_best:
         save_t2_checkpoint(
             best_path, model, optimizer, metadata, final_state, credential_state
         )
+        atomic_write_json(
+            model_dir / "best_diagnostic.json",
+            {"diagnostics": final_report["diagnostics"]},
+        )
+    save_t2_checkpoint(
+        last_path, model, optimizer, metadata, final_state, credential_state
+    )
+    atomic_write_json(
+        model_dir / "final_diagnostic.json",
+        {"diagnostics": final_report["diagnostics"]},
+    )
+    if (
+        best_score is None
+        or best_at_tokens is None
+        or best_at_global_step is None
+        or best_evaluation is None
+        or not best_path.is_file()
+        or not (model_dir / "best_diagnostic.json").is_file()
+    ):
+        raise RuntimeError("T2 best checkpoint/evaluation 未形成完整绑定")
+    best_is_final = (
+        best_at_tokens == total_tokens and best_at_global_step == trainer.global_step
+    )
     summary = {
-        "schema_version": 1,
+        "schema_version": 2,
         "status": "completed_budget",
         "research_result": config.mode == "frozen-validation",
         "lifecycle_stage": "T-pretrain",
@@ -487,8 +622,24 @@ def _train_one(
         "batch_order_sha256": batch_digest.hexdigest(),
         "shared_initial_tensor_sha256": initial_hash,
         "final_model_tensor_sha256": model_tensor_sha256(model),
+        "resume_count": resume_count,
         "best_selection_score": best_score,
-        "evaluation": final_report,
+        "best_at_tokens": best_at_tokens,
+        "best_at_global_step": best_at_global_step,
+        "best_evaluation": best_evaluation,
+        "final_selection_score": final_score,
+        "final_at_tokens": total_tokens,
+        "final_at_global_step": trainer.global_step,
+        "final_evaluation": final_compact,
+        "best_is_final": best_is_final,
+        "best_checkpoint": {
+            "path": "best.ckpt",
+            "sha256": file_sha256(best_path),
+        },
+        "final_checkpoint": {
+            "path": "last.ckpt",
+            "sha256": file_sha256(last_path),
+        },
         "history": history,
         "stages": {
             "T-pretrain": "completed",
@@ -497,10 +648,6 @@ def _train_one(
             "C": "not_run",
         },
     }
-    atomic_write_json(model_dir / "summary.json", summary)
-    atomic_write_json(
-        model_dir / "diagnostic.json", {"diagnostics": final_report["diagnostics"]}
-    )
     manifest = build_checkpoint_manifest(
         model_dir,
         {
@@ -537,6 +684,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     identity = config.to_dict()
     if args.resume:
         state = load_run_state(state_path, identity)
+        # 完成的旧结果保持原样，禁止借 resume 将 schema v1 历史重写为 v2。
+        if state.get("status") == "completed":
+            print(json.dumps({"status": "already_completed"}))
+            return 0
     else:
         if output.exists() and any(output.iterdir()):
             raise FileExistsError("output 非空；恢复必须显式使用 --resume")
@@ -606,7 +757,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     state["stages"]["T-pretrain"] = "completed"
     atomic_write_json(state_path, state)
     pair_summary = {
-        "schema_version": 1,
+        "schema_version": 2,
         "status": "completed",
         "research_result": config.mode == "frozen-validation",
         "identity": identity,

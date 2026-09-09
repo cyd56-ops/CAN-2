@@ -3,7 +3,7 @@
 ## 当前研究阶段
 
 **阶段**: V2 - Gate Layer 在计算图中间架构  
-**状态**: Phase 5 E1/E2 exploratory 实验已完成并归档；Phase 5.5/T2 首个实现里程碑和 T2 训练/evaluator CLI 第二里程碑均已通过 Claude 验收；服务器 GPU smoke 暴露的生成控制字符边界缺陷已修复并通过本地回归，待服务器拉取后重跑；Teacher–Student 扩展仍为独立后续轨道，尚未实现
+**状态**: Phase 5 E1/E2 exploratory 实验已完成并归档；Phase 5.5/T2 两个实现里程碑均已通过 Claude 验收，安全解码修复后的 CAP/C0 单 seed 200k-token dev pilot 已完成并判定当前配置 NO-GO；单四元组诊断代码与 CPU 回归已通过 Claude 验收，下一步提交并在服务器运行固定 512-update train-only 诊断；Teacher–Student 扩展仍为独立后续轨道
 **最后更新**: 2026-09-08
 
 **2026-09-06 Phase 5.5/T2 方案提交**：新增 `docs/PHASE5_T2_NATURAL_LANGUAGE_PLAN.md`，并在
@@ -82,6 +82,82 @@ T2 benchmark、dev pilot、freeze 和正式 validation/test。
 集成回归覆盖 NUL、U+0080、PAD 和非法 UTF-8。验证结果：evaluator `17 passed`，全部 T2 专项
 `137 passed`，完整 `tests/v2` `432 passed`；Black、isort、compileall 和 `git diff --check`
 通过。服务器旧失败目录保留为负向证据，修复提交后须以新输出目录重跑 smoke。
+
+**2026-09-08 T2 CAP/C0 200k dev pilot 与 NO-GO**：安全解码修复后的 seed `20260903`
+Plain/CAN 成对运行均完成 `199,146 tokens / 222 steps`，共享初始化与 batch 顺序一致，且
+`test_materialized=false`、generation safety 为 ok。Plain best score 为 `0.35`，final dev 的
+public EM/F1 为 `0.25/0.35`、protected-public F1 为 `0.20`、protected-private F1 为 `0.225`、
+refusal rate/F1 为 `0.50/0.625`，说明 CAP 任务并非完全不可学习。CAN best score 约为
+`0.1437`，但 final 仅 public F1 约 `0.0833`，其余三类 F1 和 refusal rate 为 `0`；约
+75k--150k token 的短暂改善未保持到 final。当前 `best_selection_score` 与顶层 `evaluation`
+分别对应历史 best 和 final checkpoint，输出语义需要修正。由于只有一个 seed 且 dev 每 scope
+仅 4 个样本，本结果只支持“当前配置不得冻结、不得直接追加长预算”，不能支持“Gate 导致退化”
+的因果结论。本轮未读取 validation/test，也不创建 `phase5_t2_freeze_v1`。
+
+**2026-09-08 T2 诊断方案待审阅**：新增
+`docs/PHASE5_T2_DIAGNOSTIC_OVERFIT_PLAN.md`，并在 `docs/DESIGN_PROPOSALS.md` 登记
+Phase 5.5/T2.6。方案先分离 best/final evaluator 结果，增加四 scope loss、Gate signal 与路径
+gradient norm；随后用固定单一 train 四元组比较 Plain、正常 CAN soft Gate 和仅用于诊断的
+CAN direct-protected 消融。三个变体固定 512 updates 上限、每 16 updates 评估、连续 3 次四类
+EM/F1/teacher-forced accuracy 全为 1.0 才通过，并按预注册决策表决定后续调查方向。该方案是
+train-only、非 freeze、非正式结果；尚未修改代码、运行诊断或读取 dev/validation/test。
+
+**2026-09-08 T2 诊断方案首轮审阅修订**：核对 Claude 意见后，确认其 `turn_idx`、
+`need_credential`、`protected_resources`、`token_valid`、`val_direct_acc` 和 API 路由属于其他协议，
+未纳入 T2。采纳并明确四项通用改进：`can_direct` 只能从真实 Gate 的 `decision.allow` 取得 valid
+索引并与 scope 期望交叉校验；四 scope 诊断 loss 必须从 detached logits 在 no-grad 下计算；
+正式入口跨 resume 使用单调绝对 step、严格改进才更新 best、tie 保留更早 checkpoint，并记录
+`resume_count`；512 updates 结束时可把连续三次四 scope F1/teacher-forced accuracy 均不低于
+0.95 的运行标记为 `partial_progress`，但仍视为未通过。每 scope 首次 EM=1.0 时点只作描述性
+记录，不引入无数据依据的 128/256-update 硬阈值。本轮仍未修改代码或读取 dev/validation/test。
+
+**2026-09-08 T2 诊断实现启动**：Claude 已完成修订方案复审，用户指定 Codex 实现
+`t2_diagnostic_plan_v2`。实现范围固定为 summary schema v2、best/final 与 resume 一致性、
+不改变主 objective 的四 scope loss/Gate/gradient 观测，以及 Plain、CAN soft、CAN direct
+三个 train-only 单四元组诊断变体和专项测试。本地只允许 CPU fixture 和测试；不得创建 freeze、
+运行正式 GPU 诊断或物化 dev/validation/test。
+
+**2026-09-08 T2 诊断实现完成（待 Claude 验收）**：新增 `t2_diagnostics.py` 和
+`scripts/diagnose_phase5_t2_overfit.py`，固定 CAP/C0、seed 20260903、单 train 四元组、512 updates、
+每 16 updates 评估及连续三次成功门槛。实现 Plain/CAN soft/CAN direct 三变体，direct 以真实
+`decision.allow` 授权并保持正式硬 Gate 推理；两个 CAN 的实际凭证共同序列在内存逐项比对，
+仅保存布尔值与比对行数。支持 passed/partial_progress/failed_to_overfit/invalid_run 的严格区分。
+正式 trainer 的四 scope loss 来自 detached logits，不参与反向传播；新增双 head loss、答案
+token 数、三路径梯度范数和 Gate/error norm 摘要。训练入口 schema v2 分离 best/final 摘要、
+checkpoint 哈希和 diagnostic 文件；resume 保留绝对 step/token、resume_count 和早期 tie best。
+已完成旧目录保持原样，缺失 v2 best 恢复字段或 best/last 跨文件写入不一致时显式拒绝恢复。
+
+本地验证：`python -m pytest tests/v2/ -q` 为 **468 passed**（31.82 秒）。测试包括真实
+Plain/CAN 中断恢复与不中断最终权重一致、三变体最小 CPU CLI、首评估异常留痕、错误凭证
+protected zero-call，以及 Plain/CAN 开关观测后的一步权重逐项完全一致。正式 GPU 的 512 次
+诊断尚未执行；未创建 freeze、未读取正式 validation/test。普通入口测试使用临时 synthetic
+dev fixture，不等于真实 dev 实验；独立诊断入口仅生成 train。
+
+coverage 工具在导入 NumPy 时再次触发本机已知 Windows access violation，使用标准库 trace
+替代核查；`trace --count --summary --missing` 运行诊断专项 **29 passed**，新增
+`t2_diagnostics.py` 行覆盖率 **91%**、诊断 CLI **96%**。Black、isort（`--profile black`）、
+compileall、`git diff --check` 通过；不把 coverage 崩溃记为通过。本轮 Git 基线仍为 master /
+`c89c57bad5756eda34d2bc5d5abf43c414c447ec`，未提交、未推送。新增 CPU 输出均在临时目录，
+不会把 checkpoint 或凭证数据纳入 Git。
+
+**2026-09-08 T2 诊断实现 Claude 验收通过**：Claude 已验收 summary schema v2、best/final
+绑定、四 scope detached loss、梯度/Gate 观测、Plain/CAN soft/CAN direct 三变体、真实
+`decision.allow` 授权、凭证共同序列比对、异常 `invalid_run` 留痕、resume 一致性和专项测试。
+本地全量回归仍为 `468 passed`，新增诊断模块 trace 覆盖率 91%、诊断 CLI 96%。实现未创建
+freeze、未读取正式 validation/test、未运行 GPU 诊断。
+
+本 checkpoint 的准确待提交文件（10 个；无关既有改动保留）：
+
+- `PROJECT_WORKLOG.md`
+- `docs/DESIGN_PROPOSALS.md`
+- `docs/PHASE5_T2_DIAGNOSTIC_OVERFIT_PLAN.md`
+- `scripts/train_phase5_t2.py`
+- `scripts/diagnose_phase5_t2_overfit.py`
+- `src/can/v2/transformer/__init__.py`
+- `src/can/v2/transformer/t2_training.py`
+- `src/can/v2/transformer/t2_diagnostics.py`
+- `tests/v2/test_phase5_t2_training.py`
+- `tests/v2/test_phase5_t2_diagnostics.py`
 
 **2026-09-04 E1 诊断增强**：两个 exploratory 入口均新增独立 `--diagnostic` 短预算模式。训练结束后分别保存 `final.ckpt`，记录模型配置、seed、预算、实际 token 数、batch size、freeze v3 SHA-256 和优化器/模型状态；同时生成独立的逐样本 `diagnostic.json` / `plain_diagnostic.json`，包含 prompt/answer、路由 head、生成结果、exact match、首个差异位置、EOS/停止原因、teacher-forced 逐位置正确性和 refusal 分类。Plain 输出明确标记 `route_mode=oracle_head`、`gate_or_credential=false`，不冒充真实拒答路由。诊断输出与正式 E1 summary 分离，默认拒绝覆盖，且不读取 test split。
 
@@ -886,9 +962,10 @@ C-003、C-006、C-011 与 C-013 的 satisfied 状态均限定于可信进程内�
 
 ### 下一步（唯一下一步）
 
-**服务器拉取包含 T2 安全解码修复的新提交，以新输出目录重跑 CAP/C0、Plain+CAN GPU smoke；通过后再运行短版 dev pilot。**
+**提交并推送已验收的 `t2_diagnostic_plan_v2` 代码、专项测试和文档；服务器拉取后运行固定 512-update 的 train-only 诊断。**
 
-新 smoke 通过前不继续 benchmark/dev pilot；正式 freeze 前不创建 `phase5_t2_freeze_v1`、不接入外部数据、不启动 GPU 长训练，也不读取或生成正式 test 结果。已有 Teacher–Student Phase 5.5-TS 轨道保持独立，待 T2 pilot 和基线结论后再决定是否启动。
+运行诊断前不创建 `phase5_t2_freeze_v1`、不追加 500k/2M token、不接入外部数据，也不读取或生成 validation/test 结果。已有 Teacher–Student
+Phase 5.5-TS 轨道保持独立，待 T2 诊断结论后再决定是否启动。
 
 审阅重点：计算图内 Gate 位置和每请求一次的硬路由、同 tokenizer/vocabulary/prompt/停止规则、
 公开与私有/拒答数据生成及实体隔离、Stage A/B/C 训练协议、TM-API/TM-REP/TM-CP 访问条件、

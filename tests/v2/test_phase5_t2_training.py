@@ -1,5 +1,6 @@
 """Phase 5.5/T2 四路 T-pretrain trainer 专项测试。"""
 
+import copy
 from dataclasses import replace
 
 import numpy as np
@@ -19,6 +20,7 @@ from src.can.v2.transformer import (
     build_t2_scope_masks,
     collate_t2_causal_lm_batch,
     generate_t2_cap_corpus,
+    t2_parameter_groups,
 )
 
 
@@ -101,6 +103,151 @@ def test_plain_train_batch_updates_model_and_counts_tokens() -> None:
     assert metrics["tokens"] > 0.0
     assert metrics["global_step"] == 1.0
     assert not torch.equal(before, model.public_head.weight)
+
+
+def test_plain_train_batch_reports_scope_and_gradient_diagnostics() -> None:
+    """Plain 一步训练应报告四 scope、双 head 和三参数组观测。"""
+
+    torch.manual_seed(24)
+    model = PlainDecoderTransformer(_config())
+    trainer = T2PlainPretrainer(
+        model, torch.optim.AdamW(model.parameters(), lr=1e-3), torch.device("cpu")
+    )
+    metrics = trainer.train_batch(_batch())
+    assert metrics["total_loss"] == pytest.approx(metrics["loss"])
+    assert set(metrics["scope_losses"]) == {
+        "public",
+        "protected_public",
+        "protected_private",
+        "refusal",
+    }
+    assert all(value > 0 for value in metrics["scope_answer_tokens"].values())
+    assert set(metrics["gradient_norms"]) == {
+        "shared_prefix",
+        "protected_path",
+        "public_path",
+    }
+    assert metrics["gate"] is None
+
+
+def test_scope_losses_reconstruct_token_weighted_head_losses() -> None:
+    """四 scope loss 应按答案 token 数重建原双 head 训练 loss。"""
+
+    torch.manual_seed(26)
+    model = PlainDecoderTransformer(_config())
+    trainer = T2PlainPretrainer(
+        model, torch.optim.AdamW(model.parameters(), lr=1e-3), torch.device("cpu")
+    )
+    metrics = trainer.train_batch(_batch())
+    losses = metrics["scope_losses"]
+    tokens = metrics["scope_answer_tokens"]
+
+    def weighted(scopes) -> float:
+        """按各 scope 的答案 token 数计算手工加权均值。"""
+
+        return sum(losses[scope] * tokens[scope] for scope in scopes) / sum(
+            tokens[scope] for scope in scopes
+        )
+
+    assert metrics["public_head_loss"] == pytest.approx(
+        weighted(("public", "refusal")), rel=1e-6
+    )
+    assert metrics["protected_head_loss"] == pytest.approx(
+        weighted(("protected_public", "protected_private")), rel=1e-6
+    )
+
+
+def test_diagnostics_do_not_change_plain_parameter_update() -> None:
+    """启用观测不得改变 Plain 一步优化后的任何参数。"""
+
+    torch.manual_seed(25)
+    observed = PlainDecoderTransformer(_config())
+    silent = PlainDecoderTransformer(_config())
+    silent.load_state_dict(observed.state_dict())
+    observed_trainer = T2PlainPretrainer(
+        observed,
+        torch.optim.SGD(observed.parameters(), lr=1e-3),
+        torch.device("cpu"),
+        collect_diagnostics=True,
+    )
+    silent_trainer = T2PlainPretrainer(
+        silent,
+        torch.optim.SGD(silent.parameters(), lr=1e-3),
+        torch.device("cpu"),
+        collect_diagnostics=False,
+    )
+    observed_trainer.train_batch(_batch())
+    silent_trainer.train_batch(_batch())
+    for left, right in zip(observed.parameters(), silent.parameters()):
+        assert torch.equal(left, right)
+
+
+def test_parameter_groups_are_mutually_exclusive_and_complete() -> None:
+    """三组梯度参数必须互斥并完整覆盖全部可训练参数。"""
+
+    model = PlainDecoderTransformer(_config())
+    groups = t2_parameter_groups(model)
+    identifiers = [
+        {id(parameter) for parameter in values} for values in groups.values()
+    ]
+    assert not identifiers[0] & identifiers[1]
+    assert not identifiers[0] & identifiers[2]
+    assert not identifiers[1] & identifiers[2]
+    assert set().union(*identifiers) == {
+        id(parameter) for parameter in model.parameters() if parameter.requires_grad
+    }
+
+
+def test_can_diagnostics_leave_parameter_update_identical() -> None:
+    """CAN 真实 Gate 与相同凭证下，开启观测不得改变一步更新。"""
+    torch.manual_seed(27)
+    model, generator = _can_fixture()
+    other, other_generator = copy.deepcopy(model), copy.deepcopy(generator)
+    left = T2CanPretrainer(
+        model,
+        torch.optim.AdamW(model.parameters(), lr=0.001),
+        torch.device("cpu"),
+        generator,
+    )
+    right = T2CanPretrainer(
+        other,
+        torch.optim.AdamW(other.parameters(), lr=0.001),
+        torch.device("cpu"),
+        other_generator,
+        collect_diagnostics=False,
+    )
+    left.train_batch(_batch())
+    right.train_batch(_batch())
+    assert all(
+        torch.equal(a, b) for a, b in zip(model.parameters(), other.parameters())
+    )
+
+
+def test_can_train_batch_reports_gate_subsets() -> None:
+    """CAN Gate 摘要应分别覆盖两个 valid 与两个 invalid 样本。"""
+
+    torch.manual_seed(28)
+    model, generator = _can_fixture()
+    trainer = T2CanPretrainer(
+        model,
+        torch.optim.AdamW(model.parameters(), lr=1e-3),
+        torch.device("cpu"),
+        generator,
+    )
+    gate = trainer.train_batch(_batch())["gate"]
+    assert gate["valid"]["count"] == 2
+    assert gate["invalid"]["count"] == 2
+    for credential_class in ("valid", "invalid"):
+        for metric in ("signal", "error_norm"):
+            values = gate[credential_class][metric]
+            assert values["min"] <= values["mean"] <= values["max"]
+
+
+def test_parameter_groups_reject_unrelated_model() -> None:
+    """参数分组 API 不接受任意 nn.Module。"""
+
+    with pytest.raises(TypeError, match="T2 Plain/CAN"):
+        t2_parameter_groups(torch.nn.Linear(2, 2))
 
 
 def test_can_train_batch_verifies_mixed_route_and_updates_model() -> None:
