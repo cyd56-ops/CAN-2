@@ -4,3 +4,6 @@
 """
 
 __version__ = "0.2.0"
+from . import pretrained_gate
+
+__all__ = ["pretrained_gate"]

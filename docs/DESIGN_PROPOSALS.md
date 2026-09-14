@@ -1,24 +1,36 @@
 # 设计方案文档
 
-本文档记录项目所有阶段的设计方案，每个新功能的实现都必须先在此文档中添加设计方案，代码实现将严格遵循此文档。
+本文档记录项目各阶段设计。新增功能须先给出具体实现方案并经审核，由用户选择实现者，Claude 负责代码验收。已完成阶段和旧 freeze 的设计保留为历史；不能把历史启动指令作为当前下一步。
 
-## 当前统一安全模型（2026-08-27）
+## 当前路线与文档优先级（2026-09-11）
 
-本节与根目录 `PROJECT_WORKLOG.md`、`SECURITY.md` 及 `docs/RESEARCH_DESIGN.md` 第 7 节台账
-共同构成当前权威口径。下文早期 revision 中与本节冲突的安全措辞只作为历史决策记录，
-不得用于当前实现或论文主张。
+本文件是项目后续工作的唯一权威设计文档。Unified Roadmap R3（下称 R3）统一路线、接口、依赖、验收门和主张边界；`PROJECT_WORKLOG.md` 只记录动态事实、完成状态和唯一下一步，不另行定义设计。`GATE_PRETRAINED_G0_P0_P1_IMPLEMENTATION_PLAN.md`、`GATE_PRETRAINED_ROADMAP_REV2_20260909.md`、`AUTH_EXPERT_MOE_ROADMAP_20260910.md` 及其他专题文件保留为历史提案/审阅材料，其内容与本文件冲突时以本文件为准。R3 是路线编号，与 Phase 1 历史版本中的“Revision 3”无关。
+
+当前主线不再把 dense Qwen2 的 P0/P1 作为 M 轨道的立即前置。G0 通过后先做 M0/M1a tiny-MoE 架构验证，再做面向真实 MoE 或可构造 expert adapter 宿主的 P0-MoE/P1-MoE。原 dense 预训练路线可作为备选，不删除其验证要求。旧 T2 的 D0 已完成有界收尾，其结果不作为新路线正向证据。
+
+当前进度与唯一下一步以根目录 `PROJECT_WORKLOG.md` 为准；本文件最后的“Unified Roadmap R3”规定 G0 之后的生效设计契约。旧 Phase 5/T1/T2 的模型、byte tokenizer、预算和 A/B/C 规则只用于对应历史协议，不覆盖新路线。Revision 2 源文档的“待审阅”是提交时快照，不能作为当前启动指令。
+
+本轮仅同步这两个文件，未修改代码、旧 freeze、`AGENTS.md`、`SECURITY.md`、`README.md` 或 `RESEARCH_DESIGN.md`。实施前需同步这些配套规则：固定认证与业务训练模式解耦、蒸馏不保证能力/知识隔离、policy 模式与异常计数、新主线和独立 claim。路线采纳不替代具体方案审核、实现者选择或实验验收。
+
+## 当前统一安全模型（2026-09-09 同步）
+
+本节给出当前设计中的统一安全边界；`SECURITY.md` 负责安全规则，
+`docs/RESEARCH_DESIGN.md` 负责 claim/evidence 台账，二者不另行定义后续架构设计。
+下文早期 revision 中与本节冲突的安全措辞只作为历史决策记录，不得用于当前实现或论文主张。
 
 - 当前 Gate Layer 是**固定的 toy LWE-inspired 关系验证门**，不是数字签名、身份认证或生产密码学访问控制。
-- `TM-API`：调用方只能通过可信服务入口提交任意 image/credential；正向保证的最终边界是
-  Phase 3.6 response envelope，而非原始 `InferenceOutput`。envelope 完成前只主张模型层行为。
+- `TM-API`：调用方通过可信入口提交业务输入/credential，不能修改权重、运行时或内部模块。Phase 3 的服务边界是已完成的 response envelope，而非原始 `InferenceOutput`；新预训练 adapter 的边界须独立验收。
 - `TM-WB`：攻击者持有 checkpoint 与运行时。当前实现不提供抗性；protected 内部路径可被直接调用，
   或通过常数规模运行时篡改绕过。不得写成“单次赋值”，也不实现可迁移的攻击 PoC。
-- 静态 credential 可重用；当前路线不提供 replay 防御。challenge-response/nonce 只可作为未来独立方案，
-  不能写成 Phase 3/4 已承诺能力。
+- 历史静态 credential 尚无防重放证据；后续认证路线必须纳入 nonce/计数器、request binding、一次性消费、撤销和并发原子性，并单独验收。
 - FAR/FRR 是有限 toy 采样下的实现正确性判据，不是密码学安全指标。
 - `stage_a_reference` 是已实现的 Stage A protected accuracy；独立训练的无 Gate 同构模型
   `no_gate_ablation` 尚不存在，属于未来消融（C-014）。
-- 当前主张状态以 `docs/RESEARCH_DESIGN.md` 的 C-001 至 C-014 为准。
+- 当前主张状态以 `docs/RESEARCH_DESIGN.md` 的 C-001 至 C-019 为准；新里程碑不能凭设计晋升 C-015–C-019。
+- 模型内 Gate 的固定 verifier 只产 evidence，协调器唯一提交权限；实际执行隔离依赖可信 dispatcher，不以特征乘零代替零调用。
+- 新 P1 使用拒绝/完整路径策略；P2/P3 可显式配置规范无效 credential → PUBLIC，格式错误 → DENY。未来显式 protected 入口失败 → DENY，须用独立 policy ID，不混合统计。
+- 授权前 DENY 不执行 public head/suffix，prefix 若已运行须计数；授权后模型异常停止且不 fallback，已发生的调用不得写成 zero-call。
+- toy 实数关系、G1 精确关系内核和完整认证协议是不同对象。G1/I1 不自动提供不可伪造、replay 或知识机密性；公开 A/b/q 下可计算的残差反馈不自动增加秘密信息，隐藏反馈及侧信道另行分析。
 
 ## 文档结构
 
@@ -71,10 +83,10 @@
 **修订原因**（基于 Codex 第四轮审阅的根本性问题）：
 1. ❌ 派生 credential 无法通过 LWE 验证（数学上不可行）
 2. ❌ 训练需要重复使用 credential，与 replay 检测冲突（架构矛盾）
-3. ❌ Replay 防御需要复杂的状态管理、持久化、并发控制（超出核心目标）
-4. ✅ 决策：Phase 1-2 不实现 replay 防御，专注于"LWE 验证的神经编译"
+3. ❌ 历史 Phase 1-2 未包含 replay 状态管理、持久化和并发控制
+4. ✅ 历史聚焦：Phase 1-2 先验证 LWE 关系的神经编译；后续认证路线补充 replay 防护
 
-**用户决策**：修改安全模型，Phase 1-2 明确不防御 replay 攻击
+**历史范围记录**：Phase 1-2 未实现 replay 防护；后续认证路线将其列为必做协议能力
 
 **Revision 5 修订内容**：
 1. 统一采用原始 margin 软门控公式，并重新校准 temperature
@@ -82,7 +94,7 @@
 3. 明确 mixed batch、请求级错误和空 batch 的处理职责
 4. 固化 credential、feature、buffer 的 dtype/device 契约
 
-**新的架构**（保留 Revision 3 的组件分离，移除 replay 检测）：
+**新的架构**（保留 Revision 3 的组件分离；旧阶段未实现 replay 检测）：
 ```
 credential → LWE验证 → VerificationEvidence
 VerificationEvidence → 协调器 → AuthorizationDecision
@@ -96,12 +108,11 @@ shallow_features + AuthorizationDecision → 特征门控 → gated_features
 1. **验证证据生成**：credential → LWE 验证 → VerificationEvidence（无副作用）
 2. **授权决策**：VerificationEvidence → 协调器 → AuthorizationDecision（唯一决策点）
 3. **特征门控**：shallow_features × gate_signal → gated_features（应用授权结果）
-4. **无状态设计**：不维护 replay 状态，训练和推理共享同一确定性验证逻辑
+4. **历史无状态实现**：训练和推理共享确定性验证逻辑；后续认证协议须增加状态化新鲜性检查
 
 **明确限制和安全披露**：
 - ⚠️ **Toy LWE 安全性**：无模运算，m>n，threshold=48 宽松。可通过最小二乘伪造。**仅用于神经编译演示，不具有密码学安全性**。
-- ⚠️ **不防御 replay 攻击**：当前实现使用静态 credential，credential 可以被重复使用。
-  replay 防御不在当前主线；任何 challenge-response/nonce 扩展都需要独立方案评审。
+- ⚠️ **Replay 尚未验收**：历史实现使用静态 credential；后续 challenge-response/nonce、一次性消费、撤销和并发原子性须纳入状态化授权方案。
 - Gate Layer 包含：验证器（evidence）、协调器（decision）、特征门控（gating）三个组件。
 
 ### 核心架构
@@ -612,7 +623,7 @@ pytest tests/v2/test_gate_layer.py -v --cov=src/can/v2/layers
 
 **Step 4**：更新文档
 - `PROJECT_WORKLOG.md`：Phase 1.2 完成
-- `SECURITY.md`：已更新（明确不防御 replay）
+- `SECURITY.md`：已更新（记录历史 credential 尚无防重放证据，并纳入后续状态化防护目标）
 - `docs/DESIGN_PROPOSALS.md`：状态改为 `[IMPLEMENTED]`
 
 ### 测试要求
@@ -700,19 +711,18 @@ pytest tests/v2/test_gate_layer.py -v --cov=src/can/v2/layers
 **缓解措施**：所有阶段明确标注“仅用于神经编译与能力路由演示”。整数模运算、标准协议或
 更大参数只能作为未来独立密码方案研究，不能通过调大 toy 参数获得生产安全声明。
 
-#### 2. 不防御 Replay 攻击（明确限制）
+#### 2. Replay 防护待实现（后续必做）
 
-**限制**：Phase 1-2 使用静态 credential，可被重复使用和重放。
+**现状**：Phase 1-2 使用静态 credential，尚无防重放证据。
 
 **理由**：
 - 研究重点是验证"LWE 验证可以编译为神经网络"
-- Replay 防御需要复杂的状态管理、持久化、并发控制
+- Replay 防御需要状态管理、持久化、并发控制，已纳入后续认证协议目标
 - 训练需要重复使用 credential，与 One-Time Credential 冲突
 
-**未来候选方向（未承诺）**：Challenge-Response、nonce 与训练/部署协议分离。
-这些方向需要重新定义 canonical encoding、状态、并发、失败语义和安全归约，不能描述为当前能力。
+**后续设计方向**：参考 NCS 的 stateful authorization，采用 Challenge-Response 或 nonce，并定义 canonical encoding、状态、并发、失败语义和安全归约。
 
-**记录到 SECURITY.md**："当前静态 credential 可重用，不提供 replay 防御。"
+**记录到 SECURITY.md**：历史静态 credential 尚无防重放证据，后续路线必须完成状态化防护验收。
 
 #### 3. Fail-closed 范围限定
 
@@ -754,8 +764,8 @@ gated_features = shallow_features * gate_signal.view(B, 1, 1, 1)
 
 #### 解决的根本性问题
 
-1. ✅ **移除 One-Time Credential**：避免派生 credential 无法通过 LWE 验证
-2. ✅ **移除 Replay 检测**：避免训练时 credential 重用冲突
+1. ✅ **历史移除 One-Time Credential**：避免派生 credential 无法通过 LWE 验证
+2. ✅ **历史阶段使用可重复 credential**：训练时 credential 可重复使用；后续认证协议重新引入状态化检查
 3. ✅ **无状态设计**：Verifier 无副作用，可重复调用
 4. ✅ **保留授权边界**：Verifier → evidence，Coordinator → decision
 5. ✅ **保留特征门控**：满足"融合浅层特征与 credential"目标
@@ -764,16 +774,16 @@ gated_features = shallow_features * gate_signal.view(B, 1, 1, 1)
 
 6. ✅ **Batch 接口兼容**：使用 Tensor[B] 向量化处理 evidence 和 decision
 7. ✅ **训练可行性**：credential 可重复使用
-8. ✅ **安全模型一致**：SECURITY.md 明确当前不防御 replay
+8. ✅ **安全模型一致**：SECURITY.md 区分历史未实现事实与后续 replay 防护目标
 
 ### 总结
 
 **Revision 4 的核心变更**：
 1. **移除 One-Time Credential**：避免根本性技术问题
-2. **移除 Replay 检测**：专注于 LWE 验证的神经编译
+2. **历史阶段尚未实现 Replay 防护**：专注于 LWE 验证的神经编译，后续路线补充状态化防护
 3. **保留授权边界分离**：Verifier → Coordinator → FeatureGate
 4. **无状态设计**：训练和推理使用相同逻辑
-5. **修改安全模型**：明确 Phase 1-2 不防御 replay
+5. **修改安全模型**：记录 Phase 1-2 未实现 replay，同时将其列为后续必做
 
 **与 Revision 3 的对比**：
 - Revision 3：credential → LWE验证 + Replay检查 → evidence → decision
@@ -783,7 +793,7 @@ gated_features = shallow_features * gate_signal.view(B, 1, 1, 1)
 - ✅ 解决 Codex 指出的所有根本性问题
 - ✅ 架构清晰、无状态、可微分
 - ✅ 专注于核心目标："LWE 验证的神经编译"
-- ✅ 为未来独立 replay 协议研究保留清晰边界（不构成当前路线承诺）
+- ✅ 为后续状态化 replay 协议保留清晰边界与验收要求
 
 ---
 # Phase 1.3: Gated ResNet-18 设计方案（Revision 1）
@@ -2125,7 +2135,7 @@ python scripts/train_gated_resnet.py \
 
 **资源预估**：实现和 CPU 单元测试不要求 GPU；正式 CIFAR-10 三阶段训练建议 1 张 ≥8 GB CUDA GPU。单 seed 的时间需要先用 1 epoch smoke benchmark 实测后写入 `PROJECT_WORKLOG.md`，再决定完整 epochs；不得沿用未经当前硬件测量的时间估计。
 
-**明确限制**：Phase 2 仍使用 toy LWE、静态可重用 credential，不解决 replay 或白盒攻击，不构成生产安全系统。所有训练代码必须遵循进度条规范（任一时刻唯一进度条 + `tqdm.write`）。
+**明确限制**：Phase 2 仍使用 toy LWE、静态 credential，尚无 replay 或白盒攻击防护证据，不构成生产安全系统。所有训练代码必须遵循进度条规范（任一时刻唯一进度条 + `tqdm.write`）。
 
 ---
 
@@ -2480,7 +2490,7 @@ test 集类别均衡（每类 1000）→ 加权 = 0.4 × 0.25 + 0.6 × 0.1667 = 
 其中 `all` 是 valid 与 invalid 合并后的最小 margin，`valid` 和 `invalid` 分别只在对应样本组内统计。
 非法输入、非有限值，以及用 `inf` 表示验证失败的 error norm 均不纳入统计；某组没有可用样本时输出 `null`。
 
-FAR/FRR 只表示当前 credential 采样分布和有限样本数下的经验观测，不表示总体密码学安全保证。输出必须同时包含 `valid_samples`、`invalid_samples` 和采样策略；toy LWE、静态 credential 与 replay 限制必须在结果中保留。
+FAR/FRR 只表示当前 credential 采样分布和有限样本数下的经验观测，不表示总体密码学安全保证。输出必须同时包含 `valid_samples`、`invalid_samples` 和采样策略；toy LWE、历史静态 credential 及 replay 尚未验收的状态必须在结果中保留。
 
 **FRR 的有效样本数是 1，不是 10000**。`all_valid()` 对同一个 secret 做 `np.repeat`，10000 个 valid 样本共享同一个 credential 向量，`error_norm` 完全相同（std 恒为 0）。所以 `frr = 0.0` 只说明"这一个 valid credential 在 10000 次前向中稳定通过"，不构成对 valid credential 分布的统计估计。输出 JSON 记录 `distinct_valid_credentials: 1` 与 `distinct_invalid_credentials`（invalid 侧走 rejection sampling，每样本独立），把两侧的统计强度差异显式写出来。
 
@@ -2807,12 +2817,12 @@ all-valid、all-invalid、mixed 三种路由必须复用同一批 images；mixed
 | test split 只评估一次的纪律无法用代码强制 | 输出 JSON 记录 checkpoint sha256；`PROJECT_WORKLOG.md` 必须记录每次 test 评估的时间与 checkpoint 哈希，反复评估会留痕。确定性测试改用 fixture，不消耗 test split |
 | `capability_gap_fine` 的基线是解析值，不是实测 | 字段名为 `unauthorized_fine_random_guess_baseline` 并标注 `is_analytic: true`；明确它是当前 public head 输出空间下的随机猜测基线，**不是对任意攻击者的能力上界**，论文中同样标注 |
 | FRR 的独立 credential 数只有 1 | 输出 `distinct_valid_credentials: 1` 与采样策略；FRR=0 只表述"该 credential 稳定通过"，不作分布性推断 |
-| toy LWE 下 FAR=0 过于容易达到，不代表真实安全性 | 与 Phase 2 一致：明确声明 toy 参数、静态可重用 credential，不解决 replay 与白盒攻击。FAR/FRR 定位为实现正确性判据而非安全指标 |
+| toy LWE 下 FAR=0 过于容易达到，不代表真实安全性 | 与 Phase 2 一致：明确声明 toy 参数；历史静态 credential 的 replay 防护尚未验收，白盒攻击仍不在范围。FAR/FRR 定位为实现正确性判据而非安全指标 |
 | 跨 split 整数索引比较会给出虚假的"无泄漏"结论 | `leakage_check` 只校验 split 身份（dataset_name / train_flag / size / split_hash），不把索引交集当证明 |
 
 **明确不在本方案范围内**：
 - 无 Gate 的同构 ResNet-18 baseline 训练（Phase 2 验收提到的对照，需要单独跑）
-- 可执行白盒绕过 PoC 与 replay 防御实现；`TM-WB` 的解析边界结论 C-009 仍必须披露
+- 可执行白盒绕过 PoC；`TM-WB` 的解析边界结论 C-009 仍必须披露。Replay 防护属于后续协议实现，不在旧 Phase 3.6 适配层中完成
 - CIFAR-100 兼容性 smoke test（Phase 4 optional）与 ImageNet 等外部扩展（Phase 6 optional）
 
 ### 待确认问题
@@ -3323,7 +3333,7 @@ print(f"Error norm stats: {result['gate']['error_norm_stats']}")
 
 ### 后续工作
 
-Phase 3.6 完成后的下一步：
+以下为 Phase 3.6 完成时的历史安排，不作为当前启动顺序；现行顺序见文末 Unified Roadmap R3：
 
 1. **Phase 5 T0**：审阅并冻结小型 decoder-only Transformer 的能力分级方案；冻结前不得实现代码或启动训练。
 2. **Phase 4（可选）**：仅在 Transformer 资源不可用时执行一次 CIFAR-100 兼容性 smoke test，不承担能力隔离主结论。
@@ -3334,9 +3344,9 @@ Phase 3.6 完成后的下一步：
 
 ---
 
-## Phase 5: T 轨道小型 Decoder-only Transformer 能力分级 [PROPOSED]
+## Phase 5: T 轨道小型 Decoder-only Transformer 能力分级 [HISTORICAL / IMPLEMENTED PROTOTYPE]
 
-> 本节是当前 Phase 5 的 T0 设计草案，替代早期将 ImageNet 作为 Phase 5 的描述。它定义研究契约，不代表代码已实现或实验结果已取得。
+> 本节保留旧 T0/训练契约。T0/T1、训练入口已完成并通过日志中的 Claude 验收；E1/E2 结果按各自协议归档，不等于全部能力主张通过。下文 T-pretrain/A/B/C 及 byte tokenizer 不作为 Revision 2 的前置或配置。
 
 ### 5.0 研究问题、边界与非目标
 
@@ -3344,7 +3354,7 @@ Phase 3.6 完成后的下一步：
 
 **T0 范围**：小型 decoder-only Transformer、L0 公开任务和 L1 合成私有知识问答；同一 tokenizer、词表、prompt 模板、停止规则和输出 schema。L2 工具调用不纳入 T0；未来扩展只允许 sandbox/mock dispatcher，模型生成 intent 不等于授权执行。
 
-**非目标**：不声称 toy LWE/ML-DSA 不可伪造，不解决 replay、白盒绕过、checkpoint 机密性、生产访问控制、模型抽取或 membership inference。
+**边界**：不声称 toy LWE/ML-DSA 不可伪造、白盒绕过、checkpoint 机密性、生产访问控制、模型抽取或 membership inference。credential 新鲜性和 replay 防护列为后续状态化授权必做项。
 
 **威胁模型**：`TM-API` 仅能提交 prompt/credential 并观察服务响应；`TM-REP` 可取得受信内部表示样本但不能改权重；`TM-CP` 仅可取得公开分发的 checkpoint 文件，用于受限离线恢复实验，不获得训练密钥、服务端运行时或内部调用权限；若攻击者还能加载运行时、插 hook 或调用内部路径，则归入 `TM-WB`。`TM-WB` 明确不主张抗性。TM-REP/TM-CP 的实验必须写明样本、权重和 API 访问权限，不能把模型内部实验结论转成 TM-API 安全保证。
 
@@ -3415,9 +3425,9 @@ v3 实现至少增加六项确定性测试：零 EM 但 loss/accuracy 改善时�
 
 ---
 
-## Phase 5 T1: Evaluator、Reference Generation 与 CPU Smoke [PROPOSED]
+## Phase 5 T1: Evaluator、Reference Generation 与 CPU Smoke [IMPLEMENTED / CLAUDE ACCEPTED]
 
-**状态**：[PROPOSED]
+**状态**：实现已通过 Claude 验收；下文保留验收前设计，正式能力/恢复数值不由代码验收代替。
 **提出时间**：2026-09-01
 **依赖**：Phase 5 T0 CPU 最小原型（Claude 已验收）
 
@@ -3756,11 +3766,13 @@ Smoke 的 T-pretrain **不适用 §5.6 的 go/no-go 门槛**：50k tokens 下 EM
 
 ### T1.12 后续
 
-T1 验收通过后依次：GPU smoke benchmark 测量显存/tokens·s⁻¹/时长 → 冻结正式 token/step budget 与 early stopping → 与用户确认 GPU 环境 → 单 seed 验证 → 三 seed 正式训练与一次性 test 评估 → probe / recovery 正式实验 → 论文撰写。
+旧 T1 计划顺序为 GPU benchmark → 冻结预算 → 单 seed → 多 seed/test → probe/recovery。当前已有后续 E1/E2/T2 记录，旧计划不再自动启动长预算；新主线按 Unified Roadmap R3 验收。
 
 ---
 
-## Phase 5.5-TS: Teacher–Student 公共模型与认证完整模型对照 [PLANNED]
+## Phase 5.5-TS: Teacher–Student 公共模型与认证完整模型对照 [DEFERRED]
+
+本节保留为独立学生对照的候选，不进入首轮，不是 P1/P2 前置。若恢复，须重新核对 teacher 来源、数据/预算和比较问题；共享 prefix 公共读出仍为 P2 主线。
 
 Phase 5.5 复用 Phase 5 的工程和实验契约，不新建独立目录或替换现有 Transformer 主线。其目标是区分“同一模型的 early-exit 公共路径”和“独立蒸馏公共学生模型”两种能力分级实现。
 
@@ -3791,13 +3803,127 @@ Phase 5.5 复用 Phase 5 的工程和实验契约，不新建独立目录或替�
 - 学生模型对 private 能力的恢复率、表示 probe 和 API 泄漏分别报告；
 - protected Teacher、Student 和路由组合的 provenance、teacher hash、tokenizer hash、数据版本和蒸馏配置可复现。
 
-Phase 5.5 不改变 toy LWE、replay、TM-WB、checkpoint 机密性和生产访问控制的限制。Student 的低恢复率只能作为实验观察，不能表述为密码学安全保证。
+Phase 5.5 不改变 toy LWE、TM-WB、checkpoint 机密性和生产访问控制的限制。Student 的低恢复率只能作为实验观察，不能表述为密码学安全保证；replay 防护须按后续状态化授权方案单独验收。
 
 ---
 
-## Phase 5.5/T2：标准自然语言任务外部有效性 [PROPOSED]
+## Revision 2 历史设计：固定 Gate 与冻结预训练模型插入 [HISTORICAL / SUPERSEDED BY R3]
 
-> 本节是独立于 Teacher–Student 轨道的自然语言外部有效性方案。它只定义研究契约，尚未实现、尚未冻结、尚未启动 GPU 实验。完整协议见 `docs/PHASE5_T2_NATURAL_LANGUAGE_PLAN.md`。
+> 本节保存 2026-09-09 的路线与审阅依据，仅用于历史复现和解释 G0 来源。自 2026-09-11 起，未完成工作的设计、依赖、验收门和实施顺序以文末 Unified Roadmap R3 为唯一权威；本节中的 `PLANNED`、`UNVERIFIED` 和“当前”措辞均是当时快照，不再构成启动指令。
+
+依据 [Revision 2 完整方案](GATE_PRETRAINED_ROADMAP_REV2_20260909.md) 与 [两轮评估核查](CLAUDE_ASSESSMENT_CODEX_REVIEW_20260909.md)，分别研究构造正确性、插入正确性和公共服务效用。P1 是独立验收里程碑，也是 P2 前置；P2 失败不撤销 P1，P1 成功不证明公共效用或认证安全。
+
+G0/P0/P1 的实际模块、文件、类型接口、P0 CLI、H/S/G/E 四系统对照、mixed/KV-cache/异常
+验收矩阵、manifest、资源测量和停止条件见
+[G0/P0/P1 实现前设计包](GATE_PRETRAINED_G0_P0_P1_IMPLEMENTATION_PLAN.md)。该文档当前状态为
+UNVERIFIED（v1.2 待 Claude 复审），须经审核并由用户指定实现者后才进入代码实现。模型 revision、
+依赖版本与 GPU 预算须在对应运行前锁定，不得从旧 T2 配置继承。业务 logits 工程容差
+预先列在实现包 §7.5，先审核门槛，再做 H 的独立校准和 P1；禁止用 H/S 或 Gate 的实测差值放大
+验收容差。normalization、逐行拒绝与整批异常、缓存负向测试及 H/S/G/E 计时以该实现包为准。
+v1.2 明确首次 prefill 在 prefix 后授权，增量 decode 在本步 prefix 前检查已有请求/route/cache
+状态，不重新验签；缓存失败保留历史调用累计。容差当前无目标宿主实测或文献推导依据，
+作为待审核工程标准；H 校准失败按重复性、batch 重排和 KV 对照分类，阻止对应配置进入 P1。
+
+### R2.0 方案来源与验证状态
+
+- 来源：用户指定 Revision 2；本轮使用 academic-research-suite / experiment-agent 的实验规划框架整理依赖、对照、指标与停止条件。
+- 版本：2026-09-09 路线同步；新增实现/实验状态 UNVERIFIED / PLANNED。
+- 已有事实：CIFAR 结果保留；E2-A/B 同模板成功，E2-C Plain/CAN 泛化退化；T2 单 seed 小样本 pilot NO-GO 不支持 Gate 因果归因。
+- 本轮未运行代码测试或 GPU，不改旧实验配置，不为新计划填入未经测量的指标。
+
+### R2.1 依赖与交付
+
+| 里程碑 | 交付与依赖 | 资源/验收状态 |
+|---|---|---|
+| D0 | 原计划固定单 train 四元组，Plain/CAN soft/CAN direct，512 updates 成败归档 | COMPLETED；三变体均在 update 80 通过，详见工作日志 |
+| G0 | 固定授权、恒等通过、精度和分支接口；先具体设计审核、实现者确定 | CPU + 目标 GPU 补验；PLANNED |
+| P0 | 宿主任务效用、模型/tokenizer/后端和评估协议冻结；与 G0 准备可并行 | GPU 推理；PLANNED |
+| P1 | G0/P0 通过后无训练插入和 zero-call 独立报告 | GPU 推理；PLANNED |
+| P2 | P1 后训练共享浅层公共读出，原权重校验与 P1 回归 | GPU 训练；PLANNED |
+| P3 | P2 最终状态冻结后完成效用、范围及成本对照 | GPU；公共训练至少 3 seeds；PLANNED |
+| G1-a | 候选关系、规范输入域、reference、安全目标和允许算子 | CPU 分析；可与 G0/P0 并行；PLANNED |
+| G1-b | G1-a 审阅后完成精确神经内核、证明与后端验证 | CPU/GPU；PLANNED |
+| I1 | G1-b 与 P1 通过后替换 verifier，P3 非前置 | CPU/GPU；PLANNED |
+
+D0 诊断成功不阻塞 G0/P0，但发现影响授权、索引、缓存或测量的共性错误须先修复。D0 只读 train，不自动加预算、建 freeze 或启动新 pilot。保留旧 freeze、代码及负向结果用于复现。
+
+### R2.2 G0 模块与接口契约
+
+| 模块 | 输入 → 输出 | 约束 |
+|---|---|---|
+| CanonicalParser | 原始 credential → 规范值或拒绝 | 编码、类型、形状、范围、非有限值严格检查；不授权 |
+| FixedNeuralVerifier | 规范值、固定公开参数 → Evidence | 不依据 tokens/hidden state 决定接受，不直接执行分支 |
+| Coordinator | Evidence、可信请求/策略上下文 → CommittedRoute | 唯一授权提交；请求方不能创建或升级 context |
+| GatedModelAdapter | tokens、credential → 分支输出 | prefix 后的 Gate 产生路由，dispatcher 执行已提交路径 |
+| PublicReadout | prefix hidden → 公共输出 | 首轮唯一可训练业务模块 |
+| EvaluationInstrumentation | 内部计数/摘要 → 报告 | 独立可信诊断接口，外部响应不释放验证证据或 raw features |
+
+模型内 Gate 包含固定验证与授权协调，运行时执行真实条件分支；神经判决乘零不能代替执行隔离。credential 走独立结构化通道，不改 prompt token。合法 hidden 恒等通过原 suffix，不做 sigmoid 缩放。每请求提交一次路由，后续 token 复用；缓存绑定请求、模型版本、权限和样本索引。
+
+原 embedding、blocks、norm/head 和 verifier 固定，骨干保持 eval。认证模式与 `model.train()` 解耦，公共训练仍用确定性硬判定；固定 gate 下业务梯度可传播，不要求 credential 可微。旧 CAN 训练实际是硬选合法样本后软缩放特征，soft/direct 差异由现有 D0 检验，不预设其为 T2 失败原因。
+
+| 策略 | verifier 接受 | 规范但不满足关系 | 格式错误 |
+|---|---|---|---|
+| P1 最小插入 | PROTECTED | DENY | DENY |
+| P2/P3 能力模式 | PROTECTED | PUBLIC | DENY |
+
+策略由可信配置绑定独立 policy ID，不能由 payload 选择更弱路线。未来显式 protected 服务入口失败必须 DENY，另立部署策略；PUBLIC 生成 ACCESS-DENIED 是学习式拒答，不是 coordinator DENY。授权前拒绝时两业务分支零调用；prefix 若已执行如实统计。授权后异常不 fallback、不返回 partial output，已发生调用不得记成零。
+
+### R2.3 P0/P1 宿主、插入和验收
+
+P0 优先核查约 0.5B 的预训练指令 decoder，例如 Qwen2.5-0.5B-Instruct，仅为候选。用 train/dev 核对任务最低效用、许可证/revision、依赖、绑定权重、原 tokenizer/chat template/特殊 token、mask/位置编码、原 norm/head 和解码停止规则；记录 hash/manifest。候选 cut 为约 1/2、2/3、3/4 深度的 2–3 个合法完整 block 末端，实际层号去重冻结。原宿主不满足任务要求时按预登记候选顺序调整，不通过重训骨干补救插入问题。
+
+P1 不训练，但必须冻结输入覆盖、参考效用、精度/attention 实现、logits 容差和 token 判据：
+
+1. 原模型 vs 无 verifier 的恒等 prefix/suffix 切分模型；先定位适配误差。
+2. 恒等切分模型 vs 合法 Gate 路由；原业务权重/输入完全相同。
+3. 先 batch=1、无 KV，再验证 KV、全 valid/invalid/mixed batch、不同长度和停止位置。
+4. 相同 token 前缀 logits 比较 allclose、最大绝对/相对误差，greedy token IDs、长度/停止位置一致；各配置分别报告，不预设 mixed 必须不同容差。
+5. 每个 protected block 实际调用计数：公共或授权前拒绝样本为 0，不能只检查最终 logits。
+
+声明固定配置输出保持须 allclose 且 token mismatch=0；失败配置不混入通过范围，不能事后放宽容差。有限集合不证明全域逐比特等价或 credential 不可伪造。必须检查 index/mask/position_ids/RoPE/cache 层和序列位置；不能以“两个 cache 对象”代替隔离验证。
+
+### R2.4 P2 公共读出及数据
+
+`F(x)=原 head(原 suffix(共享 prefix(共享 embedding(x)))))`；`S(x)=public readout(共享 prefix(共享 embedding(x))))`。S 使用同一份 embedding/prefix，新增读出参数和存储单独计数；独立学生仅为后续可选对照。
+
+先测截断接原 norm/head 的无训练基线，不预设不可用；再仅训练独立 norm/head，或冻结原投影并训练小 adapter。public 用真实监督与冻结完整模型的公开目标蒸馏；专业输入公共路径只用拒答/公开范围目标，不蒸馏专业答案。绑定 embedding/head 时检查共享引用及 optimizer 集合，不强制 deepcopy；每候选校验原权重摘要，最终训练后重跑完整 P1。
+
+数据复用 T2-CAP 同源事实卡片/任务配对思想，以宿主 tokenizer 建立新 suite/version/freeze，不复用旧 byte tokenizer 或四元组 trainer。public 单跳/直接查询，protected 同源多跳/比较/约束，另测未见改写/混合问题/信息不足。尽量匹配来源、答案形式和长度；CAP 按 source group 切分 train/dev/validation/test，另设 held-out 问法。
+
+执行权限、服务范围和实际能力分开定义。CAP context 已含事实，公共专业回答记范围越界，不自动记秘密泄漏；suffix 不执行不保证 public 不会回答。MEM 仅针对已学习且请求未提供的事实，另立轨道。SQuAD/HotpotQA 等外部候选须核对版本/许可证/污染，跨数据集差异不能直接作权限分级因果证据。
+
+train/dev 用于校准，正式训练前冻结公共效用最低值/相对保留率、refusal、样本数、损失权重、温度、cut/adapter 数量和预算；validation 按冻结规则选 cut/checkpoint，test 最终锁定后执行预登记评估。候选耗尽则停止并记录失败，不自动解冻骨干，也不撤销 P1。
+
+### R2.5 G1-a/b 与 I1 的密码/数值边界
+
+G1-a 先冻结公开/秘密输入、秘密/误差分布、credential 整数性/范围、关系接受集合、reference、允许算子、后端和安全目标。模整数残差及 `q=3329,n=256,m=512` 仍为候选，不继承 Kyber 安全等级；加入 mod q 不等于安全认证，提交秘密向量仍是 bearer credential。区分恢复原秘密与找到任意接受向量。
+
+G1-b 编译模乘加、约简、centered lift、范数、比较与合取；明确哪些为神经算子，哪些是普通解析/状态代码，封装 nn.Module 本身不构成神经构造。`256×3328×2<2^24` 只是局部乘加界，必须覆盖负数/边界、除法或倒数、floor、溢出及完整中间值。有限整数域构造与连续实数不连续函数分开，报告宽深度/单元数/成本。业务 BF16 与 verifier 精度分离，实测 TF32/autocast/编译设置及目标 CUDA 算子支持。
+
+目标首先为规范域单向 soundness `V_nn(c)=1 => V_ref(c)=1`，另检查 completeness；证明、完整有限域覆盖和有限差分分别标记，零样本错误不等于全域证明。公开 A/b/q 下残差可公开计算，不自动形成额外秘密预言机；隐藏反馈/侧信道另分析。ML-DSA 全神经化本轮不做，不宣称不可能；后续成本核查须考虑固定公钥预计算。
+
+I1 只替换 verifier，固定宿主/任务，使用独立 protocol/profile ID、编码和 fixture，不为兼容旧 float credential 放宽新域。重跑 G0/P1；P2/P3 就绪再补联合实验。关系内核不等于完整签名或身份协议，replay/撤销等状态另行设计。
+
+### R2.6 对照与指标
+
+必须区分原完整模型、无 verifier 的恒等切分模型、模型内 verifier，以及**外部 verifier + 相同共享 prefix/public head/suffix + 相同 dispatcher**。保持关系、参数、权限策略、业务权重一致。外部提前拒绝节省 prefix 是可报告的架构差异；双独立模型仅可选用于测共享收益，不能代替同构强对照。P2 加有/无蒸馏消融。
+
+分别报告 verifier 差分与边界、授权前 zero-call、合法 logits/tokens、原权重/optimizer 完整性、public/protected EM/F1、拒答/越界/other、Gate/prefix/suffix 时间、TTFT、每 token 延迟、吞吐、显存、持久存储及 manifest。公共训练至少 3 seeds，按来源分组和模板相关性报告不确定性；确定性 P1 重复计算不是多 seed 学习证据。不预设模型内更安全或更省资源，收益由同构对照决定。
+
+### R2.7 工程步骤、资源与停止
+
+近期先提交 G0/P0/P1 的实际文件/类型接口/测试矩阵设计及配套规则修订，经审核并确定实现者后实施，Claude 验收。继续使用当前仓库，优先新增独立 adapter/config，旧路线不覆写；不把本节概念接口当作现成可调用 API。
+
+目标 GPU 候选 RTX A4000 16 GB，新增时长/显存均待 P0 smoke 实测；先记录推理吞吐/评估耗时，再冻结 P1 预算与 P2 同 token 口径训练加评估墙钟预算。P1 数值或路由失败先修正确性，不靠训练修补；P2 候选耗尽记录负面结果；G1 超预算可止于范围明确内核；I1 失败停在集成诊断。TinyStories/BabyLM 从零训练只是后备，不承诺天级完成，不占首轮默认资源。
+
+G0/P1 测试至少覆盖规范/非法/格式输入、模式/梯度边界、精度、索引/位置/cache、mixed/空子批、授权前/后异常及 reference 差分；P2 加 tied weights、optimizer 隔离、训练后 hash 与 P1 回归。具体阈值和硬件参数在对应设计冻结，不照搬旧 T2 门槛。
+
+---
+
+## Phase 5.5/T2：标准自然语言任务外部有效性 [IMPLEMENTED PILOT / D0 CLOSEOUT]
+
+> 以下保留旧 T2 协议。数据/指标、CLI、控制字符修复及诊断代码已完成并通过 Claude 验收，CAP/C0 单 seed 200k dev pilot 为 NO-GO；正式 freeze 与 A/B/C 尚未开展。D0 已完成有界收尾，不自动按下文旧扩展顺序执行；完整历史协议见 `PHASE5_T2_NATURAL_LANGUAGE_PLAN.md`。
 
 ### 5.5/T2.0 目标与边界
 
@@ -3887,7 +4013,7 @@ Teacher–Student 输出。
 - 从零训练失败时先检查 token/F1、prompt 分组和 Plain 对照，不得直接归因于 Gate；
 - 数据、模板、答案处理或许可信息不完整时 fail-closed，禁止进入正式 test 或论文主结果。
 
-### 5.5/T2.6 200k pilot 后的诊断门 [IMPLEMENTED / PENDING ACCEPTANCE]
+### 5.5/T2.6 200k pilot 后的诊断门 [CLAUDE ACCEPTED / GPU RESULT PENDING]
 
 seed `20260903` 的 CAP/C0 200k-token dev pilot 表明 Plain 已出现可学习信号，而 CAN 的最佳时点
 与 final checkpoint 明显分离并在后段回退。由于证据仅有单 seed、每 scope 4 个 dev 样本，当前
@@ -3901,7 +4027,7 @@ seed `20260903` 的 CAP/C0 200k-token dev pilot 表明 Plain 已出现可学习�
    执行固定上限的过拟合对照，再按预注册决策表定位基本训练、soft Gate 或多 source 泛化问题。
 
 该诊断只物化 train，不建立 freeze、不读取 dev/validation/test，也不改变正式训练 objective。
-只有诊断通过并经 Claude 验收后，才能另行设计 scope 权重、curriculum、样本规模或三 seed pilot。
+后续 Unified Roadmap R3 已将其作为 D0 归档，不自动启动 scope 权重、curriculum 或三 seed pilot。若另行恢复旧 T2 研究，须重新评审；D0 结果不替代 G0/P0 证据，共性正确性错误仍须修复。
 
 诊断实现还必须满足四条细化约束：`can_direct` 只能使用真实 Gate 提交的 `decision.allow` 索引；
 四 scope loss 从 detached logits 计算且不得进入主 loss；正式入口跨 resume 使用单调绝对 step，
@@ -3911,7 +4037,427 @@ selection score 严格改进才替换 best，tie 保留更早 checkpoint；512 u
 
 2026-09-08 实现：新增 `t2_diagnostics.py` 与 `scripts/diagnose_phase5_t2_overfit.py`；
 正式 T2 trainer 增加 detached scope loss、Gate/error norm 和梯度观测，训练入口升级 summary v2，
-分别绑定 best/final checkpoint、评估摘要与逐样本诊断。CPU 回归 `468 passed`，待 Claude 验收；
+分别绑定 best/final checkpoint、评估摘要与逐样本诊断。CPU 回归 `468 passed`，其后已通过日志记录的 Claude 验收；
 正式 GPU 过拟合诊断尚未运行，不能据此声称三个变体已达到记忆门槛。
+
+---
+
+## Unified Roadmap R3：认证 Expert-MoE 与真实宿主验证 [ADOPTED / G0 ACCEPTED / M0 ACCEPTED / M1a DESIGN NEXT]
+
+本节是 G0 之后的唯一生效设计方案，统一原 Revision 2 预训练宿主路线与认证 Expert-MoE 路线。它不改变旧 Phase 1–5/T2 的历史结果、freeze 或接受集合。G0 与 M0 contract 已通过 Claude 验收；M1a 及后续里程碑仍未实现，新增代码必须先依据本节形成实现计划，经审阅后由用户指定实现者；实现完成后由 Claude 验收。
+
+### R3.0 研究问题、证据层级与路线选择
+
+研究问题是：固定 credential 验证和授权提交能否约束模型内部 Expert 的可达性，同时保持业务效用并在受信部署边界内实现可审计的 zero-call。认证 Expert 不是学习式 allow/deny 分类器；task Router 只能在 Coordinator 提交的 `allowed_mask` 内选择。
+
+证据按四层分开：
+
+1. **G0 contract**：固定 hard verifier、Coordinator、Dispatcher、cache 和失败语义正确；不依赖具体宿主。
+2. **M1a/M2 tiny-MoE**：验证认证 Expert、scope 和 constrained dispatch 的架构机制；A0 仅是开发 fixture，不构成正式 verifier 安全证据。
+3. **G1-a/G1-b/I1**：冻结、实现并接入模整数神经 verifier；这是本路线的正式认证后端和主要创新证据。
+4. **P0-MoE/P1-MoE 与 M3–M5**：在模整数 verifier 接入后验证真实宿主、Router 训练和状态化授权；Ed25519 只作为后续可选 reference 对照。
+
+P0/P1 不是 M0 的逻辑前置；它们是“真实预训练宿主结论”的前置。若只完成 M1a/M2，论文定位必须是 tiny-MoE 架构/执行隔离原型，不能宣称适用于真实预训练 Transformer。原 dense Qwen2 P0/P1 方案保留为可选备选；选择真实 MoE 后，将同样的预检和插入验收重定向为 P0-MoE/P1-MoE，不把未执行的 dense 结果当作 MoE 证据。
+
+### R3.1 统一架构与权限边界
+
+```text
+business input + canonical credential
+              ↓
+       shared embedding/prefix
+              ↓
+       Authentication Expert
+              ↓ fixed verifier
+            Evidence
+              ↓
+        Trusted Coordinator
+              ↓
+       Committed RouteContext
+              ↓
+      scope registry / allowed_mask
+              ↓
+       constrained task Router
+          ↙                 ↘
+       PUBLIC E0       PROTECTED E1...Ek
+```
+
+固定时序为：规范解析 →（首次请求）shared prefix → Authentication Expert/verifier → Coordinator 提交 route → scope/mask 检查 → task Router → Dispatcher。首次授权前不执行 protected expert；后续增量步在任何 prefix、cache 读取或 expert 执行前检查 request、route、scope、位置、cache 和状态绑定，不重复验签。合法 hidden 只能恒等传递；不以乘零、连续 gate signal 或 Router 预测替代 zero-call。
+
+策略版本固定为：
+
+| policy | credential accepted | canonical relation failure | format/state failure |
+|---|---|---|---|
+| `p1-protected-or-deny-v1` | PROTECTED scope | DENY | DENY |
+| `p2-capability-routing-v1` | PROTECTED scope | 明确配置的 PUBLIC scope | DENY |
+
+M1a/M2 的默认必测配置为 P1；P2 只能作为独立 fixture、execution config 和结果运行，不得把 P1 的关系失败静默映射为 PUBLIC。任何 PUBLIC fallback、protected 入口、nonce/replay 语义都必须使用独立 policy/protocol ID。历史 toy/static credential 没有防重放证据；route/cache 生命周期检查不称为 credential 防重放。
+
+### R3.2 里程碑、依赖与验收门
+
+| 阶段 | 交付与依赖 | 硬验收门 | 资源/状态 |
+|---|---|---|---|
+| G0 | 当前 fixed verifier、Coordinator、Dispatcher、cache、tiny host | Claude 验收；专项/完整回归、zero-call、KV 和覆盖率达标 | 当前 checkpoint，CPU 已验证 |
+| M0 | AuthExpert/Coordinator/Dispatcher/RouteContext/ScopeRegistry 抽象；不改业务模型 | 外部输入不能创建/升级 route；旧 G0 回归不变；类型/manifest 通过 | CPU |
+| M1a | tiny MoE 固定 `E0 + E1`，A0 仅作 contract fixture，无学习授权；P1/P2 使用独立 fixture/config | P1 valid→E1、failure→DENY；P2 valid→E1、canonical failure→E0、format failure→DENY；route 与 reference 一致；不得把 A0 结果写成正式密码学结论 | CPU |
+| M2 | 多 protected experts、scope registry、constrained top-1 Router；继续使用 A0 fixture 验证路由边界 | 越界 expert zero-call；scope confusion、重排、cache 复用全部拒绝；形成可替换 verifier 接口 | CPU，可选 GPU |
+| P0-MoE | 真实宿主候选、依赖、许可证、revision、tokenizer、expert/router/cache API 和资源预检 | 公开 24 条 fixture 有限、可解码、重复确定；候选/配置/预算 manifest 完整 | 服务器推理，不训练 |
+| P1-MoE | 无训练插入 shared prefix、AuthExpert、scope、Dispatcher；H/S/G/E 对照 | 合法 logits/token/停止位置达预登记容差；未授权 expert 实际 zero-call；KV、padding、mixed 全通过 | 服务器推理 |
+| G1-a | 冻结模整数 verifier 的 canonical domain、公开/秘密输入、接受集合、reference、允许算子和 soundness/completeness 目标 | 参数、编码、接受集合、边界和安全目标经 Claude 审阅；不得借用 Kyber/ML-DSA 安全等级 | CPU 设计与 reference |
+| G1-b | 实现精确模乘加、约简、centered lift、范数/比较和 CPU/GPU 后端 | 与整数 reference 逐项一致；负数、边界、溢出、有限域差分和覆盖率达标 | CPU，必要时 GPU |
+| I1 | 用 G1-b 模整数内核接入 M2 的 AuthExpert/Coordinator；不改变 route/scope 接受集合 | 重跑 G0/M1a/M2 route、scope、zero-call、KV 和成本；不得放宽旧 policy | CPU/GPU |
+| M3 | 只训练 constrained task Router 或获准 public adapter；G1 verifier 和 protected expert 固定 | 至少 3 seeds；mask 内选择率达标；public/protected utility、负载、延迟和原权重完整性达标 | 服务器训练 |
+| M4a | 后续可选：加入 Ed25519 标准 reference verifier 作为安全/成本对照；不替换主路线结论 | canonical credential、签名 reference 差分、scope/zero-call 和成本通过；不含 replay 主张 | CPU/GPU |
+| M5 | 在已选主 verifier 上加入 nonce/计数器、一次性消费、撤销、CAS 并发、stream/hash-chain | 重放、双消费、跳步、跨请求/模型、篡改和重启恢复全部 fail-closed | 独立安全协议 |
+
+**停止条件**：G0 失败停止全部后续实现；M1a/M2 失败先修 contract，不进入 G1 集成；G1-a 参数/接受集合未审阅不得实现 G1-b，G1-b reference 或后端差分失败不得进入 I1；I1 route/scope/zero-call/KV 失败不得进入真实宿主；P0 无合适候选记录 `no_suitable_host`；P1 H/S 或 zero-call/KV 失败不训练修补；M3 utility 或 mask 失败不改变授权规则；M5 未完成前不得声称防重放。M4a Ed25519 是后续可选对照，不阻塞主路线。M0/M1a/M2/G1/I1 新增安全核心模块的 statement coverage 目标为 `>=95%`、branch coverage 目标为 `>=90%`；工具无法测量时须记录故障和替代证据，不得声称达标。
+
+### R3.3 M0/M1a/M2 接口与测试契约
+
+```python
+evidence = auth_expert.verify(canonical_credential, request_context)
+route = coordinator.commit(evidence, trusted_policy)
+allowed_mask = scope_registry.resolve(route)
+expert_id = constrained_router.select(hidden, allowed_mask)
+output = dispatcher.execute(expert_id, route)
+```
+
+认证 Expert 只产生 evidence；Coordinator 是唯一 route 提交者；ScopeRegistry 只能收窄、不能扩大已提交集合；Router 的越界 logit 在 dispatch 前硬屏蔽；Dispatcher 以实际 expert forward 计数为准。M1a 首先在 `p1-protected-or-deny-v1` 下验证 PROTECTED/DENY，此时 E0 必须 zero-call；随后才以独立 execution config 测试 `p2-capability-routing-v1` 的 E0/E1/DENY 三态。禁止在同一请求中把 P1 失败解释为 PUBLIC。测试必须覆盖全 valid、全 deny、mixed、尾批、空子批、错误 scope、伪造 route、外部 mask、异常原子性、梯度恒等和 cache 身份/位置/生命周期。每个新模块均须有 Python 3.9+ 类型标注、中文 docstring 和确定性 seed 测试。
+
+### R3.4 P0-MoE/P1-MoE 真实宿主协议
+
+P0 在服务器完成模型 snapshot 与 tokenizer 的不可变 revision/hash、许可证/remote-code 审核、依赖和 GPU 环境记录；先用非敏感、固定 24 条 fixture 验证格式复制、单跳事实和两步组合任务，不读取正式 test。三组各 8 条，格式/复制严格 EM 至少 `7/8`、单跳 normalized EM 至少 `7/8`、两步 normalized EM 至少 `5/8`；所有生成必须有限、可安全解码，固定配置重复 token IDs 一致。记录 embedding、shared blocks、Router、expert 容器、norm/head、mask、position IDs、RoPE、tied weights 和 KV API。候选清单、上限、fixture 与阈值必须在首个候选输出前冻结；P0 通过后才冻结候选、cut/expert 配置、dtype/backend、容差、重复次数、timeout、显存和总预算。
+
+P1 不训练原宿主。必须依次比较原模型 H、无 verifier 恒等切分 S、模型内认证 G、外部 verifier 同构 E；保持相同输入、权重、tokenizer、Router、expert、Dispatcher 和解码设置。业务 logits 的预登记工程容差为 FP32 `atol=1e-5, rtol=1e-4`，BF16 `atol=1e-2, rtol=1e-2`；它们不用于 verifier 判定，也不得根据 H/S/G/E 结果放宽。H 先在固定 batch/长度/KV 配置重复 5 次完成独立校准，失败配置标记 `host_numerics_unstable`。随后报告有效位置的 logits allclose、greedy token/停止一致、最大误差、实际 expert/module 调用、KV/no-KV、padding、mixed 子批、错误 cache 的本步 zero-call 及历史累计调用。未通过配置保留为 failed/partial，不从分母删除或事后放宽门槛。
+
+### R3.5 M3 训练、对照与统计
+
+M3 前冻结 P1 execution config、scope policy、数据 source split、prompt/答案 schema、token budget、loss 权重和 validation 门槛。默认冻结 shared prefix、Authentication Expert、Coordinator、protected experts；只训练 task Router，或经登记的 public adapter。训练损失为 `L_task + λ_route L_masked_router + λ_balance L_load`，其中 `L_masked_router` 只在 `allowed_mask` 内计算，认证结果不接收业务 loss 反向传播。
+
+至少比较：无认证 MoE、外部 verifier 同构 MoE、模型内模整数 AuthExpert、无 mask Router 上界、固定 mask Router，以及 A0 fixture 对照。至少三个 seed，分别报告 protected/public utility、unauthorized expert call rate、route accuracy、负载、延迟、显存、原权重摘要和失败运行。后续若资源允许，再加入 M4a Ed25519 标准 verifier 对照；该对照不替换模整数主路线。不得把 public expert 未执行 protected expert 等同于知识机密性；CAP 能力越界与 MEM private leakage 分开报告。
+
+### R3.6 G1/I1 模整数神经 verifier 主路线与 Ed25519 后续对照
+
+G1-a/G1-b/I1 是当前主路线：先冻结并实现可审计的模整数关系 verifier，再将其接入 M2 的 AuthExpert/Coordinator。模整数关系的创新目标是计算图内可组合、固定规范域、可差分验证的认证内核；它不自动等同签名不可伪造性，也不继承 Kyber/ML-DSA 安全等级。必须区分恢复原 secret 与找到任意接受向量，并在 M5 前明确标注静态 credential 尚无防重放证据。
+
+G1-a 冻结 canonical integer domain、公开/秘密输入、接受集合、reference、允许算子、后端和 soundness/completeness 目标；候选模关系（如 `q=3329,n=256,m=512`）只是待审阅参数。G1-b 覆盖模乘加、约简、centered lift、范数、比较、负数、边界、溢出和完整中间值，业务 BF16 与 verifier 精度分离。I1 只替换 verifier，不放宽旧 profile，不把 relation correctness 写成 signature unforgeability。
+
+Ed25519 降为后续 M4a 可选 reference：届时冻结 canonical credential schema、库版本、公钥标识和失败原因映射，与 G1/I1 在相同 route/scope/zero-call 协议下进行成本和安全基线对照。私钥只存在于离线 fixture 生成器或受管签发环境，不进入模型 checkpoint、manifest 或评估输出。M4a 不阻塞模整数主路线，nonce 在 M5 前仍不构成防重放保证。
+
+### R3.7 M5 状态化授权与最终主张
+
+首次 credential 必须绑定 `version/key_id/subject/scope/model_id/policy_id/request_digest/expiry/nonce`；Coordinator 以原子状态把 nonce 从 `unused` 变为 `consumed`。增量步骤使用单调 counter 或 `prev_hash`，绑定请求、cache、模型/策略和输入片段摘要；撤销、并发 CAS、持久化恢复均纳入独立测试。M5 通过前，只能报告“历史静态 credential 尚无防重放证据”。
+
+最终论文主张按证据分级：M1a/M2 仅支持 tiny-MoE 架构与执行隔离；G1-a/G1-b 支持模整数关系 verifier 的规范与实现正确性；I1/P1-MoE 支持其接入真实宿主后的路由正确性；M3 支持受约束 Router 的效用/成本结果；后续 M4a 只提供 Ed25519 标准对照；M5 才能讨论本项目协议范围内的 replay 防护。任何阶段均不主张 TM-WB 白盒安全、信息论知识保密或未经完整协议分析的生产密码学认证。
+
+### R3.8 当前实施顺序
+
+```text
+主架构与模整数主线：Claude 验收 G0 → M0 → M1a(A0 fixture) → M2(A0 fixture) → G1-a → G1-b → I1 → P0-MoE → P1-MoE → M3 → M5
+后续标准对照：M2/P1-MoE 通过后 → M4a Ed25519 reference（可选，不阻塞主线）
+最终核心条件：M3 + I1/P1-MoE + M5 → 同构对照与 claim/evidence 台账
+路线原则：A0 只用于早期 contract；模整数 G1/I1 是正式 verifier 主线；Ed25519 仅作为后续标准基线
+```
+
+M0 的详细实现方案见本文件 R3.10；当前进度与唯一下一步由 `PROJECT_WORKLOG.md` 记录。R3.10 已按独立接口审阅和用户确认完成开发侧实现，并通过 Claude contract 验收；不以 R3 总路线通过替代详细接口审阅。
+
+### R3.9 Provenance、版本与 Claude 审阅清单
+
+每个里程碑使用独立 protocol/config/experiment ID 和结果目录；已有记录不得原地覆盖。manifest 必须严格拒绝重复/未知字段、错误类型、非有限数值和非法摘要；模型、tokenizer、输入、credential fixture、代码 revision、环境和结果摘要分别记录 SHA-256。manifest 本身独立于被校验 snapshot 保存，其可信摘要写入工作日志或独立来源。secret、私钥、raw credential、hidden 和完整 logits 不进入 Git。
+
+请 Claude 重点审阅：
+
+1. M0 不依赖 P0/P1、M1a/M2 只承担 tiny-MoE 证据是否合理；
+2. P1 与 P2 policy 的独立 fixture/config 是否消除了失败到 PUBLIC 的隐式降级；
+3. `allowed_mask` 只能由可信 ScopeRegistry 从已提交 route 收窄，Router/请求方无扩大通道；
+4. P0-MoE 的候选冻结、24 条效用门和无合适宿主停止条件是否充分；
+5. P1-MoE 的 H/S/G/E、固定容差、KV/mixed/zero-call 是否足以验证无训练插入；
+6. M3 的可训练参数、三 seed、效用上界和原权重摘要是否避免把授权交给学习 Router；
+7. G1/I1 模整数主路线、后续可选 M4a Ed25519 对照和 M5 状态化 replay 的依赖是否正确解耦；
+8. 各阶段的结论边界是否避免把 toy 接线、关系正确性或 zero-call 写成密码学/知识保密保证。
+
+---
+
+### R3.10 M0 contract 详细实现方案 [IMPLEMENTED / CLAUDE ACCEPTED]
+
+方案版本：`m0-contract-plan-v1`（2026-09-11）。用户已确认 R3 与 G0 CPU 实现通过 Claude 验收；本节是其后的详细设计。M0 实现已在 2026-09-13 完成开发侧验证并通过 Claude contract 验收。本节中的接口、指标和命令是验收契约；实际完成范围和测试结果以 `PROJECT_WORKLOG.md` 的 M0 checkpoint 为准。
+
+#### M0.1 目标、范围与 G0 衔接
+
+M0 将固定验证结果连接到可信 scope 与执行选择，建立可供 M1a/M2 复用的最小契约。验证问题为：在可信 Python 运行时中，是否只有本次请求的真实验证证据能够产生 route，且实际执行集合始终包含于该 route 允许的集合。此阶段只验证单个 protected 执行槽，不构造真实 MoE FFN、学习式 Router、训练入口或预训练宿主。
+
+代码基线为 `master` / `16f89feb39455268efc3a928f5a75c3189fd9327` 及用户已验收、当前尚未提交的 G0 工作树文件。实现启动时须另记实际 commit、dirty 状态及 G0 源文件摘要；不能把该 HEAD 称为包含 G0 的提交。
+
+| 现有 G0 事实 | M0 处理 |
+|---|---|
+| `FixedRelationVerifier` 固定 FP32 关系、返回 Tensor evidence，已有来源/完整性检查 | 通过 `AuthExpert` 包装复用其数值计算及 evidence 校验，不复制残差算法、不改变接受集合 |
+| `RouteCoordinator` 绑定具体 verifier，`_CommittedRoute` 只有 PROTECTED/DENY 和请求/config | 新增独立 `ScopeCoordinator`，显式提交 scope 与有序 expert 集合；G0 Coordinator 保持原接口 |
+| `ProtectedDispatcher` 接收可信回调，`GatedHostAdapter` 只做 prefill | M0 Dispatcher 的执行槽在构造时固定，调用时不能传入任意回调；以 G0 adapter 为差分对照 |
+| `CacheRegistry` 检查真实 K/V 和请求/位置，但没有 scope、route 实例的联合绑定 | M0 session 包装已有 registry，先检查授权绑定再调用原有完整 K/V 预检 |
+| G0 manifest 是固定 schema v1 | M0 使用独立 schema/protocol，不把新字段塞入旧 schema，也不默默升级旧文件 |
+
+默认执行配置只允许 `p1-protected-or-deny-v1`。目录中声明 E0（public，保留且禁用）与 E1（protected，可执行）；scope 固定为 `protected.default -> (E1,)`。M0 对 PUBLIC、其他 scope、多 protected expert 或其他 policy 的配置请求返回 `unsupported_m0_configuration`，不自动降级。R3 的 P2 行为保留给 M1a 的独立 fixture/config；M2 再交付多 scope 和 top-1 Router。本限制不改变 R3 的阶段目标。
+
+M0 交付包括：契约类型、A0 verifier 适配、scope 授权与收窄、单槽调度、请求状态与 cache 包装、严格 manifest、真实 tiny-host 集成测试。M0 运行不需要 GPU/模型下载/训练数据；不生成新的正式 freeze。
+
+#### M0.2 文件和所有权
+
+新增 `src/can/v2/auth_expert/`，保留 `pretrained_gate/` 与历史 CIFAR/Transformer 路径。下表中的名称固定为实现起点，避免另起同义抽象。
+
+| 文件（均在新 package 下） | 职责 | 对应测试（均在 `tests/v2/` 下） |
+|---|---|---|
+| `types.py` | 不可变配置、scope/expert 描述、私有 evidence/route/view 类型、稳定错误码 | `tests/v2/test_auth_expert_m0.py` 聚合矩阵 |
+| `authentication.py` | `AuthExpert` 和 `ScopeCoordinator`，仅 A0 后端、纯验证和唯一授权提交 | `tests/v2/test_auth_expert_m0.py` 聚合矩阵 |
+| `scope.py` | 冻结 `ScopeRegistry`，route 到允许集合、受信收窄及 mask 副本 | `tests/v2/test_auth_expert_m0.py` 聚合矩阵 |
+| `dispatch.py` | 固定 E1 调度、整批选择预检、原 batch 索引、真实调用记录 | `tests/v2/test_auth_expert_m0.py` 聚合矩阵 |
+| `host_bridge.py` | `M0TinyHostBridge`，复用真实 tiny block 构造 prefix/suffix/增量接口，不复制注意力数学实现 | `tests/v2/test_auth_expert_m0.py` 聚合矩阵 |
+| `runtime.py` | `M0Session`、pending/active 生命周期、prefill 与增量步串联、G0 cache 包装 | `tests/v2/test_auth_expert_m0.py` 聚合矩阵 |
+| `manifest.py` | `m0-contract-v1` 文件加载、可信摘要、schema、配置绑定与资源上限 | `tests/v2/test_auth_expert_m0.py` 聚合矩阵 |
+| `__init__.py` | 仅导出可信构造入口、非授权描述类型与异常 | `tests/v2/test_auth_expert_m0.py` 聚合矩阵 |
+
+当前实现将 T01–T12 的正负、边界、KV、并发和 manifest 场景集中在 `tests/v2/test_auth_expert_m0.py`，而不是拆成多个同名测试文件；测试桩置于测试文件，不向生产 package 导出 `force_allow`、跳过验证、篡改 route 或任意 verifier 注入入口。M0 不新增 CLI、训练脚本或网络 wire schema；不修改 `src/can/v2/__init__.py` 的历史导出。若确需修改 G0 公共接口，须先列出契约差异并修订本节，不能在实现时隐式扩范围。
+
+#### M0.3 类型、输入域与权限来源
+
+全部接口采用 Python 3.9+ 类型标注与中文 docstring。描述对象使用 `dataclass(frozen=True)` 和嵌套 tuple/enum；Tensor 不因放进 frozen dataclass 就不可变，因此不得把外部 BoolTensor 当作权限真值。
+
+| 对象 | 字段与验证规则 |
+|---|---|
+| `ExpertSpec` | `expert_id: str`、`kind: RouteKind`、`enabled: bool`；M0 目录按 `(E0,E1)` 排列，不能重排、重号或把同一可调用对象同时注册为两个槽 |
+| `ScopeSpec` | `scope_id: str`、`expert_ids: Tuple[str,...]`；非空、唯一、按目录顺序，仅允许上述 M0 映射 |
+| `M0ExecutionConfig` | protocol/profile/policy/config ID、模型/关系参数/目录摘要、cut、业务 dtype/backend、cache 模式和资源上限；启动后不可原地更新 |
+| `_RequestContext` | 服务端分配的 session/attempt ID、完整有序 request IDs、配置摘要、单调 `step_id`（prefill=0）；不含 tokens/hidden/请求方指定的 allow/mask |
+| `_BoundEvidence` | 原 G0 evidence 加不可变的 reason/verified 快照、AuthExpert 来源、完整 request/attempt/config 绑定；不含授权 scope；norm 仅供内部诊断 |
+| `_RouteContext` | 原 batch 的 route kinds、逐行 granted scopes/有序 expert IDs、完整请求身份、profile/policy/config/模型/目录绑定、协调器私有 seal 与 issuance 标识 |
+| `_AllowedExperts` | 绑定原 route、session 与当前 `step_id` 的只读收窄 view；逐行 expert ID tuple；每次生成 Router mask 时返回新的 BoolTensor `[B,E]` |
+| `ExpertSelection` | `Tuple[Optional[str],...]`；非授权候选，长度 B；M0 仅允许 E1 或 `None`，DENY 必须为 `None` |
+| `M0DispatchResult` | 复用 G0 `DispatchResult` 的稀疏结果语义，E1 输出只覆盖 protected_indices；空 protected 输出为 `None`，不能填零假装模型输出 |
+
+ID 的规范域为 ASCII 字母/数字及 `._:-`，长度 1–128；不自动 trim、case-fold、Unicode 归一化或去重。摘要仅接受 64 位小写十六进制；类型严格匹配，`bool` 不能作整数、`1.0` 不能作 schema version。session/attempt/request ID 由服务端生成，测试允许构造器注入确定性 ID 工厂，但请求 payload 无此入口。
+
+credential 保持 G0 的 FP32 Tensor `[B,n]` 和同 device 要求；不广播、不截断、不转换 dtype。不调用 `generate_keypair` 修改 verifier 配置。会话入口在 prefix 前验证结构并取得输入/credential 的独立快照，防止调用方随后原地修改数据改变本次执行；NaN/Inf 与算术溢出仍在图中间按 G0 evidence 逐行 DENY。snapshot 不作为认证证据，也不把输入内容交给 verifier 判定。
+
+A0 只证明 toy 关系通过，**不携带签名 scope、subject 或消息绑定**。因此 M0 的 `protected.default` 只能由启动时固定 P1 policy 授予，不能从用户字典、prompt 或 credential 附加字段中读取权限。未来 M2 的多 scope 映射须另立配置；M4a 才引入签名绑定的权限声明。M0 的 request ID 绑定只是进程内使用约束。
+
+#### M0.4 接口与调用时序
+
+以下是内部接口签名清单；不表示对外可直接提交 context/route。
+
+| 方法 | 签名及含义 |
+|---|---|
+| `AuthExpert.validate_input` | `(credential: Tensor, batch_size: int) -> None`；结构检查，无授权和业务调用 |
+| `AuthExpert.verify` | `(credential: Tensor, context: _RequestContext) -> _BoundEvidence`；委托固定 verifier，生成绑定证据；不创建 route、不访问 cache、不更新授权状态 |
+| `AuthExpert.validate_evidence` | `(evidence: _BoundEvidence, context: _RequestContext) -> None`；校验来源、快照、G0 完整性和所有上下文绑定 |
+| `ScopeCoordinator.commit` | `(evidence: _BoundEvidence, context: _RequestContext) -> _RouteContext`；只接受会话 pending 记录的证据，整批校验后提交一次 |
+| `ScopeCoordinator.validate` | `(route: _RouteContext, context: _RequestContext) -> None`；核对实际签发对象及状态；仅允许 PREFILLING 中本次已提交的 route 或 ACTIVE 中的既有 route |
+| `ScopeRegistry.resolve` | `(route: _RouteContext, context: _RequestContext) -> _AllowedExperts`；验证 route 后导出允许集合，不授予新权限 |
+| `ScopeRegistry.restrict` | `(view: _AllowedExperts, requested: Tuple[Tuple[str,...],...]) -> _AllowedExperts`；仅可信内部使用，子集收窄；任何越界、重复、错序整批失败 |
+| `M0Dispatcher.execute` | `(state: PrefixState, route: _RouteContext, view: _AllowedExperts, selection: ExpertSelection, context: _RequestContext) -> DispatchResult`；所有行检查完成才调用已注册 E1 |
+| `M0Session.prefill` | `(input_ids: Tensor, attention_mask: Tensor, credential: Tensor) -> DispatchResult`；受信内部入口，建立身份并串联真实 prefix/Gate/调度 |
+| `M0Session.decode_step` | `(next_input_ids: Tensor) -> DispatchResult`；输入 LongTensor `[B_active,1]`，仅推进本 session 活动行；route/context/cache 由内部保存，不从调用方接收 |
+| `M0Session.close` | `() -> None`；幂等结束请求，撤销本实例所有 view/route/cache 句柄的后续可用性 |
+
+首次 prefill 的固定顺序：全部结构/配置预检 → 建立 pending 请求 → 真实 prefix → 检查 `PrefixState` 身份/shape → 模型内 `AuthExpert.verify` → session 登记该次返回的 evidence 对象 → `ScopeCoordinator.commit` → scope view → 固定单槽选择器 → Dispatcher → 检查输出/登记 cache → 返回结果。认证数学判定只依赖 credential；context 只参与来源与用途绑定。session 的登记属于可信编排，不引入有状态数值 verifier。
+
+M0 固定选择器对非空允许集合选择 E1，对空集合选择 `None`；它无训练参数。可向 Dispatcher 直接提交错误 selection 的接口只存在于受信单元测试，正常 session 不接收外部 selection。M1a/M2 替换选择器后仍执行相同 Dispatcher 校验。
+
+`ScopeCoordinator` 是 **M0 唯一授权提交者**。M0 不先调用 G0 Coordinator 提交一次、再包装成另一份授权；只复用 G0 verifier 和验证方法。现有 G0 Coordinator 继续服务原 G0 入口，两个命名空间的 route 不互相转换、也不接受对方的 seal。
+
+#### M0.5 evidence、route 与 mask 的可信性
+
+冻结 dataclass 和私有 seal 都不能单独阻止字段替换。session 的 pending 记录保存本次真实 verify 返回的 evidence **对象身份**和上下文；commit 同时比较该身份、AuthExpert seal、G0 evidence 完整性以及不可变快照。`dataclasses.replace`、另一个 attempt 的同尺寸 evidence、修改 verified/reason/norm 后重用均失败。验证后修改 raw Tensor 也必须由 G0 完整性和快照交叉检查拒绝。
+
+协调器在自己持有的 session 记录中保存实际签发的 route 对象及不可变授权值。validate 要求 route 是登记对象，且 seal、全部绑定和状态一致；仅复制正确字段/seal 的另一个对象也被拒绝。scope view 同样由 Registry 记录其来源、原 route、收窄集合和对象身份，resolve/restrict 不能把对象内容当作新的授权声明。登记表按 session 生命周期清理，引用在 close/failure 后失效。
+
+对于每行 i，记初始提交集合为 A_i，当前 view 为 V_i，实际选择为 S_i，要求：
+
+```text
+V_i ⊆ A_i
+S_i ∈ V_i，或者 V_i 为空且 S_i=None
+DENY_i ⇒ A_i=V_i=∅ 且 suffix/head/expert 实际调用数为 0
+```
+
+收窄到空集合不改写原 route 的授权判决，结果按“不执行行”归入 denied_indices，并在内部原因标记 `scope_restricted_empty`。它不能被用于增加后续权限。收窄 view 只对当前 dispatch step 有效，step 结束立即失效，不能跨 step 复用。M0 单独用无 cache 的 Dispatcher fixture 验证 restrict；正常 session 总使用完整已提交集合，暂不开放生成期间收窄，以免跳过 suffix 后产生不完整 KV。会话级权限变更或永久撤销另行设计。
+
+Router 获得的 BoolTensor 只是 V_i 的副本。即使被全部改为 True，Dispatcher 仍依据 Registry 的权威 view 和 Coordinator 的 A_i 再核对选出的 E1。空集合不运行 argmax；未知 Expert、禁用 E0、错误长度、重复请求、非 `None` 的 DENY 选择一律在任何 expert 调用前使整批失败。
+
+这些约束用于可信进程内防误用和模型路由隔离，不是针对反射、内存修改或控制 Python 执行流的白盒不可伪造性。`AuthExpert` 等内部构造器不构成公开服务 API；对外 response envelope 仍需独立设计，不能直接返回这些对象。
+
+#### M0.6 请求生命周期、KV 与失败语义
+
+一个 `M0Session` 对应一次固定 batch 的非流式生成。支持同一进程顺序运行多个独立 session；不支持共享 session 的并发调用、跨进程恢复或动态 batch 重组。用非阻塞入口锁拒绝同一实例的重入/并发，不能把这种工程互斥写成 M5 的 nonce 原子消费。
+
+```text
+NEW → PREFILLING → ACTIVE → FINISHED
+                     └────→ FAILED
+NEW/PREFILLING 中异常 → FAILED
+首次全 DENY → FINISHED（无业务 cache）
+FINISHED/FAILED → 不允许再次 prefill/decode/commit；close 可重复
+```
+
+pending 只存在于 PREFILLING。commit 在全部证据/配置校验完成后一次登记整个 batch；重复 commit 返回 `duplicate_commit`。prefill 整体成功才成为 ACTIVE。mixed batch 保存原始 B 行和顺序，DENY 行不再进入 decode；decode 的输入行数/顺序固定为原 batch 的 PROTECTED 子集，不支持动态删除 EOS 行或重排，统一由调用方结束 session。返回索引始终是原始 batch 空间，不用子批索引去索引原标签/状态。
+
+route 绑定的是 session 的完整初始身份集合，`step_id` 由 session 独立验证且不导致重新授权。Coordinator 持有唯一 `_SessionRecord`，runtime 通过受信内部方法推进阶段，Registry 只读该记录；不建立互相独立的多个活动状态真值。重复 prefill、非法 decode 等正常入口错误使该 session FAILED；未取得入口锁的并发调用只拒绝该次调用，不得清理另一个正在执行的调用所持资源。close 也遵守同一锁。新 session 可以再次提交同一个静态 credential，这是预期行为，不是 M5 防重放。
+
+G0 的 `GatedHostAdapter` 不提供完整生成状态机，`CacheRegistry` 自身也不验证新 scope。M0 在 `runtime.py` 内显式建立 session 授权记录，包含 route 对象、scope/expert 目录摘要、模型/config/policy、每行活动状态、历史 valid mask 和逻辑 position。G0 cache 的句柄仅由该记录持有；不能从 `DispatchResult` 或外部 payload 反向建立可信 cache。
+
+增量步顺序固定为：锁定 session → 检查 ACTIVE 与全部 route/scope/config 绑定 → 检查输入结构、下一 position 和全部历史 cache → 执行 prefix → 图中间再次校验已提交 route/view → 执行 E1 → 成功后更新本步状态。后续步 **不重新验签、不提交新 route**。预检完整 batch 成功后才能把 K/V 交给 host；出错步 prefix/suffix/head/expert 必须零调用。
+
+`cache_mode="none"` 使用 session 内的完整历史重新 forward，仍检查活动 route 与位置；`cache_mode="kv"` 使用下述 bridge 执行真正的 K/V 追加。在适配层中委托 G0 `preflight_kv_batch` 检查各层 shape/device、完整 mask、物理/有效长度与 position。新 K/V 先暂存，全部执行及输出检查成功后替换本 session 的旧句柄；失败时销毁新旧句柄并标记 FAILED。cache 句柄失效、session 授权记录清理与状态转换为 FAILED 必须在同一原子操作中完成；close/异常时先置状态为 FAILED，再持锁清理 cache/route/view 登记，不得让外部观察到 cache 仍有效但授权已失效的中间态。M0 此处验证单 protected 槽，不能称为多专家 KV 路由已完成。
+
+**真实 host bridge 的必要工作**：现有 `TinyKVDecoderHost.forward_incremental` 从空 cache 完整执行全部层，既不接收外部 past K/V，也不在 cut 暂停，因此不能直接用它作为 M0 的受保护增量入口。`M0TinyHostBridge` 在新 package 内引用同一 host 的 embedding、blocks、norm/head，用 block 已有的 `forward_full/forward_step`，将循环分为 `[0:cut]` 与 `[cut:L]`；不重新定义注意力公式或修改 G0 host。受保护 blocks/norm/head 只在 E1 已授权回调内调用，必须有真实模块计数。
+
+bridge 提供 `prefix_full(input_ids, mask, request_ids) -> PrefixState`、`suffix_full(state) -> Tensor`、`prefix_step(token_ids, past_prefix, positions, request_ids) -> PrefixState`、`suffix_step(state, past_suffix) -> (logits, keys, values)`；`host_state` 仅含内部暂存的 cache 与索引，不授予权限。无 KV 的 G0 `TinyDecoderHost` 仅用作 prefill 差分；decode（含 none 与 kv 对照）固定使用 `TinyKVDecoderHost` 权重，避免两个不同网络被当成 cache 消融。
+
+M0 对可变长度使用简单、明确的逐行实现：输入只允许非空的右 padding，每行先去除尾部 padding，position 从 0 连续编号；prefix 在所有原始行上执行并堆叠成 PrefixState，suffix 在合法子批内部逐行执行，再按原始 padding 宽度整理输出，填充位置不计指标。decode 每次每个活动请求追加一个有效 token，内部不产生 padding 空洞。bridge 对整批 cache 完成校验后才允许任何行开始 prefix；不同长度 K/V 无法直接 `cat` 时，对各行执行原 registry 的单行完整预检，把通过的结果暂存于内部，所有行成功后统一交给 bridge。不能边验证边执行。直接参考按相同去 padding 的单行输入调用原 tiny host 的 `forward_full`，保持位置定义一致。
+
+首次 prefill 的 prefix cache 可逐 token 计算并暂存，但认证前不能生成 suffix cache；DENY 行 prefix 暂存立即释放。ACTIVE 记录只有合法行的完整 L 层 cache。decode 的 `PrefixState` 只含活动行，由 session 验证从初始完整 route 到活动行的固定投影，不能伪造一份新子批 route；结果通过该投影映射回原 B 行。此逐行 bridge 仅是 CPU 契约测试，不能据此推导真实 MoE 批量吞吐。
+
+| 触发条件 | 处理、调用计数与输出 |
+|---|---|
+| 空 batch、dtype/rank/维度/device 或配置错误 | preflight 整批失败；本次 prefix/verifier/expert/head 零调用 |
+| shape 合法的关系失败、NaN/Inf 或计算溢出 | prefix 后由固定 verifier 逐行 DENY；其他合法行可继续；拒绝行 expert/head 零调用 |
+| evidence/route/view 来源不符、身份重排、权限扩大、selection 错误 | 在相应检查点整批失败；该点之后不调用业务模块，已完成 prefix 如实保留 |
+| decode cache/状态预检失败 | FAILED，释放本 session 资源，本步所有业务模块零调用，历史累计不清零 |
+| host/verifier/Coordinator/Dispatcher 意外异常、输出非有限或 shape 不符 | 本次非流式整批不返回 partial，FAILED 并清理；真实发生的调用/失败尝试保留，无自动重试或 PUBLIC fallback |
+| 某槽空子批、全 DENY | 跳过槽调用；正常返回空稀疏结果，不能用空 Tensor 调用模块充数 |
+| 正常 close / FINISHED 后继续 | 稳定的 `inactive_session`；本步零调用 |
+
+错误类型：结构错误沿用 `TypeError/ValueError`；授权来源/权限错误用 `M0AuthorizationError(PermissionError)`；生命周期用 `M0StateError(RuntimeError)`；宿主执行错误沿用 G0 `BatchExecutionError` 的脱敏阶段语义。内部统一保存 `stage/reason/request_ids/call_records`；不记录 credential、原始 hidden、完整 logits 或底层异常文本。稳定 reason 包括 `evidence_binding_mismatch`、`route_binding_mismatch`、`scope_violation`、`invalid_selection`、`duplicate_commit`、`inactive_session`、`concurrent_use`、`cache_state_validation_failed`、`execution_failed`。公开传输格式不在 M0 内交付。
+
+#### M0.7 调度、索引与测量
+
+Dispatcher 构造时绑定不可变的 E1 执行槽与相同 host；不接受调用方传入 protected_fn、mask 或新 Expert。对所有行完成 route/view/selection/PrefixState 预检后，按原始次序建立 protected_indices 和 denied_indices。两者无重复、互斥，并集等于 `range(B)`；拒绝样本不能在聚合时被丢弃。
+
+调用 E1 时，以 `index_select` 选择 hidden、mask、position 及 host state，保留 dtype/device/数值与到原 hidden 的梯度；不能 detach/cast/乘 soft signal。host 返回 E1 子批结果和相同 request IDs，shape/有限性失败走整批异常。梯度测试在确定性线性执行槽上验证合法行梯度与 direct reference 相同、拒绝行无来自 E1 的梯度；并不要求 tiny host 的冻结业务参数可训练。
+
+计数直接挂在实际 prefix、E1、norm/head 调用处，复用 G0 `CallLedger`/`InstrumentedModuleCall` 的记录方式；登记阶段、原始 request IDs、调用次数与调用尝试。不能用 predicted route 数量充当实际调用次数。`empty_protected` 和 `empty_public` 按一次成功通过预检的 dispatch 中对应空子批各累计一次；P1 的 E0 永远为空，但不视为证明了 P2。预检未通过的 dispatch 不增加空子批计数。
+
+外部注入 fault 的测试必须同时断言错误码、状态、当步实际调用和历史累计。真实 host 集成测试需用实际模块 instrumentation，不能仅 mock Dispatcher 来证明 zero-call。
+
+#### M0.8 Manifest 与实验记录
+
+M0 新 manifest 为 UTF-8 JSON，根及每层 object 都严格拒绝重复、未知、缺失字段、非有限数、错误类型和非法编码。采用标准 JSON parser，不用正则解析结构。实现 `load_m0_manifest(path: Path, expected_sha256: str) -> M0ExecutionConfig`：读取最多 1 MiB 的同一份 bytes，先与可信摘要比较，再解析这份 bytes，禁止摘要检查后重新读盘造成内容漂移。沿用 G0 的 SHA-256 算法，不沿用宽松 schema。
+
+| 必需根字段 | 内容 |
+|---|---|
+| `schema_version` | 严格整数 `1` |
+| `protocol_id` | 固定 `m0-contract-v1` |
+| `execution_config_id` | 服务端登记的非空规范 ID；ID 相同但配置内容不同必须失败 |
+| `policy_id` | 只接受 `p1-protected-or-deny-v1` |
+| `verifier` | 精确字段 `backend="a0-fixed-relation"`、`profile_id="toy-real-fp32-v1"`、正整数 `n/m`、有限正数 `threshold`、`dtype="float32"`、`relation_sha256` |
+| `host` | 精确字段 `model_type`（`tiny_decoder` 或 `tiny_kv_decoder`）、`model_revision`、`model_sha256`、`num_hidden_layers`、`cut_layer`、`dtype="float32"`、`attention_backend="eager"`、`cache_mode`（`none` 或 `kv`） |
+| `experts` | 精确两条 ExpertSpec，顺序 E0/E1，字段为 `expert_id/kind/enabled`，分别为 public/false、protected/true |
+| `scopes` | 精确一条 `scope_id="protected.default"`、`expert_ids=["E1"]` |
+| `limits` | `max_batch_size`、`max_sequence_length`，均为正整数，M0 CPU 上限分别为 64 和 128 |
+| `fixture` | `seed`（整数，非 bool）、`inputs_sha256`、`credential_fixture_sha256`；不含原始 credential |
+| `provenance` | `git_commit`（40 位小写 hex）、`dirty`（bool）、`source_tree_sha256`、`python_version`、`torch_version`、`numpy_version`、`device="cpu"` |
+
+嵌套字段不允许自由 metadata。`cut_layer` 必须满足 G0 HostSpec 边界，KV 模式必须匹配 tiny_kv_decoder，加载后由 factory 对照实际 host/verifier shape、dtype、device、摘要和 enabled 目录，不接受只填对字符串的“有效配置”。真实模型/环境变化生成新 execution config，旧 manifest 不自动兼容。
+
+关系摘要覆盖 A、b、threshold、profile；模型摘要覆盖排序后的全部 `state_dict` 项。Tensor 编码为长度前缀的名称/dtype/shape 和 little-endian C-contiguous bytes，threshold 为 little-endian IEEE754 float64，整数长度为 unsigned 64-bit；不使用 `repr`、Python `hash()` 或依赖 pickle 稳定性。source_tree 摘要对 G0、新 package、M0 测试的相对 POSIX 路径和各文件 bytes 的 SHA-256 按路径排序聚合，路径/摘要均长度前缀；明确文件集合并记录 dirty，不把仅 HEAD 当作源码来源。输入/credential fixture 摘要采用相同 Tensor 编码和有序样本 ID，不将秘密写入 Git。
+
+scope 目录摘要对 `experts/scopes` 用 `json.dumps(sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False)` 的 ASCII bytes 计算；语义配置摘要同法覆盖 protocol/config/policy/verifier/host/experts/scopes/limits，不包含该摘要自身。manifest 全文件摘要按原始 bytes 计算，独立可信值来自调用参数/工作日志，不自动读取模型或 fixture 目录中的同名 sidecar。
+
+内部 summary 写明 `schema_version=1`、`protocol_id`、manifest/config/source 摘要、CPU 环境、seed、case ID、expected/actual outcome、verified/route commit 次数、scope/选择差分数、完整索引检查、逐请求实际调用、空子批计数、失败阶段、KV 对照、时间与覆盖率报告路径。没有运行的指标使用 `status="not_run", value=null`；失败为 `status="failed"`，禁止写零假装成功。test fixture 创建临时 manifest 和真实摘要，不在仓库提交生产密钥、raw credential 或模型 checkpoint。
+
+#### M0.9 验收测试矩阵和量化门槛
+
+主种子 `20260911`，补充确定性种子 `20260912/20260913`；显式固定 Python/NumPy/PyTorch RNG，所有 M0 测试默认 CPU。种子 sweep 是契约覆盖，不作为三 seed 模型效用实验。credential 验证在 A0 FP32 域保持 G0 规则，阈值边界以一维可精确表示的 fixture 独立测试。
+
+| Case 组 | 必测场景与判据 |
+|---|---|
+| M0-T01 类型/输入 | B=0/1/2/3/7/64/65、n 不符、整数/FP16/FP64 credential、bool 冒充 int、错 device、重复 request、未知 ID、超长输入；结构错误在 prefix 前失败 |
+| M0-T02 固定验证 | valid/随机 invalid/阈值等于/阈值两侧/NaN/Inf/有限溢出；与独立 NumPy reference 及 G0 逐行一致；相同 credential 更换 hidden 和 train/eval 不改变判决 |
+| M0-T03 evidence | 跨 AuthExpert、跨 attempt、同尺寸不同请求、错序、复制并改字段、Tensor 原地改写、真实旧 evidence 重投；均拒绝且无后续业务调用 |
+| M0-T04 route | 伪造/复制/字段替换、跨 Coordinator、policy/config/model/profile/catalog 不匹配、重复 commit、已结束 session route；对象 seal 相同但非登记对象也拒绝 |
+| M0-T05 scope/view | 正确 E1、收窄为空、试图扩大到 E0/未知专家、重复/错序、篡改 mask 副本、跨 route/step view；Dispatcher 重新校验可信集合 |
+| M0-T06 调度索引 | 全 valid、全 DENY、混合、尾批、空子批；wrong selection 在整批任何专家执行前失败；索引互斥完整，拒绝行 E0/E1/head 零调用 |
+| M0-T07 数值/梯度 | E1 实收 hidden 与 reference `torch.equal`，dtype/device 不变；受控线性 fixture 的合法梯度一致/拒绝梯度为零；tiny host 有效 logits 与 G0/direct reference allclose |
+| M0-T08 生命周期 | 重复 prefill/commit、decode 在 NEW/FINISHED/FAILED、正常 mixed 活动行、close 两次、关闭后句柄、并发/重入拒绝；一个 session 活动执行时另一并发调用被锁拒绝，显式断言原 session 仍为 ACTIVE、cache 句柄和调用计数不受干扰；每正常请求一次验证/一次授权，decode 零验证/零新提交 |
+| M0-T09 KV/none | 至少两次连续 decode、两请求不同右 padding；真实 KV 与完整重算有效位置一致；跨请求/错序/错 scope/目录/model/position/mask、错层数/shape/device、旧句柄；预检部分成功、suffix 中途异常均使 session FAILED 并清理全部新旧句柄，失败步 prefix/E1/head 零调用 |
+| M0-T10 异常 | prefix/verifier/commit/E1/head/cache 写入注入异常、非有限输出；无 partial/fallback/retry，session FAILED、cache 失效，历史调用保留 |
+| M0-T11 manifest | 同级/嵌套重复字段、未知/缺失字段、`1.0/true` version、NaN/Infinity/指数溢出、hash/type/长度错误、未信任摘要、摘要匹配但配置与实际实例不同、源目录重排；全部严格失败 |
+| M0-T12 集成/边界 | G0 与 M0 相同 host/A0/输入的 valid logits、route、原索引/实际调用差分；P1 禁用 E0，P2/多专家配置明确 unsupported；私有 route/view 不在包级导出 |
+
+门槛：route/scope/selection 差分错误数为 0；未授权实际调用数为 0；索引完整率 100%；所有注册负向用例按预期失败且不被 skip/xfail 计作通过。合法 hidden 恒等与身份绑定逐项精确相等；CPU FP32 宿主 logits 与 G0/KV reference 使用 `atol=1e-5, rtol=1e-4`，仅比较有效 token 位置，全部通过；该容差不适用于 credential 判决。
+
+新增 package 的 statement coverage `>=95%`、branch coverage `>=90%`，两者分别计算；报告每模块未覆盖行/分支，不把总 coverage 混称为 branch coverage。先跑 M0 最小专项，再 G0 专项，最后全量 `tests/v2/`；既有 148/616 passed 仅是历史参考，验收以本次真实数量/环境/退出码为准，不强制固定测试条数。
+
+性能只设测量协议，不预设相对 Ed25519 或 G0 的加速结论：CPU B=1/8/32、T=8/32、相同 host 和输入，warm-up 5 次、计时 30 次，`perf_counter` 记录 G0 prefill 与 M0 prefill 的中位数/P95和新增开销；每次使用新 session，计时包含相同的身份/输入准备范围并显式说明，manifest/文件 IO 不计入。报告 `.cpu()`/Python hash/tuple 转换开销，不能声称全程 GPU 驻留。测量单任务墙钟上限 120 秒、整组 15 分钟；超限记录 `not_completed` 并停止该测量，不放宽授权门槛。门槛是工程资源上限，不是模型速度保证。
+
+实现后命令（从仓库根目录，先激活项目环境）：
+
+```powershell
+$env:PYTHONPATH = "."
+$m0Tests = @(Get-ChildItem tests/v2/test_auth_expert*.py | Sort-Object Name | ForEach-Object { $_.FullName })
+if ($m0Tests.Count -eq 0) { throw "M0 test files not found" }
+python -m pytest @m0Tests -v
+python -m pytest tests/v2/test_pretrained_gate.py tests/v2/test_pretrained_gate_contracts.py -v
+python -m pytest tests/v2/ -v
+python -m coverage run --branch --source=src/can/v2/auth_expert -m pytest tests/v2/ -q
+python -m coverage report -m
+python -m coverage json -o coverage_m0.json
+git diff --check
+```
+
+以上命令逐条执行并检查退出码，任一步失败先处理再继续。Black/isort/compileall 仅作用于新增 package 和测试；不格式化其他文件。工具异常需记录，statement/branch 无法测量就标记验收不完整，不能以测试数量替代覆盖率。Python 3.9 为接口语法下限，实际验收精确记录 Python/PyTorch/NumPy 版本；未执行环境不声称兼容性已测。
+
+#### M0.10 实现顺序、交付与停止条件
+
+1. **锁定设计与环境**：Claude 审阅本节，用户选择实现者；记录 R3/G0 验收来源和本次 G0 源码摘要，检查配套规则中仍指向 Revision 2 的动态入口，仅同步到唯一设计来源，不新增第二份方案。
+2. **类型/config/manifest**：实现严格字段验证、目录、摘要、资源上限与不透明身份；先通过 T01/T11 的正负测试。
+3. **AuthExpert/ScopeCoordinator**：接入原 verifier、pending evidence 绑定、唯一 route 提交与 session 登记；通过 T02–T04，不改 G0 接受集合。
+4. **ScopeRegistry/Dispatcher**：实现允许集合、收窄、独立 mask 副本、固定 E1、整批选择预检和实际调用；通过 T05–T07。
+5. **session/KV 集成**：接入真实 tiny-host、none/KV 增量、失败清理、幂等 close 与重入拒绝；通过 T08–T10/T12。不能只用空 cache 或 mock host 代替真实集成。
+6. **验收 checkpoint**：执行专项/完整回归、覆盖率、格式和有界计时，记录 summary、环境、未执行项；更新工作日志，把新 claim 以 pending 加入既有台账后交 Claude 验收。未获得具体证据前不晋升旧 C-020 等主张。
+
+本阶段预计仅需普通 CPU 与小型随机初始化 host，额外模型显存需求为 0；实现验证时间以实际机器测量为准，不把旧 G0 的测试用时当作本次承诺。新增运行产物位于临时目录或独立 M0 实验目录，不覆盖旧 G0 记录；不提交 `coverage_m0.json` 等生成文件。
+
+停止条件：任何 route 来源/范围检查、整批 zero-call 或 cache 预检不成立时，M0 不通过且不能进入 M1a；G0 回归失败先定位，不通过更改旧 policy/容差绕过；scope 功能要求超出固定 E1 时回到 M1a/M2 方案；资源超限或工具异常明确保留 incomplete；未经批准不能引入新密码库、GPU/真实宿主和训练来“证明”契约。
+
+M0 方案及后续代码 checkpoint 的文档入口始终是本文件；`PROJECT_WORKLOG.md` 负责动态状态/唯一下一步。配套规则只引用本节，历史实现设计包保留为溯源资料。
+
+#### M0.11 风险、限制与 Claude 审阅重点
+
+当前 G0 是实际 Tensor 关系计算，未实现 AES-DNN，也没有 Ed25519/ML-DSA 验签。M0 的通用接口只为后续后端保留职责边界，不允许把任意 `nn.Module` 的布尔输出注册为可信 verifier；可替换不代表不同算法接受集合相同。标准签名与精确神经关系的接入须各自独立 protocol/profile 和审阅，M0 不决定二者的密码学等价性。
+
+主要风险是重复抽象、权威对象与可变副本混用，以及 session/cache 接线复杂度。通过薄包装、对象签发登记、全部行预检和真实 tiny-host 差分控制风险。G0 使用 CPU evidence 摘要及 Python tuple 转换，M0 沿用时可能发生设备同步；“Tensor verifier”不意味着整个授权链可导出单张纯神经计算图或更快。性能必须测量。
+
+E1 只表示一个受保护的执行槽；M0 不证明它具有高于 E0 的业务能力。未调用受保护计算不保证公开权重/输出无法推断同一答案；toy A0 无签名不可伪造性，进程内来源与生命周期无白盒或 credential replay 保证。M0 测试桩只支持单机 CPU 的契约结论。
+
+请 Claude 重点审阅：
+
+1. M0/G0 的薄适配和单槽范围是否足够明确，是否误把 M1a/M2 的真实 MoE 工作提前纳入；
+2. A0 没有签名 scope 的情况下，固定服务端授权是否避免请求方自授予权限；
+3. pending evidence、签发 route 和 scope view 的身份/绑定检查能否拒绝复制、替换、错序和跨请求使用；
+4. Router mask 可变副本、收窄为空和 Dispatcher 权威复核是否形成闭环；
+5. 首次 prefix 后授权、增量 prefix 前 cache 检查、逐请求一次提交及异常清理是否一致；
+6. manifest 同份 bytes 校验、严格嵌套 schema、实例摘要核对及旧 G0 接口兼容是否充分；
+7. T01–T12、真实 module 计数、有效位置数值差分、覆盖率和资源上限是否可执行；
+8. CPU/toy/单槽结论、标准 verifier 后续接入与神经构造研究的边界是否清楚。
+
+### R3.11 M1a/M2 Shared + Authenticated Routed 能力分级方向 [PLANNED]
+
+本节是 M0 通过后的后续设计约束，不改变 `m0-contract-plan-v1` 的单槽范围，也不表示 M1a/M2 已实现。能力分级采用“共享通用能力 + 认证后残差能力”的 MoE 组织：Shared General Experts 对每个请求执行，Authenticated Routed Experts 只在已提交 route 的允许集合内由 task Router 选择。认证层决定专家的可达性，专家结构、权重、训练数据和任务评估决定业务能力；不得把 expert ID 或 verifier 的布尔结果直接解释为“更强”。
+
+固定计算形式为：
+
+```text
+h_shared = SharedExperts(h)
+h_routed = sum_i p_i * RoutedExpert_i(h),  i 属于 allowed_mask(request)
+h_out = h_shared + alpha * normalize(h_routed)
+```
+
+`alpha`、top-k、Router 权重归一化和 Shared/Routed 的组合方式必须写入独立 execution config/manifest。无授权、验证失败、scope 为空或路由预检失败时，`allowed_mask` 全部为 false，所有 routed expert 实际 forward 必须为 zero-call，输出只来自 `h_shared`；不得以零张量调用 routed expert 伪造调用记录。有效授权只允许在可信 `allowed_mask` 内选择，Dispatcher 必须再次校验 `selection`，不能信任 Router 自报的 mask。
+
+M1a 首个能力配置固定为 `Shared E0 + Protected Routed E1`：E0 是通用/公共业务专家，E1 是一个受保护残差专家；它们共享统一 hidden、dtype、device、KV 和调用台账接口。M0 中 E0 禁用、E1 单槽的 contract 不因本节提前改变。M2 才扩展为 `Shared E0 + Protected Routed E1...Ek`，由 ScopeRegistry 将 scope 映射为专家集合，例如 `standard -> {E1}`、`advanced -> {E1,E2}`；集合关系必须显式登记，不能用字符串或整数大小隐式授予权限。
+
+每个业务专家的 manifest 至少登记 `expert_id`、`kind`、`capability_level`、`scope_ids`、`architecture_revision`、`weights_sha256`、`train_data_scope`、`max_context_length` 和 `enabled`。`capability_level` 只是待验证的业务标签；必须通过独立冻结的能力矩阵确认：Shared 应完成公共任务，E1/E2 等级应分别完成其登记的受保护任务，低等级对高等级任务的成功率应低于预先登记上限。必须同时报告 authorized utility、shared-only utility、unauthorized routed-call rate、跨等级泛化、延迟、显存和实际 forward 次数。
+
+Shared 分支不得被默认视为安全隔离边界。即使 routed expert zero-call，shared 权重或 shared hidden 仍可能包含受保护知识。因此每个受保护任务必须有 shared-only 能力上限和未授权泄漏评估；“未调用 routed expert”只能支持执行隔离结论，不能单独支持知识保密或白盒安全结论。若 shared-only 已达到受保护任务效用，必须停止该能力分级配置或重新划分训练数据/专家职责。
+
+训练时默认冻结 verifier、AuthExpert、Coordinator、ScopeRegistry 和业务专家，只训练受约束 task Router 或经登记的 public adapter；业务 loss 不得更新授权判定。验收至少包含无认证同构 MoE、外部 verifier 同构 MoE、in-graph AuthExpert、无 mask Router 上界和固定 mask Router 对照，并分别验证全 shared、全 deny、mixed、scope 收窄、越界 selection、routed zero-call 和 route/cache 生命周期。
+
+建议实施顺序：M0 contract 通过后完成 M1a 单个 E1 的 shared/residual 接线和能力矩阵；M1a 通过后在 M2 引入多个 routed experts 与 scope lattice；M3 才进行 masked Router 训练。任何“高级专家更强”的论文主张都必须以冻结测试集上的能力差异为依据，不能从认证成功本身推导。
 
 ---
