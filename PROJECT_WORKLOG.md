@@ -3,8 +3,10 @@
 ## 当前研究阶段
 
 **阶段**: V2 - Gate Layer 在计算图中间架构  
-**状态**: R3、G0 CPU 实现与 M0 contract 已通过 Claude 验收；下一阶段为 M1a tiny-MoE 详细方案；未创建 M0 freeze、未下载真实模型或启动服务器。
-**最后更新**: 2026-09-13（M0 contract 验收完成）
+**状态**: R3、G0 CPU 实现与 M0 contract 已通过 Claude 验收并推送 GitHub；下一阶段为 M1a tiny-MoE 详细方案；未创建 M0 freeze、未下载真实模型或启动服务器。
+**最后更新**: 2026-09-14（M0 checkpoint 已推送）
+
+**2026-09-14 M0 Git 收尾 checkpoint**：已将 Claude 验收通过的 M0/G0 实现、测试及路线文档提交并推送到 `origin/master`。commit：`7c2434ed5590cef71acd0a9b595da4fb6778e89b`（`feat: complete M0 authenticated expert contract`）。提交包含 22 个文件；其他用户/历史改动未纳入。M0 验收证据保持为专项 `78 passed`、全量 `tests/v2` `694 passed`、statement coverage `96.62%`、branch coverage `91.91%`。当前唯一下一步：在 `docs/DESIGN_PROPOSALS.md` R3.11 下编写 M1a tiny-MoE 详细实现方案并交 Claude 审阅；方案审阅通过且用户指定实现者前，不实现 M1a、不创建 freeze、不下载真实模型或启动服务器。
 
 **2026-09-13 verifier 主路线调整 checkpoint**：根据用户选择，将后续主线改为“模整数神经 verifier”，Ed25519 降为后续可选标准 reference。M1a/M2 仍先使用已验收的 A0 作为 tiny-MoE contract fixture，仅验证 Shared/Routed、scope、zero-call 和 constrained dispatch；A0 不承担正式安全结论。M2 之后必须依次完成 G1-a（规范域/接受集合/reference）→ G1-b（模乘加、约简、centered lift、边界与后端一致性）→ I1（接入 M2 AuthExpert/Coordinator），通过后才进入 P0/P1-MoE 和 M3。M4a Ed25519 不再阻塞主路线，M5 状态化授权在主 verifier 稳定后执行。当前唯一下一步仍为提交并推送已验收的 M0 checkpoint，之后编写 M1a 详细方案；本次仅同步路线文档，未实现 G1、未下载模型或启动服务器。
 
