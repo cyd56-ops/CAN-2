@@ -1,7 +1,7 @@
 # 项目概述
 
 - 项目名称：`CAN: Cryptographic Authentication Neural Gate Layer`。
-- 研究目标：实现 Gate Layer 在神经网络计算图中间的模型内生安全架构，融合浅层特征与密码 credential 验证信息。
+- 研究目标：在神经网络计算图中间，以 credential 的固定关系判定控制受保护计算；验证器不读取业务特征。当前 Revision 2 将 Gate 插入冻结预训练宿主，检验输出保持、路由隔离与公共读出效用。
 - 项目面向科研复现、审阅和可验证实验，不默认等同于生产系统。
 - 根目录 `PROJECT_WORKLOG.md` 是动态事实、当前目标和唯一下一步的来源；不要用旧聊天记录替代它。
 - `SECURITY.md` 记录信任模型和明确不保证的性质（当前阶段不解决白盒攻击问题）。
@@ -46,7 +46,7 @@
 
 # 工程规则
 
-- 使用 Python 3.8+、PyTorch 2.0+、标准格式化工具（black, isort）。
+- 使用 Python 3.9+、PyTorch 2.0+、标准格式化工具（black, isort）。预训练宿主可有更高依赖下限，须核查并记录精确环境，不把最低版本声明当作全版本兼容性证据。
 - 优先小而可审查的 patch，不重写无关模块，不格式化无关文件，不做与当前目标无关的重构。
 - 仅当抽象减少真实复杂度、消除明显重复或匹配已有架构时才新增抽象。
 - 结构化数据使用正式解析器或结构化 API，不用脆弱字符串拼接或正则模拟解析。
@@ -85,20 +85,24 @@
 
 # 核心架构原则
 
-本项目实现"Gate Layer 在计算图中间"的架构：
+架构契约以 [G0/P0/P1 实现前设计包](docs/GATE_PRETRAINED_G0_P0_P1_IMPLEMENTATION_PLAN.md) v1.2 为准；以下新规则不改变旧 CIFAR/T0/T1/T2 的结果或接受集合。
 
-```python
-# 核心数据流
-image, credential -> [浅层] -> shallow_features
-shallow_features, credential -> [Gate Layer] -> gate_signal
-gate_signal -> [条件路由] -> 深层 or 公开head
+```text
+历史图像路径：image → shallow features → 特征门控/路由 → 深层或 public head
+                                      ↑ credential 验证链（不读取图像特征）
+
+新 G 路径首次 prefill：业务输入 → 冻结 prefix → 图中间 Gate → dispatcher → suffix 或 DENY
+                                                 ↑
+                credential → 固定 verifier → evidence → 唯一协调器提交 route
+合法 prefix hidden 由 dispatcher 恒等送入 suffix，不输入 verifier/协调器判决。
 ```
 
-关键约束：
-- Gate Layer 必须在计算图中间（不是外部验证器）
-- credential 信息必须流经 Gate Layer（不能完全分离）
-- 训练时用软路由（可微分），推理时用硬路由（fail-closed）
-- 公开能力通过知识蒸馏保证是深层的弱化版
+- G 的首次 credential 验证和授权提交必须位于 prefix 后、suffix 前；E 是独立的同构外部 verifier 对照，必须明确标记，不能作为 G 的实现交付。
+- 旧 CIFAR/T0 系列保留训练软路由、推理硬路由的历史协议；新固定 verifier/协调器在父模型 `train()`、`eval()` 下均为 hard 判定，无可训练认证参数。P2 训练 public readout 也不改变此约束。
+- G0/P1 的合法 hidden 恒等通过，保持数值、dtype、device；允许按索引复制或 contiguous，不乘连续 gate signal、不做精度转换。P1 原宿主权重全部冻结，P2 只训练获准的公共读出参数并复核原权重摘要。
+- P1 只实现 PROTECTED/DENY；P2 才引入 PUBLIC，具体 policy 与失败分类见 `SECURITY.md`。PUBLIC 表示明确配置的能力路径，不是异常 fallback。
+- 蒸馏是可选的公共读出训练方法；公共效用、protected 能力保持和越界行为须分别实测，不由训练方法或深度差保证。
+- 每条正常序列只提交一次 route。增量 decode 在本步 prefix 前核对既有请求身份、已提交 route 和全部待用 cache，随后在图中间执行 route 检查；不重新验签。无 KV 仍检查活动请求状态。
 
 # Authorization and security boundaries
 
@@ -116,18 +120,18 @@ gate_signal -> [条件路由] -> 深层 or 公开head
 
 - 请求方不能直接提交 `allow`/`deny` 结果，不能创建授权 context 或 capability，也不能选择更弱的验证路线、算法或策略。
 - 验证器只产生证据；只有协调器可以提交最终授权。
-- replay、tamper、格式错误、权限提升和验证失败必须产生零受保护副作用。
-- 拒绝原因、验证 trace 和审计结果必须稳定、结构化、可测试，且不泄露秘密。
+- 按冻结协议判定的拒绝必须产生零受保护调用；未知/篡改 route、跨请求 cache 和权限提升必须拒绝。后续认证设计必须纳入 nonce/计数器、request binding、一次性消费、撤销和并发原子性；旧 route/cache 生命周期检查不得称为 credential 防重放认证。
+- 新固定认证路径中，dtype/rank/维度或 batch 不匹配、空 batch 等结构错误整批失败；形状合法时可定位的格式/数值错误逐行 DENY。意外执行异常使非流式整批调用失败，不返回 partial、不自动重试或 fallback，历史已发生调用据实保留。cache 预检失败步必须 prefix/suffix/head 零调用。
+- `_CommittedRoute` 使用不可变授权值，绑定协调器 seal、policy、execution config 和完整有序 request IDs；不得信任外部授权或 cache 自描述字段。私有 seal 不构成白盒防伪。
+- 拒绝原因、验证 trace 和审计结果必须稳定、结构化、可测试，且不泄露秘密；内部 evaluator 可访问诊断，对外入口只返回已审核响应，不能直接返回 route/evidence/cache。
 
 # 测试规则
 
 - 每个新增模块都有对应的单元测试（`tests/v2/test_*.py`）。
 - 测试覆盖：正向测试（合法输入）、边界值、类型错误、形状不匹配。
-- Gate Layer 测试必须验证：
-  - valid credential → gate_signal 高
-  - invalid credential → gate_signal 低
-  - 形状正确性
-  - 与参考实现的差分测试（LWE 验证逻辑）
+- 旧 Gate Layer 测试保留 valid/invalid gate_signal、形状与 reference 差分判据。
+- 新固定认证路径必须验证：hard route 与 reference 逐行一致、hidden/模式独立性、阈值边界、来源与请求/策略/配置绑定、合法 hidden 恒等、逐样本实际 protected 调用、索引覆盖、KV 身份/位置/生命周期及整批异常处理；不以连续 signal 高低替代授权检查。
+- P1 按预登记配置检查 H/S、S/G、G/E 的有效位置 logits allclose 和 greedy token/停止一致性。业务容差不得用于认证判决，也不得按切分误差放大；DENY zero-call 与 cache 负向测试可独立先运行。
 - 优先运行与改动直接相关的最小测试，再运行完整测试套件。
 - 测试命令：`pytest tests/v2/ -v`（记录到工作日志）。
 - 无法运行的测试必须在最终总结和工作日志中说明原因，不得用”应当通过”代替结果。

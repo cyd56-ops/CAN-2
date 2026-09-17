@@ -4042,9 +4042,9 @@ selection score 严格改进才替换 best，tie 保留更早 checkpoint；512 u
 
 ---
 
-## Unified Roadmap R3：认证 Expert-MoE 与真实宿主验证 [ADOPTED / G0 ACCEPTED / M0 ACCEPTED / M1a DESIGN NEXT]
+## Unified Roadmap R3：认证 Expert-MoE 与真实宿主验证 [ADOPTED / I1 ACCEPTED / P0-MoE DESIGN NEXT]
 
-本节是 G0 之后的唯一生效设计方案，统一原 Revision 2 预训练宿主路线与认证 Expert-MoE 路线。它不改变旧 Phase 1–5/T2 的历史结果、freeze 或接受集合。G0 与 M0 contract 已通过 Claude 验收；M1a 及后续里程碑仍未实现，新增代码必须先依据本节形成实现计划，经审阅后由用户指定实现者；实现完成后由 Claude 验收。
+本节是 G0 之后的唯一生效设计方案，统一原 Revision 2 预训练宿主路线与认证 Expert-MoE 路线。它不改变旧 Phase 1–5/T2 的历史结果、freeze 或接受集合。G0、M0 contract、M1a tiny-MoE contract、M2 多专家 scope contract、G1-a、G1-b 与 I1 均已通过 Claude contract 验收；P0-MoE 及后续里程碑仍需先形成详细方案并经审阅，新增代码必须先依据本节形成实现计划，经审阅后由用户指定实现者；实现完成后由 Claude 验收。
 
 ### R3.0 研究问题、证据层级与路线选择
 
@@ -4104,7 +4104,7 @@ M1a/M2 的默认必测配置为 P1；P2 只能作为独立 fixture、execution c
 | P1-MoE | 无训练插入 shared prefix、AuthExpert、scope、Dispatcher；H/S/G/E 对照 | 合法 logits/token/停止位置达预登记容差；未授权 expert 实际 zero-call；KV、padding、mixed 全通过 | 服务器推理 |
 | G1-a | 冻结模整数 verifier 的 canonical domain、公开/秘密输入、接受集合、reference、允许算子和 soundness/completeness 目标 | 参数、编码、接受集合、边界和安全目标经 Claude 审阅；不得借用 Kyber/ML-DSA 安全等级 | CPU 设计与 reference |
 | G1-b | 实现精确模乘加、约简、centered lift、范数/比较和 CPU/GPU 后端 | 与整数 reference 逐项一致；负数、边界、溢出、有限域差分和覆盖率达标 | CPU，必要时 GPU |
-| I1 | 用 G1-b 模整数内核接入 M2 的 AuthExpert/Coordinator；不改变 route/scope 接受集合 | 重跑 G0/M1a/M2 route、scope、zero-call、KV 和成本；不得放宽旧 policy | CPU/GPU |
+| I1 | 用 G1-b 模整数内核接入 M2 的 AuthExpert/Coordinator；保持 route/scope/policy/zero-call 执行契约，允许 G1-b canonical 数学关系取代 A0 fixture 关系 | 重跑 G0/M1a/M2 route、scope、zero-call、KV 和成本；不得放宽旧 policy 或 G1-b 接受阈值 | CPU |
 | M3 | 只训练 constrained task Router 或获准 public adapter；G1 verifier 和 protected expert 固定 | 至少 3 seeds；mask 内选择率达标；public/protected utility、负载、延迟和原权重完整性达标 | 服务器训练 |
 | M4a | 后续可选：加入 Ed25519 标准 reference verifier 作为安全/成本对照；不替换主路线结论 | canonical credential、签名 reference 差分、scope/zero-call 和成本通过；不含 replay 主张 | CPU/GPU |
 | M5 | 在已选主 verifier 上加入 nonce/计数器、一次性消费、撤销、CAS 并发、stream/hash-chain | 重放、双消费、跳步、跨请求/模型、篡改和重启恢复全部 fail-closed | 独立安全协议 |
@@ -4459,5 +4459,607 @@ Shared 分支不得被默认视为安全隔离边界。即使 routed expert zero
 训练时默认冻结 verifier、AuthExpert、Coordinator、ScopeRegistry 和业务专家，只训练受约束 task Router 或经登记的 public adapter；业务 loss 不得更新授权判定。验收至少包含无认证同构 MoE、外部 verifier 同构 MoE、in-graph AuthExpert、无 mask Router 上界和固定 mask Router 对照，并分别验证全 shared、全 deny、mixed、scope 收窄、越界 selection、routed zero-call 和 route/cache 生命周期。
 
 建议实施顺序：M0 contract 通过后完成 M1a 单个 E1 的 shared/residual 接线和能力矩阵；M1a 通过后在 M2 引入多个 routed experts 与 scope lattice；M3 才进行 masked Router 训练。任何“高级专家更强”的论文主张都必须以冻结测试集上的能力差异为依据，不能从认证成功本身推导。
+
+### R3.12 M1a tiny-MoE 详细实现方案 [IMPLEMENTED / CLAUDE ACCEPTED]
+
+#### M1a.1 目标与边界
+
+M1a 将已验收的 M0 route contract 接入一个最小、可完全观测的 `Shared E0 + Protected Routed E1` tiny-MoE。它只回答两个问题：共享分支是否在所有请求执行，以及可信认证 route 是否唯一决定 E1 的可达性。M1a 不训练 verifier，不实现多 protected expert，不引入真实预训练模型，不把 A0 toy 关系提升为密码学安全证明，也不测量自然语言能力。
+
+#### M1a.2 固定配置与目录
+
+M1a 使用独立 `execution_config_id=m1a-tiny-moe-v1`、`protocol_id=m1a-contract-v1` 和 manifest；不得复用 M0 的 manifest 或结果目录。默认 CPU fixture 固定 `torch.float32`、batch `B∈{1,2,4}`、序列长度 `T∈{1,4,8}`、`d_model=16`、`num_shared_experts=1`、`num_routed_experts=1`、`top_k=1`、`alpha=1.0`。E0/E1 使用确定性 seed 初始化并立即冻结；Router 在 M1a 为固定、可审计的 reference selector，不含训练参数。
+
+正式结果目录固定为：
+
+```text
+results/m1a-tiny-moe-v1/
+├── p1-protected-or-deny-v1/
+└── p2-capability-routing-v1/
+```
+
+每个 policy 目录只允许本次 run 的 `manifest.json`、`fixture.json`、`inputs.npy`、`reference_outputs.npy`、`call_ledger.json`、`summary.json` 和 `logs/`。已有目录不得原地覆盖；重跑必须使用显式的新 run ID/目录并在 summary 中记录 parent run。M1a 的结果不得写入 `experiments/` 下的历史 T1/T2 目录。
+
+M0 route contract 的基线明确为实现提交 `7c2434ed5590cef71acd0a9b595da4fb6778e89b`（`feat: complete M0 authenticated expert contract`）；`2413bdbacee116b6672daa07b5192b3528cf8434` 仅是随后记录验收状态的工作日志提交。实现启动前必须记录实际 `HEAD`、dirty 状态，并确认 M0 package 与测试仍来自上述基线；若代码在其后发生变化，必须记录新的 parent commit，不能继续把它简称为 M0 验收 checkpoint。
+
+M1a 必须分别运行两种 policy：
+
+| policy | valid canonical relation | canonical relation failure | format/state failure |
+|---|---|---|---|
+| `p1-protected-or-deny-v1` | `PROTECTED={E1}` | `DENY`，E1 zero-call | `DENY`，E1 zero-call |
+| `p2-capability-routing-v1` | `PROTECTED={E1}` | 明确登记的 `PUBLIC={E0}` | `DENY`，E0/E1 均按 policy 记录 |
+
+P1 是默认主验收；P2 仅用于确认 capability routing 的独立失败分类。两种 policy 必须拥有不同 manifest、fixture 摘要和结果目录，禁止在运行时把 P1 的 DENY 解释为 P2 的 PUBLIC。
+
+#### M1a.3 模块与接口
+
+新增 package 建议放在 `src/can/v2/auth_expert_moe/`，并保持 M0 的对象来源边界：
+
+| 模块 | 责任 | 关键接口 |
+|---|---|---|
+| `experts.py` | 冻结 E0/E1 及调用计数 | `SharedExpert.forward(h, request_ids)`、`ProtectedExpert.forward(h, request_ids)` |
+| `router.py` | 仅在可信 mask 内产生固定 top-1 选择 | `select(logits, allowed_mask) -> ExpertSelection` |
+| `moe.py` | shared + routed 组合和 alpha/归一化 | `forward(hidden, route, context) -> MoEOutput` |
+| `manifest.py` | 严格校验专家目录、权重摘要、alpha、top-k 和 policy | `load_m1a_manifest(path, expected_sha256)` |
+| `tests/v2/test_auth_expert_moe_m1a.py` | 契约、数值和调用台账测试 | 固定 seed、CPU、无外部数据 |
+
+`M1aMoE.forward` 只能接收 M1a 协调器签发的 `M1ACommittedRoute`/`M1AAllowedExperts`，不能接收调用方自报的 `allow` 或 mask。执行顺序固定为：先执行 E0；再由 Router 在可信 mask 内选择；最后由 Dispatcher 执行 E1。E1 输出按 `h_shared + alpha * normalize(h_routed)` 合并；无允许 routed expert 时直接返回 `h_shared`，不创建零张量调用，不执行 E1。
+
+#### M1a.3a Manifest schema 与摘要语义
+
+`manifest.json` 根对象采用 `schema_version=1`，严格字段集合为：`schema_version`、`execution_config_id`、`protocol_id`、`policy`、`expert_specs`、`alpha`、`top_k`、`router`、`model`、`fixture`、`provenance`。实现 `load_m1a_manifest(path: Path, expected_sha256: str)` 必须对同一份 UTF-8 bytes 先做 SHA-256，再解析 JSON；`expected_sha256` **只对应整个 manifest 文件 bytes**，不对应权重或配置的某个子对象。`expert_specs` 中每项严格包含 `expert_id`、`kind`、`capability_level`、`scope_ids`、`architecture_revision`、`weights_sha256`、`train_data_scope`、`max_context_length`、`enabled`；`weights_sha256` 对应该 expert `state_dict` 的规范 little-endian C-contiguous 编码摘要。`fixture` 中的 `inputs_sha256`、`reference_outputs_sha256` 分别对应 `inputs.npy` 与 `reference_outputs.npy` 的原始 bytes 摘要；`source_tree_sha256` 和 `git_commit` 只记录 provenance，不替代 manifest 摘要。未知/缺失/重复字段、非有限数、错误类型、非小写 64 位摘要和 `top_k != 1` 均拒绝。`policy` 只能是已登记的 `p1-protected-or-deny-v1` 或 `p2-capability-routing-v1`，两者不能共用 manifest。
+
+#### M1a.3b Fixture 结构与参考输出格式
+
+`fixture.json` 严格包含：`schema_version`、`seeds`、`input`、`cases`、`reference`、`expected`。`seeds` 至少记录 `e0_init`、`e1_init`、`router_init`、`input_init` 四个非负整数；`input` 记录 `path="inputs.npy"`、`dtype="<f4"`、二维/三维 shape 和 `sha256`，输入文件必须是 C-contiguous little-endian NumPy `.npy`，读取时固定 `allow_pickle=False`。`cases` 只记录 case ID、policy 状态和 credential fixture 摘要，不在 Git 中保存 raw credential。`reference` 记录 `path="reference_outputs.npy"`、`format="npy-v1"`、dtype、shape、sha256、`atol=1e-6`、`rtol=1e-5`；参考输出同样使用 `allow_pickle=False` 的 little-endian float32 `.npy`，禁止使用 pickle/完整未审计 logits 文本。`expected` 固定记录每个 case 的 route、selection、原始 batch 索引和 E0/E1 预期调用次数。任何 seed、shape、文件摘要或参考格式漂移都构成 fixture 不匹配，不能静默重生成。
+
+#### M1a.3c 错误、调用台账与 summary schema
+
+稳定错误采用 `M1A_<STAGE>_<REASON>` 大写 ASCII code（例如 `M1A_ROUTE_SCOPE_VIOLATION`、`M1A_ROUTED_ZERO_CALL_FAILED`、`M1A_MANIFEST_DIGEST_MISMATCH`），对外/summary 只记录 `code`、`stage`、`case_id` 和 `retryable=false`，不得写入 credential、hidden、logits 或底层异常文本。调用台账 `call_ledger.json` 根对象严格包含 `schema_version`、`run_id`、`execution_config_id`、`policy`、`events`；每个 event 严格包含单调 `sequence`、`case_id`、`stage`、`expert_id`、`kind`、`batch_indices`、`count`，按 sequence 唯一排序，`count` 必须与真实 forward 计数一致。台账只保存索引、计数和稳定标识，不保存 Tensor 或输出。
+
+`summary.json` 根对象严格包含：`schema_version`、`run_id`、`execution_config_id`、`protocol_id`、`policy`、`status`、`exit_code`、`started_at`、`finished_at`、`cases`、`metrics`、`determinism`、`coverage`、`artifacts`、`provenance`、`failure`。`status` 只能为 `complete`、`failed` 或 `not_run`；未执行指标使用 `{ "status": "not_run", "value": null }`，失败使用 `{ "status": "failed", "value": null, "error_code": ... }`，禁止用 `0.0` 伪装未执行。`metrics` 至少包含 `shared_forward_calls`、`routed_forward_calls`、`unauthorized_routed_calls`、`route_mismatch_count`、`scope_violation_count`、`finite_output`；`determinism` 包含重复运行的 route/selection/output/ledger 摘要和差异计数；`coverage` 分别记录 statement、branch 百分比及报告路径；`artifacts` 记录各文件相对路径和 SHA-256；`provenance` 记录 git commit、dirty、Python/PyTorch/NumPy、device 和 seed；`failure` 为 `null` 或上述稳定错误对象。摘要 schema 不允许未知字段，便于后续自动验收。
+
+#### M1a.4 验收矩阵与量化门槛
+
+必须覆盖全 valid、全 deny、mixed、P2 canonical failure、format failure、scope 收窄为空、越界 selection、外部 mask、重复 route、错误 request/config、E1 异常和梯度路径。每个 case 记录原始索引、E0/E1 实际 forward 次数、route/view seal、输出 finite 性和 hidden dtype/device。
+
+硬门槛：
+
+1. P1 valid 行 E1 调用次数为 1，DENY 行 E1 调用次数为 0；P2 canonical failure 仅允许 E0，format/state failure 不允许任何 routed expert。
+2. Shared E0 每行恰好调用一次；mixed batch 的输出和调用台账按原始索引重排后与逐行 reference 一致。
+3. Router 越界 logits、伪造 mask、scope 扩大、专家重排和跨 policy route 全部在 E1 执行前拒绝。
+4. `torch.float32` CPU reference 与 M1a 输出在 `atol=1e-6, rtol=1e-5` 内一致；合法 hidden 不被缩放或改 dtype/device。
+5. 对同一冻结 seed 重复两次，route、选择、调用台账和输出逐项一致；statement coverage `>=95%`、branch coverage `>=90%`。
+6. 能力矩阵至少报告 `shared-only`、`P1-authorized`、`P1-denied`、`P2-public` 五种条件；M1a 只接受执行隔离与输出组合结论，不将 toy 任务成功率解释为 expert 强弱或知识保密。
+
+#### M1a.5 失败与停止条件
+
+任何 E1 zero-call、route 来源、scope 越权、原始索引、shared 恒执行、输出有限性或 policy 分类失败，M1a 立即标记 `failed`，不得通过调低 alpha、改变 mask 或训练 Router 绕过。A0 fixture 只用于接线；G1-a 尚未审阅前不得在 M1a 内偷偷替换为模整数实现。M1a 通过后才进入 M2 多 expert/scope；M1a 失败则先修 contract，不进入 G1 集成或 P0/P1-MoE。
+
+#### M1a.6 交付与 provenance
+
+交付包括独立 manifest、source tree 摘要、固定 seed fixture、summary JSON、调用台账、pytest/coverage 报告和失败运行记录。禁止提交 raw credential、私钥、完整 hidden、完整 logits、checkpoint 或未审核生成数据。本节已由 Claude 审阅通过、据此实现并完成 contract 验收。
+
+### R3.13 M2 多 routed experts 与 scope lattice 详细实现方案 [IMPLEMENTED / CLAUDE CONTRACT ACCEPTED]
+
+#### M2.1 目标、边界与证据层级
+
+M2 在已验收的 M1a `Shared E0 + Protected Routed E1` 上扩展为 `Shared E0 + Protected Routed E1...E3`，只验证多专家 scope 映射和 constrained dispatch 是否满足执行隔离契约。M2 不训练 verifier、不引入学习式 Router、不把 A0 toy relation 解释为密码学认证，不声称专家知识保密、签名不可伪造、白盒抗性或真实语言能力。M2 通过后才进入 G1-a；失败时先修 contract，不改变 policy、mask 或容差绕过。
+
+#### M2.2 scope lattice 与授权来源
+
+固定 scope lattice 为 `standard ⊂ advanced ⊂ privileged`，对应有序 routed 集合 `{E1}`、`{E1,E2}`、`{E1,E2,E3}`；E0 是始终执行一次的 shared/general expert，不属于 routed 集合。集合必须由 manifest 的 `parent_scope_ids` 和有序 expert tuple 显式登记，不能由字符串、整数 capability level 或 expert ID 大小推导。每个 scope 只能引用已启用的 protected E1/E2/E3，禁止重复、环和未知 expert。
+
+A0 verifier 只产生 valid/relation-failed/format-failed evidence，不携带 scope 声明。scope grant 由受信 fixture registry 根据冻结 case assignment 生成，再由 coordinator 与 evidence 来源、完整 request IDs、policy、execution config 和 route seal 绑定；调用方不能提交 `scope_id`、`allowed_mask` 或 `selection`。在 G1/M4a 前，A0 不证明外部签名 scope 权限；跨 request、policy、execution config 或 evidence 的 grant 必须拒绝。
+
+##### M2.2a Scope lattice 验证规则
+
+M2 manifest 的 `scopes` 必须严格等于以下按拓扑序声明的数组，不接受同义重排或额外 scope：
+
+```json
+[
+  {"scope_id":"standard","parent_scope_ids":[],"expert_ids":["E1"]},
+  {"scope_id":"advanced","parent_scope_ids":["standard"],"expert_ids":["E1","E2"]},
+  {"scope_id":"privileged","parent_scope_ids":["advanced"],"expert_ids":["E1","E2","E3"]}
+]
+```
+
+解析器先验证 scope ID 唯一、parent 在当前项之前声明、expert ID 唯一且只引用 `enabled=true, kind=protected` 的 E1/E2/E3；再以 DFS 或 Kahn 算法验证 DAG 和完整拓扑覆盖；最后计算 ancestor transitive closure。当前 scope 的 expert 集合必须是所有直接和间接 parent 集合并集的超集，且在 M2 固定配置中还必须与上表完全相等。E0 禁止出现在 routed scope。缺失 parent、环、自引用、重复、非单调集合或顺序漂移均以稳定 manifest 错误拒绝，不能自动修复或排序。
+
+##### M2.2b Scope assignment 与 grant 生成
+
+M2 不定义 `EvidenceReason -> scope` 映射，也不新增 A0 不存在的 `PARTIAL` reason。fixture 的受信 case registry 在进程初始化时加载一一对应的冻结 assignment：`case_id -> standard|advanced|privileged|null`。registry 校验 fixture 摘要后签发内部不可变 `M2ScopeAssignment`；普通调用入口不接收 assignment 或 scope 参数。
+
+协调器提交 route 的条件固定为：assignment 来源有效，context/case/request/policy/config 全绑定，且 A0 evidence 为 valid。valid 加非空 assignment 才产生相应 PROTECTED allowed set；invalid evidence 无论 assignment 是否非空，在 P1 都为 DENY，在 P2 仅 canonical relation failure 为 PUBLIC/shared-only；format/state failure始终 DENY。`scope_id=null` 表示 fixture 明确不给予 routed scope，结果为 DENY，而不是默认最低 scope。assignment、evidence 和 route 都只能由对应 coordinator 消费，跨对象复用拒绝。
+
+#### M2.3 固定配置、policy 与结果目录
+
+M2 使用独立 `execution_config_id=m2-multi-expert-v1`、`protocol_id=m2-scope-lattice-v1` 和 manifest。默认 CPU fixture 固定 `torch.float32`、`d_model=16`、`num_shared_experts=1`、`num_routed_experts=3`、`top_k=1`、`alpha=1.0`、`normalize_eps=1e-12`、batch `B∈{1,2,4}`、序列长度 `T∈{1,4,8}`；E0–E3 使用独立固定 seed 并冻结，Router 为无参数 reference selector。
+
+结果目录固定为 `results/m2-multi-expert-v1/{p1-protected-or-deny-v1,p2-capability-routing-v1}/<run-id>/`，已有 run 不得覆盖。P1 是主验收：valid scope 产生登记的 routed 候选集合，每行仍只选择其中一个 expert；relation/format/state failure 均 DENY 且所有 routed zero-call，E0 仍按 M1a 规则每行一次。P2 是独立失败分类 fixture：canonical relation failure 可明确映射为 PUBLIC/shared-only，format/state failure 仍 DENY；禁止把 P1 DENY 改写为 P2 PUBLIC。
+
+#### M2.4 模块与计算契约
+
+新增 package 为 `src/can/v2/auth_expert_moe_m2/`，包括 `types.py`（scope grant/route/view/selection/error）、`authentication.py`（A0 evidence 绑定）、`scope.py`（lattice 与只能收窄）、`experts.py`（冻结 E0–E3）、`router.py`（constrained top-1）、`moe.py`（稀疏组合）、`manifest.py` 与 `artifacts.py`。不修改 M1a 接口和接受集合。
+
+计算固定为：
+
+```text
+h_shared = E0(h)                         # 每条原始 batch 行恰好一次
+h_routed = E_i(h), i = Router(logits, allowed_mask), top_k=1
+h_out = h_shared + alpha * L2Normalize(h_routed)
+```
+
+无 routed scope、DENY 或收窄为空时，routed experts zero-call，输出就是 `h_shared`，不得创建零张量调用。PUBLIC/E0 不重复执行 E0。Dispatcher 在每个 routed forward 前重验 route/grant/view seal、policy、request IDs、enabled 状态和 top-k，并以实际 forward 覆盖的原始索引记账。
+
+##### M2.4a Router 选择与多 Expert 调用语义
+
+M2 Router 的列顺序严格为 `routed_expert_order=(E1,E2,E3)`；E0 不进入 Router logits 或 allowed mask，因为 E0 已由 shared 分支执行。输入 `logits` 和 `allowed_mask` 均为 `[B,3]`，只描述 E1–E3。M2 reference runner 固定 logits 全零；Router 先显式检查每行是否存在 allowed expert：全 false 行直接返回 `None`，不得对全 `-inf` 行调用 argmax；非空行将不允许位置屏蔽为 `-inf`，再取最小索引的最大值，因此确定性优先级为 E1 > E2 > E3。
+
+固定结果为：`standard -> E1`、`advanced -> E1`、`privileged -> E1`。这不是专家能力结论，而是 M3 学习式 Router 前的确定性 contract reference。专项测试还必须用受信测试 logits 构造 E2/E3 胜出场景，证明 mask 内可以分别选择 E2/E3，而任何更高越界 logit 都不会产生未授权 forward。
+
+`top_k=1` 表示每一行最多执行一个 routed expert；“多 routed experts”只表示不同 batch 行可以选择不同 E1/E2/E3，不表示同一行同时执行多个。`M2Selection` 至少保存逐行 `expert_ids: Tuple[Optional[str], ...]`，Dispatcher 再按 expert 分组生成 `batch_indices_by_expert`，所有索引均位于原始 batch 空间。若未来需要同一行执行多个 expert，必须新建 `top_k>1` execution config，不能改变 M2 接受集合。
+
+#### M2.5 Manifest、fixture、ledger 与 summary
+
+manifest 根字段严格为 `schema_version`、`execution_config_id`、`protocol_id`、`policy`、`expert_specs`、`scopes`、`alpha`、`top_k`、`router`、`model`、`fixture`、`provenance`。expert_specs 必须登记 E0–E3 的 `expert_id/kind/capability_level/scope_ids/architecture_revision/weights_sha256/train_data_scope/max_context_length/enabled`；scopes 必须登记 parent IDs 和有序 expert IDs。完整 manifest bytes 与各 state-dict 使用规范 SHA-256 校验；未知/重复字段、错误版本、非有限数、scope 环、重复或未启用 expert、`top_k != 1` 均拒绝。
+
+fixture 根字段为 `schema_version`、`seeds`、`input`、`cases`、`reference`、`expected`、`scope_grants`。输入/reference 使用 `allow_pickle=False` 的 little-endian float32 NPY，记录 path、shape、dtype、摘要和 `atol=1e-6/rtol=1e-5`；cases 不保存 raw credential，expected 记录 route、scope、selection、原始索引和各 expert 预期调用次数。ledger event 严格记录单调 sequence、case、stage、expert、kind、batch_indices、count，count 表示一次真实 forward。summary 必须包含 status/exit_code、metrics、determinism、coverage、artifacts、provenance 和稳定 `M2A_<STAGE>_<REASON>` failure code，未执行项不得用 0 伪装。
+
+##### M2.5a Scope grant、错误码与 run ID schema
+
+`scope_grants` 必须是与 cases 按 `case_id` 一一对应、无重复也无遗漏的数组：
+
+```json
+[
+  {"case_id":"case-0","scope_id":"standard","assignment_sha256":"<64 lowercase hex>"},
+  {"case_id":"case-1","scope_id":"privileged","assignment_sha256":"<64 lowercase hex>"},
+  {"case_id":"case-2","scope_id":null,"assignment_sha256":"<64 lowercase hex>"}
+]
+```
+
+`scope_id` 只能为三个已登记 scope 或 null；`assignment_sha256` 对规范编码的 `case_id/policy/execution_config_id/scope_id/request_ids` 计算，用于 fixture 漂移检测，不是 credential 或密码学签名。运行时 `M2ScopeAssignment` 还必须持有 registry 私有 seal，并与 bound evidence 对象身份绑定；仅有 JSON grant 不能产生 route。cases 中的 `expected_scope` 只作为测试 oracle，不能作为运行时授权输入。
+
+稳定错误码至少冻结：`M2A_SCOPE_UNKNOWN`、`M2A_SCOPE_PARENT_MISSING`、`M2A_SCOPE_CYCLE`、`M2A_SCOPE_NON_MONOTONIC`、`M2A_SCOPE_EXPERT_INVALID`、`M2A_SCOPE_GRANT_SOURCE_MISMATCH`、`M2A_ROUTE_BINDING_MISMATCH`、`M2A_ROUTER_EMPTY_SELECTION`、`M2A_ROUTER_SCOPE_VIOLATION`、`M2A_ROUTED_ZERO_CALL_FAILED`、`M2A_MANIFEST_DIGEST_MISMATCH` 和 `M2A_ARTIFACT_SCHEMA_MISMATCH`。错误对象仍只记录 code/stage/case_id/retryable=false，不包含底层异常文本或秘密。
+
+正式 run ID 格式固定为 `run-YYYYMMDD-NN`，其中 NN 为两位正整数；runner 必须在创建任一 P1/P2 子目录前同时预检两个目标均不存在，避免只生成一个 policy 的 partial run。失败运行若已创建目录，写入 `status=failed` summary 和实际调用台账，不覆盖或删除历史。
+
+#### M2.6 验收矩阵、门槛与停止条件
+
+专项测试至少覆盖 standard/advanced/privileged 全 valid、全 DENY、mixed、尾批、B=1、P2 两类 failure、scope 子集/空集/扩大/未知/未启用/环/重复、跨 request/evidence/policy/config grant、越界 logits/mask/top-k/selection、每个 routed expert zero-call 与实际原始索引、E0 恒执行与 PUBLIC 不重复、逐行 reference allclose、dtype/device/有限性、固定 normalize/alpha、重复运行确定性、专家异常无 partial output、route/cache 生命周期、artifact schema、seal/evidence 篡改、无 mask 对照和梯度冻结。
+
+硬门槛为：scope 集合与登记完全一致；所有 failure/空 view routed zero-call；E0 每行一次；forward 次数/索引与 expected 一致；CPU reference `atol=1e-6, rtol=1e-5`；重复运行 route/selection/output/ledger 一致；statement coverage `>=95%`、branch coverage `>=90%`；能力矩阵报告 shared-only、standard、advanced、privileged、denied。M2 只支持 tiny-MoE 执行隔离结论，不支持 expert 强弱、知识保密或密码学安全结论。
+
+实施顺序为：冻结 manifest/lattice fixture → 实现 types/authentication/scope → 冻结 E0–E3 → constrained Router/Dispatcher → 独立 reference → runner/结果物 → coverage 与全量回归 → provenance → Claude contract 验收。默认只用 CPU、不下载模型、不训练。任何 scope、zero-call、E0 恒执行、索引、policy、reference、确定性、摘要或异常原子性失败立即 `failed`，不得通过放宽容差或改变 route 规避。M2 通过后才进入 G1-a。
+
+预期交付为 `src/can/v2/auth_expert_moe_m2/`、`tests/v2/test_auth_expert_moe_m2.py`、`scripts/run_m2_full.py`、独立 P1/P2 manifest/fixture/reference/ledger/summary、带 branch 的 coverage JSON 及失败记录；不提交 raw credential、私钥、完整 hidden、完整 logits 或 checkpoint。M2 方案须经 Claude 审阅和用户指定实现者后才能编码。
+
+### R3.14 G1-a 模整数神经 verifier 详细设计方案 [REFERENCE IMPLEMENTED / CLAUDE CONTRACT ACCEPTED]
+
+#### G1-a.1 目标、边界与证据层级
+
+G1-a 只冻结模整数 verifier 的数学规范、canonical 编码、reference 实现契约、测试向量和 G1-b 的实现门槛。它不实现神经内核、不修改 M2 的 AuthExpert/Coordinator、不训练模型、不启动 GPU，也不创建新的正式 freeze record。G1-a 的交付是可独立复核的 CPU 整数 reference 和设计证据；只有 Claude 审阅通过后才允许进入 G1-b。
+
+本阶段的首要性质是有限域上的实现一致性，而不是密码学安全声明。G1-a 不声称达到标准 LWE、ML-KEM、ML-DSA 或 Ed25519 的安全等级，不声称签名不可伪造、白盒抗性、抗重放、密钥保密或生产部署安全。公开参数下任何人都可以计算关系并构造满足关系的向量；“通过 verifier”只表示满足本协议的接受集合。nonce、计数器、一次性消费、撤销、并发原子性和跨请求绑定仍属于 M5 状态化授权范围。
+
+证据层级固定为：
+
+1. 规范化整数 reference 是判定真值；
+2. 独立实现或逐项手算的 reference vectors 用于交叉复核；
+3. G1-b 的神经实现只能证明在预登记有限集合和误差阈值内与 reference 一致；
+4. 任意有限向量穷举或零样本差分都不能外推为全域密码学证明。
+
+#### G1-a.2 Canonical domain 与候选参数
+
+候选参数先登记为 `q=3329`、`n=256`、`m=512`，其中 `q` 为奇素数模数，`n` 为 credential/secret 向量长度，`m` 为关系输出维度。它们不在本文档提交时立即冻结，最终值由 G1-a 审阅记录确定。最终参数必须由以下约束共同确定，并在审阅记录中写明理由：
+
+- `q` 足够大，使 `A*c` 的中间乘积和误差范围可在选定整数位宽内无歧义表示；
+- `n,m` 能覆盖目标 batch/向量形状，同时使 reference 成本、神经展开宽度和后端内存可测量；
+- 选择后所有边界向量、最大乘积、模约简和 centered lift 结果都能在 Python 任意精度与固定宽度实现中逐项复核；
+- 参数不能为了让某个候选神经实现通过而事后调整。若校准显示域过大、过小或存在溢出风险，应重新登记候选配置并增加版本号。
+
+canonical 输入只接受 UTF-8 JSON 中的显式整数数组或 little-endian `int64` NPY（具体载体由 G1-b runner 冻结）。每个 credential 必须是长度 `n` 的一维向量，每个分量为整数 `0 <= c_i < q`；不接受浮点整数、布尔值、字符串数字、负数、NaN/Inf、缺失元素、额外字段、重复字段、非规范 JSON 数字表示或空 batch。公开矩阵 `A` 的形状固定为 `[m,n]`，公开向量 `b` 的形状固定为 `[m]`，元素先按 canonical 整数解析，再检查 `0 <= A_ij,b_i < q`。解析器必须拒绝 dtype、rank、byte order、stride、长度或摘要不匹配，默认 fail-closed。
+
+公开参数的来源必须可独立复现。G1-a 采用“固定 canonical bytes”或“登记的确定性 PRNG”二选一；若使用随机生成，必须从 `master_seed` 通过固定标签派生 `seed_A`，并在 manifest 中记录 `seed_derivation`、`prng_id`、`prng_version`、`A` 的 shape/dtype/byte order 和 `parameter_sha256`。`b` 的生成也必须记录同一套派生规则。相同 seed、算法版本和参数必须逐字节得到相同的 `A,b`；不得使用未登记的系统随机源、时间或设备状态。
+
+关系计算使用模 `q` 的标准代表元 `[0,q)`，并在需要比较误差时使用 centered representative：
+
+```text
+centered_q(x) = x                         , 0 <= x <= floor(q/2)
+                 x - q                     , floor(q/2) < x < q
+```
+
+由于 `q=3329` 为奇数，centered 区间为 `[-1664,1664]`。实现必须先计算 `x mod q` 再 lift，不能对未约简的负数直接截断或依赖语言的负模语义。所有中间量使用 Python `int` 或明确的无溢出 `int64` 检查；神经实现的低精度张量不得直接充当 reference 数值。
+
+#### G1-a.3 模整数关系、秘密分布与接受集合
+
+公开参数为 `(A,b,q)`。fixture 生成器使用显式 seed 生成 secret `s` 和小误差 `e`，但 raw `s/e` 不写入交付物；每个 fixture 只记录生成算法版本、seed 摘要和公开参数摘要。候选关系定义为：
+
+```text
+r = centered_q(A*c - b mod q)
+```
+
+其中 `c` 是待验证 credential。为构造一个合法样本，生成器可先采样小整数 `s,e`，形成公开 `b = (A*s + e) mod q`，再把 `c=s` 编码为 credential。该构造仅用于受控 fixture，不等同于签名方案；G1-a 不规定密钥生成、签名或密钥发布协议。
+
+接受集合由误差范数阈值定义。默认候选为无穷范数：
+
+```text
+V_ref(c) = 1  iff  max_i |r_i| <= tau
+```
+
+`tau` 必须作为 manifest 中的整数显式登记，单位是 centered representative 的绝对值，并由生成器根据 `e` 的预登记范围选择；边界采用 `<=`，不得在实现中变为 `<`。同时记录 `accepted_reason=RELATION_WITHIN_BOUND` 或稳定的失败 reason。若后续选择 L2 范数或其他范数，必须新建 `protocol_id`，重新生成全部 vectors，不能在同一协议中隐式切换。
+
+reference 按 batch 逐行判定：形状/类型/域错误是整批结构失败；形状合法但某一行关系不满足时，该行返回 `accepted=false, reason=RELATION_OUT_OF_BOUND`，不影响其他行的 reference 计算。空 batch、错误 rank、`m/n/q/tau` 不一致和公开参数摘要不匹配直接抛出稳定结构错误，不返回空结果。reference evidence 只包含 `protocol_id`、参数摘要、逐行 accepted、`max_abs_residual`、`residual_digest`、reason code 和输入行索引，不包含 secret、完整 credential 或未截断中间矩阵；它不能直接创建 route，必须交给唯一 Coordinator。
+
+##### G1-a.3a Evidence schema
+
+每个 batch 的 evidence 采用不可变结构，字段和类型固定如下；JSON 序列化使用 UTF-8、排序键和无空白 canonical 编码，所有 digest 为小写 64 位十六进制：
+
+```text
+G1aEvidence {
+  protocol_id: str,
+  parameter_digest: str,          # canonical (A,b,q,tau,n,m,norm) 的 SHA-256
+  accepted: Tuple[bool, ...],     # 与输入 batch 行数相同
+  max_abs_residual: Tuple[int, ...],
+  residual_digest: str,           # canonical residual 矩阵的 SHA-256
+  reason_code: Tuple[str, ...],   # RELATION_WITHIN_BOUND / RELATION_OUT_OF_BOUND
+  batch_indices: Tuple[int, ...]  # 原始 batch 索引，严格递增
+}
+```
+
+`max_abs_residual` 是每行一个 Python `int`，不是被截断的完整残差；`accepted`、`max_abs_residual`、`reason_code` 和 `batch_indices` 长度必须完全相同。结构错误不生成部分 evidence，而返回稳定 `G1A_<STAGE>_<REASON>` 错误对象。evidence 只表达 verifier 证据，不能携带 `allow`、scope、mask、selection 或 route，也不能被调用方直接提交给 dispatcher。
+
+#### G1-a.4 纯整数 reference 与向量规范
+
+reference 的固定步骤如下：
+
+1. 读取并校验 manifest、公开参数和 canonical credential 编码；
+2. 对每一行 `c` 计算 `z_i = sum_j A[i,j] * c[j] - b[i]`，使用无限精度整数累加；
+3. 计算 `u_i = z_i % q`，确保结果落在 `[0,q)`；
+4. 对 `u_i` 执行 `centered_q`，得到 `r_i`；
+5. 计算 `max_abs_residual = max(abs(r_i))`；
+6. 用登记的 `tau` 和 `<=` 规则生成 accepted/reason；
+7. 对输出按原始 batch 索引稳定排序并生成 evidence 摘要。
+
+必须提供至少以下 reference vectors，并把输入/输出 NPY 的 SHA-256 写入 manifest：合法零误差、合法最大阈值、恰好超阈值、`q/2` 与 `q/2+1` 的 centered lift（例如 `centered_q(1664,3329)=1664`、`centered_q(1665,3329)=-1664`）、负的未约简中间值、最大 `A*c` 乘积、全零 credential、每个 batch 行独立 accepted/denied，以及公开参数单比特篡改。每个 vector 同时给出逐项 `z/u/r` 或其规范摘要，便于独立实现复算。reference 测试必须覆盖 `z_i < 0` 的未约简中间值，并与独立的 canonical mod 实现 `((z % q) + q) % q`（或等价的逐步减法实现）逐项一致；不能把某个语言的负数余数行为误当作协议。
+
+#### G1-a.5 神经 verifier 的实现约束（仅规范，不实现）
+
+G1-b 的神经 verifier 必须在计算图中作为固定、无可训练认证参数的组件，输入只包括 canonical credential 和冻结公开参数派生的常量；业务 hidden、token、logits、scope、route 或专家输出不得进入 verifier 判定。允许的计算原语限定为：整数/定点加法、乘法、显式模约简、centered lift、绝对值或平方、归约和固定阈值比较。任何近似激活、可训练线性层、连续 gate signal 或数据依赖的浮点舍入都不能改变接受集合。
+
+为适配 GPU/神经张量，G1-b 可以采用固定范围展开、分段/LUT 或定点编码，但必须先声明：
+
+- 每个输入和中间值的整数范围、位宽及溢出检测；
+- `mod q` 的实现（商估计、校正减法或查表）及最坏误差；
+- centered lift 在 `floor(q/2)` 边界的分支语义；
+- 范数归约、`tau` 比较和 batch 行隔离；
+- 认证计算的整数/定点表示、dtype/device 与业务 FP32/BF16 路径分离。
+
+这里的“分离”是数据流和数值语义要求，不预先规定必须使用某一种 PyTorch dtype：verifier 输入只能是 canonical credential 和公开参数派生的整数常量，不得接收 hidden、token logits 或业务激活，不得加入业务 autograd 图，也不得把浮点近似结果作为认证判定。G1-b 可选择 Python/NumPy 整数、CPU/GPU 整数张量或定点张量，但必须登记位宽、设备、转换点和溢出策略，并证明这些选择不会改变 reference 接受集合。
+
+神经实现输出必须是离散 evidence（逐行 bool + reason），而不是可连续调节的概率。任何 dtype、rank、长度、空 batch 或非有限张量错误均整批拒绝；合法形状下的单行关系失败逐行 DENY。G1-b 不得通过放大容差、随机抖动、fallback reference 或重新验签来掩盖差异。
+
+#### G1-a.6 Soundness、completeness 与数值门槛
+
+G1-a 冻结以下可测试目标：
+
+```text
+soundness（有限测试域）：V_nn(c)=1  =>  V_ref(c)=1
+completeness（有限测试域）：V_ref(c)=1  =>  V_nn(c)=1
+```
+
+两者只在 manifest 明确列出的有限域、边界集合和随机 seed 集合上验证。soundness 是硬门槛：发现任一 neural-only accept 或越界 accepted，G1-b 失败。completeness 允许记录实现缺陷，但不能把 reference accepted 改成拒绝来“修复”。对于所有交付 vectors，neural evidence 的 accepted/reason 必须逐项相同；若实现产生 residual，则其整数化后必须与 reference 的 `r` 完全一致，不能只用业务 logits 的 allclose 代替。
+
+任何近似版本必须预先登记固定的 `atol/rtol` 仅用于诊断 residual，不得用于认证判定。P0 校准若发现 reference 自身在同一输入重复执行时不一致，或固定宽度实现出现溢出，标记 `host_numerics_unstable` 并更换实现/参数；不得通过放宽阈值使其通过。G1-b 的 H/S/G/E 对照必须使用同一登记阈值，失败时修实现、位宽或参数，不修改接受集合。
+
+#### G1-a.7 安全边界与威胁模型
+
+公开 `(A,b,q)` 和 accepted credential 的关系可被观察者计算，因此该关系本身不是不可伪造签名。需要分别记录三类问题：恢复原 secret 的难度、寻找任意满足阈值的 credential 的难度、以及重放一个已接受 credential 的可能性。G1-a 只定义第一类关系的有限 reference，不对三者给出安全证明。特别是小 `q`、固定 fixture、公开参数、无 nonce 和受限错误输出都使当前设计属于 toy/experimental contract。
+
+Coordinator 仍是唯一授权提交者：verifier 产生 evidence，Coordinator 校验 evidence 来源、request/policy/execution-config 绑定后才生成 `_CommittedRoute`。G1-a 不改变 M2 的 scope lattice、zero-call、cache 生命周期或失败原子性；这些仍按 M0/M1a/M2 契约执行。任何试图由调用方提交 `allow`、scope、mask、selection 或 route 的接口都属于越权并必须在 G1-b 前拒绝。
+
+#### G1-a.8 成本、资源与可行性评估
+
+CPU reference 的主要成本为 `O(B*m*n)` 次整数乘加和 `O(B*m)` 次约简/比较；内存为 `O(m*n)` 保存公开矩阵加 `O(B*m)` 中间残差。G1-a 必须用脚本测量候选 `(q,n,m)` 在 B=`1,2,4,16` 下的延迟、峰值内存和中间值最大位宽，并把结果放入设计审阅附件。预计神经展开的参数量与延迟随 `m*n` 近似线性增长，LUT/分段方案还需报告表大小和分支数量。
+
+若 G1-b 使用固定宽度整数，乘加前必须先把外部整数转换为 Python `int`，再按 `abs(a) > INT_MAX // abs(c)` 和 `abs(acc + product) > INT_MAX` 检查乘积、累加器边界；任何检查失败都返回稳定 overflow 错误，不允许溢出后再取模。使用 Python 任意精度 reference 时不需要模拟 `int64` 溢出，但仍须报告实际中间值最大 bit width。
+
+本阶段只需要 CPU、Python/NumPy reference 和小型 fixture，不需要下载 Qwen、真实预训练模型或申请 GPU。只有 G1-b 需要将固定整数核映射到 PyTorch CPU/GPU 后，才根据实测显存和吞吐决定是否上服务器。若候选参数导致 A4000 无法在预定 batch 下容纳，必须新建 execution config/协议版本，不得静默缩小矩阵或改变 batch。
+
+#### G1-a.9 测试矩阵与交付物
+
+G1-a 交付必须包含独立的 `g1a-modint-v1` manifest、公开参数摘要、reference vectors、reference 输出、生成器版本和 provenance；不得提交 raw secret、私钥、完整 credential 集合、checkpoint 或未审计 logits。manifest 至少登记：`schema_version`、`execution_config_id`、`protocol_id`、`q`、`n`、`m`、`tau`、`norm`、`integer_encoding`、`parameter_sha256`、`vectors_sha256`、`reference_impl_sha256`、`seeds`、`provenance`。
+
+测试必须覆盖：
+
+- canonical JSON/NPY 解析、未知/重复字段、错误 dtype/rank/byte order、空 batch、非有限值和长度越界；
+- 模乘加、`z_i < 0` 的负数约简、`q/2` 与 `q/2+1` centered lift、最大乘积和位宽边界；
+- `tau-1`、`tau`、`tau+1` 的接受集合及稳定 reason code；
+- 零误差、最大合法误差、逐行 mixed batch、公开参数单比特篡改和摘要篡改；
+- reference 与独立整数实现逐项一致、固定 seed 重复确定性、原始索引保持；
+- evidence 不能直接授权、跨 request/policy/config 绑定失败、错误输入 fail-closed。
+
+验收门槛为：reference vectors 100% 一致；canonical parser 对所有负向样本拒绝；整数中间值无未检测溢出；accepted/reason 与预期逐行一致；固定 seed 重复运行 route/evidence/output/ledger 一致；statement coverage `>=95%`、branch coverage `>=90%`。任何一项失败都停止 G1-a，记录稳定错误码和复现输入，不进入 G1-b。
+
+#### G1-a.10 G1-b 入口门槛与实施顺序
+
+G1-a 审阅前不得实现 `mod q` 神经算子、定点 LUT 或 CUDA kernel。审阅需要明确批准最终 `(q,n,m,tau,norm)`、canonical 编码、公开参数生成、reference vectors、reason code、位宽预算和有限域证据范围。通过后按以下顺序进入 G1-b：
+
+1. 实现纯 Python/NumPy reference 与 parser，并先通过全部 G1-a vectors；
+2. 实现固定整数/定点 neural verifier，逐步加入模约简、centered lift、范数和比较；认证输入流与业务 hidden/autograd 图保持独立，并在实现报告中登记 dtype/device、位宽和溢出检查；
+3. 做 H/S、S/G、G/E 对照和边界/溢出/批隔离测试，确认 soundness/completeness；
+4. 在 CPU 通过后再测 GPU 后端，记录 dtype/device、延迟、峰值内存和 provenance；
+5. 只有 G1-b 全部门槛通过，才允许 I1 将 verifier 接入 M2 AuthExpert/Coordinator；
+6. I1 接入必须保持 M2 scope、policy、zero-call、cache 和 `_CommittedRoute` 的路由/执行契约不变；G1-b canonical 数学接受集合取代 A0 fixture 关系，并以新 protocol/execution config 记录，不能要求两种关系对同一原始数值输入一致。
+
+G1-a 的停止条件是：参数或接受集合未能由 reference 明确复算、存在未定义的负数模语义、溢出无法证明被检测、神经近似可能改变 accepted 集合、或审阅意见要求引入密码学签名协议。此时保留候选设计和失败 vectors，重新起草版本，不以临时阈值或更换后端绕过问题。
+
+### R3.15 G1-b 模整数 neural verifier 详细实现方案 [PROPOSED / CLAUDE REVIEW REQUIRED]
+
+#### G1-b.1 目标、依赖与边界
+
+G1-b 将已通过 G1-a contract 的纯整数 reference 编译为固定的 PyTorch verifier，验证 `mod q`、centered lift、残差范数和离散 evidence 在 CPU（以及后续可选 GPU）上与 reference 一致。G1-b 只实现认证计算，不训练 verifier，不引入学习式 Router，不改变 M2 scope/policy/zero-call contract，不接入真实宿主，也不创建最终生产 freeze。G1-b 通过后才允许进入 I1，将 verifier 替换 M2 的 A0 fixture。
+
+G1-b 的实现对象是计算图中的固定认证组件，而不是普通业务神经层：没有 `nn.Parameter`、没有 optimizer、没有 autograd 路径、没有连续 gate signal。输入仅为 canonical credential、冻结公开参数和协议常量；hidden、token、logits、scope、route、专家输出和业务 loss 均不得进入 verifier。输出是 `accepted`、`reason_code`、`max_abs_residual` 等离散 evidence，随后仍由唯一 Coordinator 提交授权。
+
+G1-b 继承 G1-a 的 toy/experimental 限制：不声称标准 LWE、ML-KEM、ML-DSA 或 Ed25519 安全性，不声称签名不可伪造、白盒抗性、抗重放、密钥保密或生产部署安全。G1-b 的 soundness/completeness 只针对 manifest 登记的有限 vectors、边界集合和随机 seed，不外推为全域证明。
+
+#### G1-b.2 固定 execution config 与后端路线
+
+G1-b 使用独立 `execution_config_id=g1b-modint-neural-v1`、`protocol_id=g1b-modint-v1`。其 `q,n,m,tau,norm` 必须逐字复制已批准的 G1-a manifest；如果 G1-a 只批准了 tiny fixture，则 G1-b 先在该 fixture 上完成 contract，扩大到 `q=3329,n=256,m=512` 必须生成新的参数/fixture 摘要并记录为新 execution config，不能静默替换。G1-a 已验收的 manifest 字段和摘要不回写修改；G1-b manifest 额外登记由其参数摘要派生的 `integer_bounds`，从而既保持 G1-a 交付物可复现，又让 neural backend 的位宽证明可审计。
+
+实现分三层，接口和接受集合保持相同：
+
+1. **H（host/reference）**：G1-a 的 Python `int` reference，作为唯一判定真值；
+2. **S（scripted integer）**：纯 Python/NumPy 或逐元素整数实现，用于独立复核 H，不依赖 PyTorch；
+3. **G（graph verifier）**：固定 PyTorch `torch.int64` CPU 实现，先逐项实现并通过全部 vectors；
+4. **E（optional external backend）**：独立 GPU/定点或 CUDA 后端，只在 G CPU 通过后实现，不能替代 G 的验收。
+
+G1-b 首个实现固定使用 `torch.int64` CPU 张量承载 canonical 整数和中间值，理由是便于逐项审计且覆盖候选 `q=3329` 的乘积范围；这不是对后续 GPU 后端的永久限制。任何改用 `int32`、定点或 LUT 的实现都必须新建 backend revision，重新登记位宽、范围、溢出策略和 vectors 结果。
+
+在创建 G backend 前，runner 必须从 canonical 域解析计算并登记以下 `integer_bounds`，不得用有限 vectors 的最大观测值替代解析上界：
+
+```text
+max_input_value = q - 1
+max_product_abs = (q - 1) * (q - 1)
+max_accumulator_abs = n * max_product_abs + (q - 1)
+required_signed_bits = ceil(log2(max_accumulator_abs + 1)) + 1
+```
+
+其中 `max_accumulator_abs` 覆盖 `sum_j A[i,j] * c[j] - b[i]` 的最坏绝对值。runner 必须验证 `max_accumulator_abs <= 2**63 - 1` 后才允许启动 `torch.int64` kernel；否则返回 `G1B_ARITH_WIDTH_UNSAFE`，不得依靠张量环绕。`integer_bounds` 同时记录 `q,n,m`、公式版本、实际 vectors 最大值和 `required_signed_bits`，并绑定 G1-a `parameter_sha256`。
+
+#### G1-b.3 模块与接口
+
+新增 package 建议为 `src/can/v2/modint_verifier_g1b/`，职责固定如下：
+
+| 模块 | 责任 | 关键接口 |
+|---|---|---|
+| `types.py` | 配置、evidence、稳定错误和后端元数据 | `G1BConfig`、`G1BError`、`G1BBackendInfo` |
+| `kernel.py` | canonical mod、centered lift、checked dot、范数比较 | `mod_q(x,q)`、`centered_lift(x,q)`、`verify_kernel(c,A,b,config)` |
+| `verifier.py` | 固定 PyTorch module 和离散 evidence | `ModIntNeuralVerifier.forward(credentials)` |
+| `reference.py` | H/S 对照适配，不复制业务逻辑 | `compare_reference(...)` |
+| `manifest.py` | G1-b 配置、backend、位宽和摘要校验 | `load_g1b_manifest(...)` |
+| `artifacts.py` | vectors、summary、backend provenance 和成本结果 | `run_g1b_cpu(...)` |
+| `tests/v2/test_modint_verifier_g1b.py` | 正向、边界、溢出、差分和 no-grad 测试 | 固定 seed/CPU |
+
+`ModIntNeuralVerifier.forward(credentials)` 只接受 `[B,n]` 的 canonical 整数输入和内部冻结参数引用，返回 `G1BEvidence`。调用方不能传入 `allow`、scope、mask、selection、route 或自定义阈值。verifier 不持有或返回完整 secret；完整 residual 只在受信内部测试路径中使用，summary/evidence 仅保存摘要和逐行最大绝对残差。
+
+#### G1-b.4 固定整数计算流程
+
+每个 batch 行的计算顺序不可变：
+
+1. 入口检查 dtype、rank、shape、C-contiguous、非空 batch、整数域和 `0 <= c_i < q`；结构错误整批拒绝；
+2. 将输入和公开参数转换为 `torch.int64`，并禁止 `requires_grad`；
+3. 对每个 `i` 计算 `z_i = sum_j A[i,j] * c[j] - b[i]`；乘积与累加均执行显式范围检查；
+4. 用 canonical `mod_q` 将 `z_i` 映射到 `[0,q)`；不能使用未登记的语言负余数语义；
+5. 按 G1-a 边界执行 centered lift：`u <= floor(q/2)` 保留为 `u`，否则为 `u-q`；
+6. 计算 `max_abs_residual`，使用固定 `linf` 和登记的 `tau` 执行 `<=` 比较；
+7. 生成逐行 `accepted` 与稳定 `RELATION_WITHIN_BOUND` / `RELATION_OUT_OF_BOUND`；
+8. 将 evidence 交给 Coordinator，verifier 本身不提交 route。
+
+G1-b 不使用浮点矩阵乘法、softmax、sigmoid、round-to-nearest 或连续 gate。任何“先转 BF16/FP32 再取整”的路径都禁止。业务模型可以使用 BF16/FP32，但认证整数流必须保持独立的数据流、dtype/device 和 autograd 边界。
+
+#### G1-b.5 `mod q`、centered lift 与溢出策略
+
+CPU G 后端的 `mod_q` 必须满足 `((x % q) + q) % q` 的 canonical 语义，并通过 `z<0`、`z=-kq`、`z=kq-1` 和最大正/负中间值 vectors。PyTorch 张量的 `%` 结果不能未经测试就被当作跨设备/版本协议语义；kernel 必须封装为显式 `canonical_mod_q`，并与 G1-a Python reference 和独立 S 实现逐项比较。centered lift 必须显式覆盖 `q//2` 与 `q//2+1`，不使用依赖浮点除法的近似分支。任何 mod 运算前都必须先完成 `integer_bounds` 校验，避免对已经环绕的 int64 值进行“正确”取模。
+
+所有外部整数先转换成 Python `int` 做范围判断；固定宽度路径在每次乘积和累加前执行：
+
+```text
+abs(a) <= INT_MAX // abs(c)             # 乘积可表示
+abs(acc + a*c) <= INT_MAX               # 累加器可表示
+```
+
+零乘数不得触发除零；任何无法证明安全的中间值返回稳定 `G1B_ARITH_OVERFLOW`，该行 DENY 或按协议整批结构失败，不能溢出后再取模。`torch.int64` 的实际 kernel 不得依赖 PyTorch 溢出后的环绕结果；必要时先在 Python int/reference 路径验证范围，再执行张量计算。GPU/定点 E 后端必须采用相同的 fail-closed 策略，不能把饱和、截断或 wraparound 当作合法约简。
+
+#### G1-b.6 H/S/G/E 对照与证明边界
+
+H/S/G 对照采用分阶段门槛。第一阶段只使用 G1-a 小 fixture（例如 `q=17,n=3,m=4`）完成全部边界和负数 vectors；第二阶段在相同代码路径下切换到已批准的大配置，再进行完整差分。每个 vectors run 都同时运行 H、S、G；E 若存在则作为额外后端。对每个 batch 行比较：
+
+- `accepted` 完全相等；
+- `reason_code` 完全相等；
+- `max_abs_residual` 完全相等；
+- residual（若后端导出）按逐整数完全相等；
+- 原始 `batch_indices`、输入摘要和参数摘要完全相等。
+
+允许的 `atol/rtol` 只用于诊断后端导出的浮点 residual，不能参与 accepted 判定。G1-b 的硬门槛是 H/S/G 对所有 vectors 100% 一致；E 只有在 H/S/G 已通过后才纳入验收，且不得降低 G 的门槛。发现 G-only accept、G-only deny、reason 漂移、边界漂移或整数溢出时，立即停止该 backend，修复实现或重新登记 backend revision。
+
+这些对照只能证明有限测试域内的实现一致性。它们不能证明模整数关系具有密码学困难性，也不能证明任意输入、白盒攻击或重放攻击安全。
+
+#### G1-b.7 测试矩阵与量化门槛
+
+专项测试至少覆盖：
+
+- G1-a 全部 vectors、`tau-1/tau/tau+1`、零误差、最大合法误差和 mixed batch；
+- `q//2/q//2+1` centered lift、负 `z`、负整倍数、最大乘积和最大累加器；
+- dtype/rank/shape/stride/空 batch/非有限值/越界 credential/外部 requires-grad；
+- 参数摘要、protocol ID、backend ID、位宽和 manifest 篡改；
+- G1B module 无 `nn.Parameter`、无梯度、无 optimizer 更新，业务 hidden 无法影响 evidence；
+- 输入行重排、重复运行、CPU 线程数变化和固定 seed 的 determinism；
+- H/S/G 每行 accepted/reason/residual 一致，错误行不污染其他 batch 行；
+- overflow、除零、未授权调用方传入 route/mask/阈值以及 evidence 直接提交 dispatcher 的拒绝。
+
+硬门槛：G CPU 与 H reference 的 accepted/reason 100% 一致；所有负向结构样本 fail-closed；解析 `integer_bounds` 证明无未检测溢出；固定 seed 重复运行 evidence、摘要和成本记录一致；CPU core statement coverage `>=95%`、branch coverage `>=90%`。设备适配、CUDA 可用性和内存不足分支单独记录，不以无 GPU 环境伪造覆盖率。CPU reference 与 G 后端的成本、最大 bit width 和设备 provenance 完整写入 summary。未达到门槛不得进入 E 后端或 I1。
+
+#### G1-b.8 交付物、成本测量与资源顺序
+
+结果目录固定为 `results/g1b-modint-v1/run-YYYYMMDD-NN/`，不得覆盖已有 run。每次 run 至少包含：
+
+- `manifest.json`：协议、参数、backend、位宽、dtype/device、摘要和 provenance；
+- `vectors.json` / `reference_outputs.npy`：不含 raw secret 的测试输入摘要和 reference 结果；
+- `summary.json`：status、exit code、H/S/G/E 差异计数、overflow 计数、accepted/reason 差异、延迟、峰值内存、最大 bit width 和 coverage；
+- `backend_provenance.json`：Python、NumPy、PyTorch、CUDA/device、线程数和 Git dirty 状态。
+
+CPU 阶段先测 B=`1,2,4,16`、候选序列长度/批形状和固定线程数，记录每次 verifier latency、吞吐、峰值内存和中间最大 bit width。只有 G CPU 通过 H/S/G 门槛后，才进行可选的 E/GPU feasibility smoke test；该 smoke test 记录整数算子支持、单次延迟、峰值显存、H/G 输出摘要和 backend provenance，但不是 G1-b CPU contract 的通过条件。GPU 测量不改变 manifest、接受集合或 tau。任何 A4000 显存、整数 kernel 或吞吐不满足预登记约束时，停止该 backend 并记录失败，不静默缩小参数；若后续要用 int32 分块或定点替代，必须另建 backend revision 并重新跑 H/S/G/E vectors。
+
+#### G1-b.9 实施顺序、停止条件与 I1 入口
+
+实施顺序固定为：
+
+1. 读取已验收的 G1-a manifest/vectors，确认参数和接受集合未漂移；
+2. 实现并测试 checked `mod_q`、centered lift、整数 dot 和 linf 比较；
+3. 实现无参数的 CPU PyTorch G backend，完成 H/S/G 全量差分；
+4. 加入 manifest、artifact runner、成本测量、provenance 和 coverage；
+5. 通过 CPU 后才执行可选 E/GPU feasibility smoke test；若实现定点或 int32 分块，另建 backend revision；
+6. G1-b contract 验收通过后，起草 I1 将 G verifier 接入 M2 AuthExpert/Coordinator 的详细方案；
+7. I1 通过前不修改 M2 路由/执行 contract，不替换 A0，不启动真实宿主实验；I1 方案审阅通过后才允许以 G1-b canonical 关系替换 A0 fixture verifier。
+
+任一以下情况立即停止：canonical 输入或边界语义漂移、G-only accept/deny、reason 不一致、未检测溢出、后端使用业务 hidden、evidence 可直接创建 route、coverage/确定性未达标、或 GPU 后端只能通过放宽阈值才能通过。失败 run 保留 summary 和复现摘要，不覆盖历史结果。
+
+G1-b 方案需要 Claude 审阅并由用户指定实现者后才能编码；本节本身不实现 neural verifier、不训练、不下载模型、不申请服务器 GPU。
+
+---
+
+---
+
+### R3.16 I1：G1-b 模整数 verifier 接入 M2 AuthExpert/Coordinator 详细方案 [IMPLEMENTED / CLAUDE CONTRACT ACCEPTED]
+
+#### I1.1 目标、范围与非目标
+
+I1 的目标是把已经通过 contract 验收的 G1-b CPU `torch.int64` 模整数 verifier 接入 M2 的 AuthExpert/Coordinator 流程，验证“整数 verifier 只产生 evidence、Coordinator 仍是唯一授权提交者、M2 的多专家路由不因 verifier 替换而改变”的集成性质。I1 是接口适配和回归阶段，不是新的模型训练阶段。
+
+I1 只允许把 M2 的 A0 verifier 替换为 G1-b adapter，并为此把 M2 对具体 `FixedRelationVerifier` 类的依赖收窄为公开 verifier protocol；以下 M2 路由与执行语义必须保持不变：`standard ⊂ advanced ⊂ privileged` scope lattice、Shared E0 恒执行、受限 routed dispatch、top-k=1、原始 batch index、P1/P2 policy、DENY/空 view 的 routed zero-call、`_CommittedRoute` 的 seal/request/policy/config 绑定、KV/cache 生命周期、并发隔离和异常原子性。G1-b 与 A0 的数学关系和原始接受集合本来就不同，I1 不要求二者对同一数值 credential 给出相同判定；不得为了追平 A0 而改变 G1-b 的 canonical 接受集合。I1 不修改 M2 旧 manifest、fixture 或历史结果，不覆盖已有结果目录。
+
+I1 明确不做：训练 verifier 或 Router；引入学习式 Router；迁移真实预训练宿主或下载 Qwen；实现 GPU/E、int32 分块或定点 backend；改变 G1-b 接受集合以“追平”A0；声称标准 LWE、签名不可伪造、白盒抗性、抗重放、知识保密或生产安全。G1-b 仍是 toy/experimental、CPU-only 的有限域实现。
+
+#### I1.2 依赖、版本和 provenance 绑定
+
+I1 必须读取并校验已验收的 G1-a/G1-b 交付物，而不是复制参数常量：
+
+* `g1a_parameter_sha256` 绑定 G1-a manifest 的公开参数摘要；
+* `g1b_backend_manifest_sha256` 绑定 G1-b CPU backend manifest 的原始 bytes 摘要；
+* `g1b_protocol_id`、`q,n,m,tau,norm`、`integer_bounds` 和 reason code 表逐项与 G1-b manifest 相等；
+* M2 manifest、assignment registry 和 I1 manifest 各自记录原始 bytes SHA-256、Git provenance 和 dirty 状态。
+
+I1 使用独立的 `execution_config_id=i1-g1b-m2-integration-v1` 和 `protocol_id=i1-g1b-m2-v1`。任何参数、backend、scope、policy、Router 或输出格式变化都必须新建 execution/protocol revision；不得回写 M2 或 G1-b 历史 manifest。运行目录固定为：
+
+```text
+results/i1-g1b-m2-integration-v1/
+├── p1-protected-or-deny-v1/
+│   └── run-YYYYMMDD-NN/
+└── p2-capability-routing-v1/
+    └── run-YYYYMMDD-NN/
+```
+
+`run-YYYYMMDD-NN` 已存在时递增 NN；失败 run 也必须保留。
+
+#### I1.3 适配层和授权边界
+
+新增独立适配模块（建议 `src/can/v2/modint_verifier_m2_i1/`），不把 G1-b 代码复制到 M2 package。当前 M2 在构造器中以 `isinstance(verifier, FixedRelationVerifier)` 绑定具体类，而 G1-b 的 `ModIntNeuralVerifier.forward()` 返回 `G1BResult`，也没有 M2 所需的 `validate_evidence()`；二者即使都是 `nn.Module` 也不能直接替换。I1 必须新增公开的 `M2VerifierProtocol`（或等价 ABC），至少固定以下接口：
+
+```text
+forward(credential: Tensor) -> VerificationEvidence
+validate_evidence(evidence: VerificationEvidence) -> int
+```
+
+`M2AuthExpert` 只依赖该公开 protocol，不再依赖某个具体 verifier 类；原 `FixedRelationVerifier` 与新 `G1BVerifierAdapter` 都必须满足同一接口。若采用结构化 `typing.Protocol`，`FixedRelationVerifier` 可凭现有公开方法直接满足契约，不强制增加无意义的包装层；若采用 ABC，则必须显式实现或包装。无论选择哪一种，必须先只注入原 A0 `FixedRelationVerifier` 并运行完整 M2 专项测试，证明接口抽象前后 route、scope、zero-call、ledger、异常和 deterministic 输出零行为变化，然后才允许实现或注入 G1-b adapter。该接口抽象只能替换 verifier 接线，不能改变 Coordinator、scope、policy、route 或 Dispatcher 的行为。
+
+适配层职责为：严格验证 G1-b `[B,n]` canonical 整数输入；调用固定 `ModIntNeuralVerifier`；把不可变 G1-b evidence 显式转换为 M2 使用的 `VerificationEvidence`；验证转换后 evidence 的来源、完整性和语义一致性；记录 verifier/protocol/backend 摘要。适配层不得接受调用方传入 `allow`、`scope_id`、`allowed_mask`、`selection`、`route`、`policy`、`tau` 或替代 evidence。
+
+I1 credential 必须原生满足 `torch.int64`、shape `[B,n]`、C-contiguous、非空 batch 和 `0 <= c_i < q`。禁止把旧 M2/A0 的 FP32 credential 通过 `scale_factor`、乘法、round、截断、饱和或隐式 cast 转成 G1-b credential；G1-a/G1-b 未登记这种量化协议，任何此类转换都会创建新的输入域和接受集合。结构或域错误按固定 format/state failure 处理，adapter 只做验证和无损传递，不做数值“规范化”。
+
+G1-b verifier 仍只输出 evidence，不提交 route、不创建 capability、不接触 hidden、token、logits、专家输出或业务 loss。M2 Coordinator 仍是唯一能够把 evidence 与受信 scope assignment、request、policy、execution config 绑定并提交 `_CommittedRoute` 的组件。Dispatcher 必须继续对每行 allowed expert 做二次越权检查，即使 evidence 已被适配层接受。
+
+`G1BVerifierAdapter` 必须持有自己的私有 evidence seal，并通过公开 factory/validator 或自身实现生成和校验完整性标签；不得从旧 FP32 verifier 导入 `_evidence_integrity_tag` 等私有 helper。该 seal 仅用于可信进程内来源和事后改写检查，不构成白盒防伪。未知 G1-b reason code、protocol/parameter/backend 摘要不匹配或 evidence 字段被修改时必须 fail closed。
+
+首次请求的顺序保持为：无副作用输入预检/规范解析 → prefix（G 路径既有约束）→ G1-b verifier → M2 Coordinator 提交 route → dispatcher。增量请求是独立时序：先从 Coordinator 管理的受信 session record 读取首次请求已经提交的 `_CommittedRoute`，不得信任外部 route 或 cache 自描述字段；随后在任何 prefix/cache 读取前核对 request identity、route、policy/config、cut、cache shape/位置/有效长度和生命周期；绑定通过后直接使用既有 route 执行本步，不重新验签 credential；绑定失败则本步 prefix/suffix/head 零调用，并按 M2 既有原子失败语义先转 FAILED、再持锁清理 route/cache/session 登记。该增量 preflight 不改变首次请求的 prefix→verifier→Coordinator 顺序。
+
+#### I1.4 Evidence 与 M2 reason/policy 映射
+
+适配只允许固定、可审计的 reason 映射：
+
+| G1-b 结果 | I1 bound evidence | P1 `p1-protected-or-deny-v1` | P2 `p2-capability-routing-v1` |
+|---|---|---|---|
+| `RELATION_WITHIN_BOUND` | relation valid | PROTECTED | PROTECTED |
+| `RELATION_OUT_OF_BOUND` | relation failure | DENY | PUBLIC（仅按 P2 的明确配置） |
+| canonical parser、dtype/rank/shape、域或 overflow 错误 | format/state failure | DENY/请求级失败 | DENY/请求级失败 |
+| backend/protocol/parameter digest 不匹配 | integration configuration failure | 整批失败，零 route | 整批失败，零 route |
+
+关系失败不得被转换为格式错误，也不得在 P1 中转为 PUBLIC；P2 的 PUBLIC 是预登记能力路径，不是异常 fallback。逐行可定位的 credential 数值/关系失败可以与合法行共存；结构错误、配置摘要不一致、意外 verifier/coordinator/dispatcher 异常按 M2 既有整批失败规则处理，不返回 partial、不自动重试。
+
+固定枚举映射为 `RELATION_WITHIN_BOUND -> EvidenceReason.SUCCESS`、`RELATION_OUT_OF_BOUND -> EvidenceReason.RELATION_FAILED`。任何未知 reason 不得默认映射为 `RELATION_FAILED`，否则 P2 可能把未知故障错误路由到 PUBLIC。`max_abs_residual` 可在当前登记范围内转换成 FP32 `error_norm` 作为兼容诊断字段，但其语义是整数 `linf` 最大残差，不是旧 A0 的 FP32 L2 norm；M2 不得依据该浮点字段重新判定授权。centered lift 的解析上界为 `max_abs_residual_upper_bound = q // 2`，因此 lossless 条件是 `q // 2 <= 2**24`，不能只检查通常更小的 `tau`。当前 `q=3329` 的上界为 `1664`，满足精确表示。runner/loader 必须重新计算并校验该条件，不能信任 manifest 自报；当前 I1 schema 下 `fp32_lossless_verified=false` 必须拒绝启动。超出范围时应修改公开 evidence schema 以保留整数诊断值或新建协议版本，不能静默失真。
+
+I1 不自行从 evidence 推断 scope。scope 必须来自 M2 受信 fixture/assignment registry；assignment 的 `scope_id`、有序 expert 集合、request IDs、policy、execution config 和 coordinator seal 继续由 Coordinator 校验。`scope_id=null` 表示无授权，不能由调用方构造。
+
+#### I1.5 不变量和行为对照
+
+I1 使用三个相互独立的对照层级，不能把不同数学 verifier 的原始数值判定混为一个门槛：
+
+1. **数学实现对照**：同一 canonical int64 fixture 下，G1-b 与 G1-a reference 的 accepted、reason、`max_abs_residual`、参数摘要和原始 batch index 必须完全一致；
+2. **适配字段对照**：G1-b accepted/reason/max residual 与 adapter 生成的 verified/reason/error diagnostic 必须按固定映射逐行一致，未知 reason 和摘要漂移必须拒绝；
+3. **路由语义对照**：旧 A0-M2 与 G1b-I1 使用同一抽象 case class（valid relation、relation failure、format/state failure）、相同 context、assignment、scope 和 policy，比较 route、expert selection、输出摘要、zero-call、调用台账、请求状态和 cache 生命周期。
+
+A0 使用 FP32 L2 严格阈值，而 G1-b 使用模整数 centered residual 的 `linf <= tau`，因此不要求二者对相同原始数值 credential 拥有相同接受集合。路由对照 fixture 必须为每个抽象 case 分别登记 `a0_credential` 和 `g1b_credential`，二者只在预期 relation class 上配对，不存在隐式数值转换。若 G1-b 与 G1-a 不一致，属于实现错误并阻塞；若同一抽象 case 的 A0-M2 与 G1b-I1 路由不同，则逐案判断 adapter、reason 映射或 fixture 标注错误，不能放宽阈值或修改 canonical credential 使其表面一致。
+
+除上述对照外，还必须检查合法 hidden 的数值、dtype、device 与 prefix/suffix 恒等约束、输入行重排后的索引对应关系，以及重复运行、线程数变化、并发拒绝、KV 增量和异常注入后的状态、句柄和调用计数。
+
+#### I1.6 Manifest、fixture、ledger 与 summary
+
+I1 manifest 至少包含：`execution_config_id`、`protocol_id`、`policy`、M2 manifest/assignment 摘要、G1-a `parameter_sha256`、G1-b backend manifest 摘要、`q,n,m,tau,norm`、`integer_bounds`、`max_abs_residual_upper_bound=q//2`、`fp32_exact_integer_limit=2**24`、`fp32_lossless_verified`、scope schema 摘要、Router/top-k、dtype/device、Git provenance 和 schema version。loader 必须由 `q` 重新计算前两个范围值和布尔结果，并拒绝自报不一致；未知字段、重复字段、摘要不匹配、非规范 JSON、错误长度和非有限数值必须拒绝。
+
+Fixture 只保存可公开复现的测试向量或其受审摘要，不得写入 raw secret、私有 credential 或完整受保护答案。数学/适配 fixture 登记 canonical int64 G1-b vector、case ID、预期 G1-b reason 和原始 batch index；路由语义 fixture 的每个 case 必须登记 `case_id`、`expected_relation_class`（`valid`/`failure`/`format_error`）、`boundary_role`、`a0_credential` 与 `a0_expected_reason`、`g1b_credential` 与 `g1b_expected_reason`、`rationale`、`expected_scope`（或 `null`）、policy 和 request IDs。credential 可替换为 artifact 引用与 SHA-256。`boundary_role` 是机器可校验枚举，至少覆盖 `nominal_valid`、`nominal_failure`、`exact_accept_boundary`、`first_reject_boundary`、`format_dtype`、`format_rank`、`format_shape`、`domain_below_zero` 和 `domain_at_q`；`rationale` 仅供人工审阅，不能替代覆盖率断言。schema 必须明确禁止 `scale_factor`、rounding mode 或任何 FP32→int64 转换字段，也不通过 evidence→scope 的隐式推断替代受信 assignment。
+
+调用台账沿用 M2 schema，并增加 `verifier_backend_id`、`verifier_evidence_digest`、`route_digest` 和 `zero_call_reason`。summary 至少包含：`status`、`exit_code`、I1 protocol/config 摘要、case 数、G1-b/M2 差异计数、P1/P2 各类结果计数、protected/public/deny 调用计数、KV/并发/异常负向计数、determinism、coverage、provenance、运行时间和失败原因。所有摘要字段必须由 runner 实际计算，不能用占位值。
+
+#### I1.7 测试矩阵与硬门槛
+
+专项测试至少覆盖：
+
+* G1-a 全部 vectors、G1-b `tau-1/tau/tau+1`、centered-lift 边界、负值/负整倍数和 overflow；
+* 配对 fixture 的 `boundary_role` 枚举完整性、每个关键 A0/G1-b 边界至少一个 case、预期 reason 与实际 verifier 结果一致，以及 `rationale` 缺失/类型错误的 schema 拒绝；
+* 原生 int64 valid relation、relation failure、format/state failure、mixed batch、空 batch、错误 stride/dtype/rank/shape，以及 FP32/隐式 cast/scale+round 输入被拒绝；
+* standard/advanced/privileged scope 的单调性、E0 恒执行、E1/E2/E3 constrained top-1、全 false routed zero-call；
+* evidence/request/policy/config/assignment seal 绑定、调用方伪造 allow/scope/mask/route、未知 backend/摘要篡改；
+* 原始 batch index、逐行 protected 调用、P1/P2 policy 差异、拒绝不建立 suffix/public/cache；
+* KV 跨请求/错误位置/过期/重复消费、增量 preflight 失败零调用、并发隔离、部分执行异常后的 FAILED 与句柄清理；
+* verifier protocol 的两种实现、adapter evidence seal/完整性、私有 helper 不被依赖、重复运行 determinism、三层对照，以及无 `nn.Parameter`/无 autograd/hidden 不影响 evidence。
+
+硬门槛：A0-only protocol 迁移前后完整 M2 专项结果零行为变化；G1-b 与 G1-a accepted/reason 100% 一致；adapter 字段映射 100% 一致；配对 fixture 的 boundary coverage 完整；配对抽象 case 下 A0-M2 与 G1b-I1 的合法/拒绝路由、scope、zero-call、ledger 和状态无未解释差异；所有负向输入 fail-closed；无 protected 越权调用；固定 seed 重复运行摘要一致；适配包 statement coverage `>=95%`、branch coverage `>=90%`；全量 `tests/v2/` 回归通过。任何 digest 漂移、FP32 lossless 自报不一致、G1-a/G1-b 差异、未知 reason 降级为 PUBLIC、scope 提权、cache 越界、异常 partial 返回或覆盖率不足都阻止 I1 通过。
+
+#### I1.8 实施顺序、资源与停止条件
+
+1. 读取并锁定已验收的 G1-a/G1-b/M2 manifest、vectors 和 commit/provenance；
+2. 新增公开 verifier protocol，仍只注入原 A0 `FixedRelationVerifier`，运行完整 M2 专项并证明抽象前后零行为变化；该门槛通过前不得编写 G1-b 集成逻辑；
+3. 实现只接受 canonical int64 的 adapter、独立 evidence seal/validator 与 schema/摘要校验，运行 G1-b↔adapter 字段差分；
+4. 在不接入 `M2AuthExpert` 的条件下完成 adapter-only 单元测试，覆盖 canonical 输入、未知 reason、摘要漂移、evidence 篡改、FP32 lossless 上界与私有 helper 隔离；
+5. 接入 AuthExpert，使用含机器可校验 `boundary_role` 的配对 fixture 运行 P1/P2 CPU 路由语义对照；
+6. 加入 route/scope/zero-call/KV/并发/异常回归和 artifact runner；
+7. 运行专项 coverage 与完整 `pytest tests/v2/ -v`，生成上述双 policy 结果目录；
+8. 更新工作日志并交 Claude 做 I1 contract 验收；只有验收通过后才讨论 P0/P1-MoE 或真实宿主。
+
+I1 阶段仅需本地 CPU，不需要服务器、GPU、Qwen 下载或训练。若未来实现 GPU/E、int32 或定点 verifier，必须另建 backend revision，重新完成 G1-b 对照和 manifest 绑定。任一不变量失败时保留失败 run、停止推进并先修复 adapter/fixture；不得通过改 scope、policy、tau 或删除历史结果“修复”验收。
+
+#### I1.9 开发侧实现 checkpoint（2026-09-17）
+
+I1 已按本节冻结契约完成实现并通过 Claude contract 验收：
+
+* 新增 `src/can/v2/modint_verifier_m2_i1/`，包含 canonical int64 adapter、独立 evidence 完整性校验、严格 manifest/artifact loader、配对 fixture 和集成 runner；
+* 新增 `M2VerifierProtocol`，原 A0 `FixedRelationVerifier` 直接满足协议，`M2AuthExpert` 不再依赖具体 verifier 类；A0-only M2 专项回归为 **74 passed**，未观察到行为变化；
+* 新增 `scripts/run_i1_full.py` 和 `tests/v2/test_modint_verifier_m2_i1.py`；I1 专项 **37 passed**，G1-a/G1-b/M2/I1 联合回归 **133 passed**，全量 `tests/v2/` **864 passed in 42.20s**；
+* I1 package statement coverage 为 **95.51%**，branch coverage 为 **91.74%**，达到本节 `>=95%` / `>=90%` 门槛；
+* 权威正式结果为 `results/i1-g1b-m2-integration-v1/{p1-protected-or-deny-v1,p2-capability-routing-v1}/run-20260917-05/`。两种 policy 均为 `status=complete`、`exit_code=0`，10 个 case 的数学、adapter、route 和 determinism 差异计数均为 0，且 `unauthorized_routed_calls=0`；
+* 历史 `run-01` 至 `run-04` 保留用于 provenance，不覆盖、不删除。实现和结果仍限定本地 CPU tiny/experimental contract；未下载 Qwen、未训练、未实现 GPU/E 或真实宿主，也不产生签名不可伪造、抗重放、白盒安全或生产可用性结论。
+
+I1 已满足进入 P0-MoE 方案阶段的前置条件。下一步只编写并审阅 P0-MoE 详细方案；方案通过且用户指定实现者前，不下载真实宿主、不实现 runner、不启动服务器实验。
 
 ---

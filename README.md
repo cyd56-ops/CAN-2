@@ -1,14 +1,14 @@
-# CAN - Capability Authentication Network
+# CAN - Cryptographic Authentication Neural Gate Layer
 
 CAN 是一个防御性科研原型，研究将**固定的 toy LWE-inspired 关系验证门**嵌入神经网络中间，
 并根据 credential 判定控制模型能力路由。
 
 > 当前实现不是数字签名、身份认证或生产密码学访问控制系统。它不提供密码学安全归约、
-> replay 防御或白盒运行时抗性。
+> 历史 toy credential 尚未完成防重放验收，后续路线必须纳入状态化 replay 防护；当前也不提供白盒运行时抗性。
 
 ## 项目目标
 
-在可信服务部署边界内验证以下能力分级架构：
+已完成的 CIFAR-10 实验在可信服务部署边界内验证以下能力分级架构：
 
 - valid credential：执行受保护的 10 类细粒度路径；
 - invalid credential：不执行 protected 深层路径，只执行 2 类 public 粗粒度路径；
@@ -22,16 +22,27 @@ CAN 是一个防御性科研原型，研究将**固定的 toy LWE-inspired 关�
 
 该关系使用浮点运算和固定参数，仅用于验证神经编译、路由隔离和能力分级的实验可行性。
 
+当前 Revision 2 主线将固定 Gate 插入已有任务能力的冻结预训练 Transformer：先检查合法
+输出保持和拒绝请求的真实 suffix 零调用，再训练共享 prefix 的公共读出并测效用与越界。
+验证链不读取业务 hidden；P1 合法 hidden 恒等进入 suffix。该路线尚未实现，旧 CIFAR 和
+从零 Transformer 的结果不能替代新宿主证据。
+
 ## 当前状态
 
 - Phase 1：toy LWE-inspired 原语、Gate Layer 和 Gated ResNet-18 已完成；
 - Phase 2：CIFAR-10 三阶段训练已在 RTX A4000 上完成，3 个 seed 均生成 Stage A/B/C checkpoint；
 - Phase 3：test evaluator、单 checkpoint CLI、manifest/SHA-256 校验、Stage C 三 seed 聚合、
   latency 测量和离线测试已完成；
-- 当前唯一下一步：请 Claude 审阅 Phase 5.5/T2 标准自然语言任务方案，方案通过后实现 T2-NL-P-CAP/MEM pilot；
 - Phase 3.6：可信进程内 response envelope 已实现并通过 Claude 验收；
 - Phase 4 CIFAR-100 仅保留为 optional 兼容性 smoke；Phase 5 E1/E2 exploratory 已完成并归档。
-- Phase 5.5/T2 标准自然语言外部有效性已进入方案审阅；Phase 5.5-TS Teacher–Student 扩展仍为独立后续轨道，尚未开始。
+- Phase 5.5/T2 受控 CAP/MEM、配对 CLI 和 D0 单四元组诊断已实现；D0 服务器三变体均在 update 80 通过，仅支持该 train fixture 的过拟合能力，不支持自然语言泛化或安全结论。从零训练的负向结果保留，不自动追加预算。
+- G0/P0/P1 v1.2 设计已由用户确认完成审阅，配套规则已同步；G0 实现者待指定，P0/P1 尚未实现或运行。下一步由用户指定实现者，进入 G0 CPU 实现。
+- P0 做预训练宿主效用、依赖和后端预检；P1 在 G0/P0 通过后无训练插入；P2 才训练 public readout，P3 做效用/越界/性能同构对照。
+- G1-a/b 为独立关系内核研究，I1 在 G1-b 与 P1 通过后替换集成；Teacher–Student、MoE、工具扩展暂缓。
+
+实施接口与判据见 [G0/P0/P1 设计包](docs/GATE_PRETRAINED_G0_P0_P1_IMPLEMENTATION_PLAN.md)，
+阶段依赖见 [Revision 2 路线](docs/GATE_PRETRAINED_ROADMAP_REV2_20260909.md)。设计包的待审阅页首
+保留提交时状态；本轮审阅确认和实施进度以工作日志为准。计划模块和命令不代表已经交付。
 
 权威动态状态见 [`PROJECT_WORKLOG.md`](PROJECT_WORKLOG.md)，主张与证据台账见
 [`docs/RESEARCH_DESIGN.md`](docs/RESEARCH_DESIGN.md) 第 7 节。
@@ -40,10 +51,10 @@ CAN 是一个防御性科研原型，研究将**固定的 toy LWE-inspired 关�
 
 ### TM-API
 
-调用方可无限次提交任意 `image` 和 `credential`，但不能读取权重、修改运行时或直接调用内部模块。
+调用方可无限次提交业务输入与 credential（CIFAR 为 image，新语言路径为 prompt/input IDs），但不能读取权重、修改运行时或直接调用内部模块。
 正向保证的边界是服务层 response envelope，不是原始 PyTorch `InferenceOutput`。
 
-当前可验证的模型层性质包括：
+已有 CIFAR 的可验证性质包括：
 
 - 模型判定与 NumPy `V_ref` 逐样本一致；
 - invalid credential 的 protected 深层零调用；
@@ -53,6 +64,11 @@ Phase 3.6 的可信进程内 response envelope 已实现；外部调用路径只
 prediction 和 capability level。原始 `InferenceOutput` 中的 `decision`、`error_norm`、
 `reason_code`、`gate_signal` 和路由索引只允许 evaluator 使用，不构成外部 API。
 
+新语言路径的 wire schema 尚未交付，内部 evaluator 输出不能直接作为服务响应。P1 采用
+PROTECTED/DENY；P2 才在独立 policy 下把规范但关系失败的 credential 映射为 PUBLIC，
+格式/数值错误仍拒绝。私有 route seal 和 cache 绑定只用于可信进程内来源及状态检查，
+不防白盒篡改；当前历史 credential 尚未完成防重放验收，不能将 route/cache 检查写成防重放保证。具体失败语义见 [SECURITY.md](SECURITY.md)。
+
 ### TM-WB
 
 若攻击者持有 checkpoint 与运行时，则可以直接调用 protected 内部路径或篡改运行时控制流。
@@ -61,11 +77,11 @@ prediction 和 capability level。原始 `InferenceOutput` 中的 `decision`、`
 ### 明确限制
 
 - toy 参数无密码学安全归约，可被最小二乘伪造；
-- 静态 credential 可重用，不防御 replay；
+- 历史静态 credential 的防重放能力尚未验收；后续协议必须纳入 nonce/计数器、请求绑定、一次性消费、撤销和并发状态；
 - 不提供签名不可伪造性、身份认证或 access-control soundness；
 - 不提供 TEE、安全启动、侧信道或跨设备安全保证；
 - FAR/FRR 是有限采样下的实现正确性观测，不是密码学安全指标；
-- 独立无 Gate 同构 baseline 尚不存在，属于未来 `no_gate_ablation` 消融。
+- CIFAR 独立训练的无 Gate ResNet baseline 尚不存在；旧 Transformer 的 Plain E1/E2 对照已实现，两者不能混称为同一个 baseline。
 
 ## 项目结构
 
@@ -76,6 +92,7 @@ E:/CAN/
 │   ├── layers/gate_layer.py           # 验证、协调和特征门控
 │   ├── models/gated_resnet.py         # CIFAR-10 双能力路径模型
 │   ├── service/                        # Phase 3.6 可信进程内响应适配层
+│   ├── transformer/                    # 历史 T0/T1/T2、Plain 与诊断实现
 │   └── experiments/test_evaluator.py  # Phase 3 模型层 evaluator
 ├── scripts/eval_cifar10_test.py       # test split 评估与 Stage C 聚合 CLI
 ├── tests/v2/                          # 单元、差分和 evaluator 测试
@@ -86,13 +103,24 @@ E:/CAN/
 └── SECURITY.md                        # 信任模型与安全边界
 ```
 
+以下路径仅为 planned，当前不可运行：`src/can/v2/pretrained_gate/`、
+`scripts/preflight_pretrained_host.py`（P0）、`scripts/eval_pretrained_gate_p1.py`（P1）。
+先以 CPU 离线 tiny-host 验证 G0，再由服务器完成实际宿主与 GPU 配置的 P0/P1 验收。
+
 ## 安装依赖
+
+基础代码要求 Python 3.9+、PyTorch 2.0+；以下为已有路径的基础依赖安装，不是预训练宿主的
+可复现环境锁定文件：
 
 ```bash
 pip install numpy pytest torch torchvision pyyaml tqdm
 ```
 
 真实 CIFAR-10 下载必须显式启用；单元测试使用离线 synthetic fixture，不应隐式联网。
+
+预训练依赖计划使用 `requirements-pretrained.txt`，先核查候选的版本/API，再由 P0 实测确认
+并提交精确版本；当前该文件尚未交付，不提供未经验证的 transformers/CUDA 版本组合。
+模型 snapshot、不可变 revision、tokenizer/权重摘要和运行预算须在对应实验前登记；本地测试不隐式下载模型。
 
 ## 运行测试
 
@@ -160,5 +188,5 @@ python scripts/eval_cifar10_test.py --aggregate `
 
 研究原型，仅供学术研究使用。
 
-**Last Updated**: 2026-08-27
-**Status**: Phase 3 pre-run review pending
+**最后更新**：2026-09-10
+**状态**：Revision 2 配套规则已同步；G0 实现者待指定，P0/P1 尚未运行。
