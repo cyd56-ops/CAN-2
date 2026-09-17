@@ -3,10 +3,12 @@
 ## 当前研究阶段
 
 **阶段**: V2 - Gate Layer 在计算图中间架构  
-**状态**: R3、G0、M0、M1a tiny-MoE contract、M2 多专家 scope contract、G1-a reference、G1-b CPU verifier 与 I1 均已通过 Claude contract 验收；进入 P0-MoE 详细方案阶段。
-**最后更新**: 2026-09-17（I1 Claude contract 验收通过）
+**状态**: R3、G0、M0、M1a tiny-MoE contract、M2 多专家 scope contract、G1-a reference、G1-b CPU verifier 与 I1 均已通过 Claude contract 验收；P0-MoE 详细方案已起草，待 Claude 审阅。
+**最后更新**: 2026-09-17（P0-MoE 详细方案完成）
 
-**当前唯一下一步**：在 `docs/DESIGN_PROPOSALS.md` 编写 P0-MoE 真实宿主预检详细方案，冻结候选选择、24 条公开 fixture、依赖/许可证/remote-code 审核、模型结构与 KV API 探查、A4000 资源预算、manifest/summary schema、通过门槛和 `no_suitable_host` 停止条件；方案交 Claude 审阅且由用户指定实现者前不编码、不下载模型、不启动服务器运行。
+**当前唯一下一步**：将 `docs/DESIGN_PROPOSALS.md` R3.17 的 `p0-moe-host-preflight-plan-v1` 交 Claude 审阅。审阅通过且用户指定实现者前，不实现 P0 package/CLI，不创建正式 registry/fixture，不下载真实模型，也不启动服务器运行。
+
+**2026-09-17 P0-MoE 详细方案 checkpoint（待 Claude 审阅）**：在唯一权威设计文档新增 R3.17，固定四道预检门：供应链/许可证/remote-code、24 条公开能力 fixture、MoE 结构可插入性、A4000 资源与确定性。候选 registry 预登记 C1 `Qwen/Qwen1.5-MoE-A2.7B-Chat`、C2 `deepseek-ai/deepseek-moe-16b-chat`、C3 `ibm-granite/granite-3.1-1b-a400m-instruct`，按固定顺序选择首个全门通过者；候选公开元数据在当前环境无法联网核验，因此方案明确要求 P0-A 在任何权重下载/forward 前解析不可变 revision，并核验许可证、代码和文件摘要。方案固定三组各 8 条 fixture 与 `7/8`、`7/8`、`5/8` 门槛，定义 native shared/routed、mask-before-dispatch、真实 expert zero-call、mixed-batch/KV 可控等结构硬门，设定 snapshot/墙钟/显存预算、artifact schema、覆盖率、失败码与 `no_suitable_host` 停止条件。P0 只做服务器推理预检，不训练、不修改 I1 verifier、不读取正式 test；本轮仅修改设计文档和工作日志。
 
 **2026-09-17 I1 Claude contract 验收 checkpoint**：Claude 已完成对 I1 protocol 抽象、canonical int64 adapter、独立 evidence 完整性、三层对照、P1/P2 runner、负向路径、coverage 和 `run-20260917-05` 交付物的复审并确认通过。I1 的结论限定为 CPU tiny/experimental 模整数 verifier 与 M2 AuthExpert/Coordinator 的接口及路由契约成立；不提供真实预训练 MoE、GPU backend、训练效用、签名不可伪造、抗重放或白盒安全证据。下一阶段必须先形成 P0-MoE 详细方案并审阅，不直接进入服务器下载或实验。
 

@@ -5063,3 +5063,181 @@ I1 已按本节冻结契约完成实现并通过 Claude contract 验收：
 I1 已满足进入 P0-MoE 方案阶段的前置条件。下一步只编写并审阅 P0-MoE 详细方案；方案通过且用户指定实现者前，不下载真实宿主、不实现 runner、不启动服务器实验。
 
 ---
+
+### R3.17 P0-MoE：真实预训练 MoE 宿主预检详细方案 [PROPOSED / CLAUDE REVIEW REQUIRED]
+
+**计划 ID**：`p0-moe-host-preflight-plan-v1`
+**实验配置 ID**：`p0-moe-host-preflight-v1`
+**协议 ID**：`p0-moe-host-v1`
+**计划来源**：ARS experiment-agent / plan mode
+**Verification Status**：`UNVERIFIED`；本节是实施前方案，不表示候选元数据已联网核验、模型已下载或服务器实验已运行。
+
+#### P0-MoE.1 研究问题、范围与非目标
+
+P0-MoE 只回答：在固定的 RTX A4000 16 GB 服务器约束下，是否存在一个可冻结、可离线复现、具备最低公开任务能力，并且其 MoE 内部接口足以支持 P1-MoE 无训练插入的预训练宿主。它是宿主选择和工程可行性预检，不验证 I1 verifier 的密码学安全，不训练 Router/Expert，不修改模型权重，也不执行正式 P1 H/S/G/E 对照。
+
+P0-MoE 的四个必要条件必须同时成立：
+
+1. **供应链可冻结**：模型、tokenizer、配置、代码、许可证和依赖可绑定到不可变 revision 与 SHA-256，离线重载不访问网络；
+2. **最低能力成立**：固定 24 条非敏感公开 fixture 达到预登记门槛，且生成有限、可解码、无非法控制 token；
+3. **结构可插入**：能明确定位 embedding、decoder blocks、attention/KV、MoE router、shared/routed experts、dispatch、final norm 与 LM head，并能在 top-k/dispatch 前施加可信 mask、在 expert forward 处测量实际调用；
+4. **资源和确定性成立**：固定 profile 在 A4000 上不 OOM、不超时，重复运行 token IDs 一致，KV/no-KV 语义一致，保留足够显存余量供 P1 instrumentation 与 I1 CPU verifier。
+
+P0-MoE 明确不做：读取正式 test；以 benchmark 分数选 checkpoint；训练、蒸馏或微调；改变 I1 的 `q/n/m/tau`；用输出质量掩盖结构不兼容；把量化误差当作 verifier 容差；把 shared-only 解释为知识保密；声称签名不可伪造、抗重放、白盒安全或生产可用性。
+
+#### P0-MoE.2 冻结候选注册表与选择规则
+
+实施前必须创建并提交 `experiments/p0_moe_host_v1/candidate_registry.json`，其 canonical bytes SHA-256 在首次模型生成前写入运行 manifest。候选身份和尝试顺序固定如下；本方案阶段无法从当前环境访问模型站点，因此下表只冻结 repository ID 和研究优先级，许可证、精确参数、架构类、文件列表及 revision 均必须由 P0-A 从官方仓库元数据重新核验，不能把本节描述当作核验结果。
+
+| 顺序 | repository ID | 预登记 profile | 纳入理由 | 预检重点 |
+|---|---|---|---|---|
+| C1 | `Qwen/Qwen1.5-MoE-A2.7B-Chat` | `bnb-nf4-bf16-v1` | 优先检查原生 shared + routed MoE 形态与较低 active 参数路径 | Transformers 原生支持、shared expert 真实性、量化后 router/expert 可观测性、许可证 |
+| C2 | `deepseek-ai/deepseek-moe-16b-chat` | `bnb-nf4-bf16-v1` | 作为 DeepSeek-MoE 风格 shared/routed 直接候选 | remote code、许可证、自定义 dispatch/KV、离线加载与 A4000 显存 |
+| C3 | `ibm-granite/granite-3.1-1b-a400m-instruct` | `bf16-v1`，仅在失败原因是显存时允许预登记的 `bnb-nf4-bf16-v1` | 小型资源候选，用于检验可否在标准库接口上完成真实 MoE 插入 | 必须由 P0-A/P0-C 证明确实存在可分离 shared/routed 分支；若实际为 dense、只能构造事后 mask 或改变 H 语义则拒绝 |
+
+选择规则为“**固定顺序、首个全门通过者**”：按 C1→C2→C3 运行，每个 candidate/profile 产生独立不可覆盖 run；一个候选只有 P0-A/B/C/D 全通过才可选中并停止后续候选。不得在看到生成结果后重排候选、增加 profile、改变 prompt/阈值或只报告成功项。三者均失败时 summary 必须为 `status=no_suitable_host`，P1-MoE 停止；增加新候选必须新建 `candidate_registry` 版本与 `p0-moe-host-v2`，不能续写 v1。
+
+每个注册项至少包含：`candidate_id`、`repository_id`、`attempt_order`、`requested_revision`、`resolved_commit_sha`、`load_profile_id`、`allowed_dtypes`、`quantization_config`、`allow_remote_code`、`expected_architecture_family`、`max_snapshot_bytes`、`license_review_status` 和 `metadata_source_sha256`。`requested_revision` 可以在实现前登记为待解析的 tag/branch，但在下载任何权重及首次 forward 前必须解析成 40 位 commit 并原子冻结；解析失败即该候选失败，不回退到浮动 `main`。
+
+#### P0-MoE.3 供应链、许可证与 remote-code 门（P0-A）
+
+P0-A 先只获取元数据和小型文本配置，再决定是否允许权重下载。必须记录并校验：
+
+* repository ID、resolved commit、文件名/大小/ETag（如提供）及下载后每个文件 SHA-256；
+* `config.json`、generation config、tokenizer config、tokenizer model/vocab/merges、chat template 和 special-token map 的原始 bytes SHA-256；
+* 官方模型卡和仓库声明的许可证标识、许可证文件 SHA-256、用途限制及人工审核结论；缺失、冲突或无法定位时标记 `license_unresolved` 并拒绝，不由代码作法律判断；
+* Python、PyTorch、CUDA、driver、Transformers、Accelerate、Safetensors、bitsandbytes 与 tokenizer 库的精确版本和安装来源；
+* `trust_remote_code` 是否需要。默认 `false`；若 C2 等候选必须启用，则先冻结并人工审阅 resolved revision 的 Python 文件清单/摘要，确认无网络、subprocess、动态下载、任意文件写入或 credential 读取，再在网络关闭、只读 snapshot 和独立进程中加载。审阅不通过或无法完成时拒绝；
+* snapshot 必须能在 `local_files_only=true`、网络禁用状态下二次加载；任何缺文件时联网 fallback 都算失败。
+
+下载预算按 candidate 独立计算：单 candidate snapshot 上限 `40 GiB`，P0-v1 累计下载上限 `80 GiB`。超限在下载前通过 metadata size 拒绝；若远端未提供可靠大小，先拉取 index/metadata 估算，不能盲目下载。模型权重、tokenizer cache 和许可证副本留在服务器 artifact/cache，不提交 Git。
+
+#### P0-MoE.4 固定 24 条公开能力 fixture（P0-B）
+
+实施前必须创建并提交 `experiments/p0_moe_host_v1/fixture_v1.json`，在首个候选生成前冻结 canonical SHA-256。fixture 不包含 credential、私有事实或正式 test，由三组各 8 条组成：
+
+1. `format_copy`：从 prompt 中复制一个大小写敏感的 ASCII 标识符，只返回该标识符；
+2. `single_hop`：根据 prompt 内显式给出的单条公开事实回答一个短答案；
+3. `two_hop`：根据 prompt 内两条关系完成一次组合推理，答案仍为短字符串。
+
+这 24 条用于验证宿主能执行受控语言任务，不测试预训练知识，也不作为安全数据。每条 schema 固定为：`case_id`、`group`、`system_text`、`user_text`、`expected_text`、`metric`、`max_new_tokens` 和 `content_sha256`；未知字段、重复 case、空答案、非 ASCII 控制字符或组数不等于 8 时 loader 拒绝。
+
+统一 system prompt 为 `Answer with only the requested text. Do not explain.`。优先使用候选原生 `apply_chat_template(..., add_generation_prompt=true)`；不存在时使用预登记 plain prompt template，不能为单个候选人工改写问题。生成配置固定为 `do_sample=false`、`num_beams=1`、`temperature` 不传入、`max_new_tokens=24`、batch size `1`，EOS/PAD/BOS 只取冻结 tokenizer/config。prompt token 数超过 256、答案在 prompt 截断后缺失、生成含 undecodable bytes/非法控制 token 或未在 24 token 内停止均记失败，不临时加预算。
+
+`format_copy` 使用 canonical strict EM：生成 continuation 解码后做 Unicode NFC、CRLF→LF，并只移除首尾 ASCII 空白；其余字符、大小写、标点必须完全一致。`single_hop`/`two_hop` 使用冻结 normalized EM：NFC、小写、ASCII 标点转空格、删除独立冠词 `a/an/the`、折叠空白；同时保留原文和 strict EM 供审计。门槛固定为：`format_copy >= 7/8`、`single_hop >= 7/8`、`two_hop >= 5/8`。不得用三组合并平均数弥补某组失败。
+
+每个 case 在相同进程和全新进程各重复 3 次；同一 case/profile 的 continuation token IDs、stop reason 和 decoded canonical text 必须完全一致。重复不一致标记 `nondeterministic_generation`，即使 EM 达标也不得通过。
+
+#### P0-MoE.5 模型结构与可插入性门（P0-C）
+
+结构探查器必须从实际对象和一次受控 forward 获取证据，不能只相信 config 名称。至少输出以下 `architecture_map`：
+
+* embedding、decoder block 列表、每层 attention、position/RoPE、pre/post norm、final norm、LM head 和 tied-weight identity；
+* 每个 MoE layer 的 router/gate、router logits 形状和 dtype、top-k、capacity/drop 语义、shared expert、routed expert 容器、dispatch/combine 位置；
+* prefill/decode 的 `past_key_values` 类型、层数、每层 tensor shape、batch/head/sequence 维、cache position 与更新方式；
+* attention mask、position IDs、padding side、BOS/EOS/PAD、chat template 和 generation stopping 规则；
+* 能被 hook/wrapper 观测到的每行 expert ID、原 batch index、expert forward 次数和 routed/shared 输出 shape。
+
+可插入性硬门槛为：
+
+1. 原宿主 forward/generate 可在不改权重的情况下分解出稳定的 MoE 层边界；
+2. trusted `allowed_mask` 能在 router top-k 或 dispatch 前应用，越界 expert 不会先计算后丢弃；
+3. 能以真实 expert `forward` 调用计数证明 zero-call，不能以 router 概率或输出乘零替代；
+4. shared 分支在每个请求中确实执行，routed 分支可独立禁止。若候选没有原生 shared expert，只允许存在数学恒等且不改变 H 输出的已审阅 adapter 点；需要新增随机/训练权重、把 routed expert 强制改作 shared 或改变原模型路由语义时，候选拒绝；
+5. 可保持原始 batch index，并能表达 mixed batch 每行不同 mask；仅支持整批统一专家集合且无法无歧义拆批时拒绝；
+6. KV prefill/decode 的身份、位置和长度可绑定；无法在 cache 使用前检查或无法阻止未授权 routed expert 的 decode 路径时拒绝；
+7. instrumentation 移除后，原宿主权重/state-dict 摘要与加载时一致。
+
+P0-C 只证明“接口足以设计 P1”，不在此阶段实现 AuthExpert/Coordinator，也不把普通 forward hook 当作最终安全边界。任何需要 monkey-patch 私有全局状态、依赖未冻结 C++ kernel 行为或只能事后观察 dispatch 的候选，记录 `host_interface_not_controllable`。
+
+#### P0-MoE.6 A4000 资源、数值与确定性门（P0-D）
+
+目标环境固定为单张 NVIDIA RTX A4000 16 GB；实际 GPU UUID、driver、CUDA、可用显存和功耗状态必须记录。每次 candidate/profile 在新进程中加载，运行前后调用同步并重置峰值统计，记录 host RAM、GPU allocated/reserved、`nvidia-smi` 峰值、加载时间、TTFT、prefill tokens/s、decode tokens/s、每 token 延迟和结果目录大小。
+
+预算固定为：
+
+* load timeout `20 min`；单次 24-case suite timeout `60 min`；单 candidate/profile 总 timeout `90 min`；P0-v1 总墙钟上限 `4 h`；
+* 主 capability suite 为 batch `1`、prompt `<=256` tokens、`max_new_tokens=24`；另做 batch `2` mixed-shape smoke，但不改变能力分数；
+* 稳态 `torch.cuda.max_memory_reserved <= 14.5 GiB`，并在生成峰值保留至少 `1.0 GiB` 的设备可用余量；任一 OOM 先保留失败 run，不自动减小 fixture、上下文或层数；
+* C1/C2 只运行已登记的 NF4/BF16 compute profile；C3 先 BF16，只有 BF16 因显存失败才运行已登记 NF4 profile。量化配置是宿主 profile 的一部分，P1 必须沿用，不能把 BF16 与 NF4 结果合并；
+* verifier 仍在 CPU canonical int64 路径运行；P0 不把 G1-b 静默移到 GPU，也不为模型显存改变 verifier backend。
+
+对选中 profile，固定输入分别运行 `use_cache=false` 和 `use_cache=true`。两者 continuation token IDs 和 stop reason 必须一致；允许 logits 存在宿主自身的浮点差异，但 P0 只记录最大差值，不据此设定 P1 容差。相同 cache profile 重复 3 次必须 token-exact；发现非确定算子时只允许在 manifest 中登记确定性 backend 设置后从全新 run 重测，不能删除首个失败 run。
+
+#### P0-MoE.7 模块、CLI 与只读探查接口
+
+方案通过后的建议实现边界为：
+
+```text
+src/can/v2/pretrained_moe_p0/
+├── types.py          # 不可变候选、fixture、结果类型
+├── registry.py       # 严格候选注册表与摘要校验
+├── fixture.py        # 24 条 fixture loader 与 EM 规范
+├── supply_chain.py   # snapshot/revision/license/remote-code 元数据
+├── host_adapter.py   # 候选特定只读结构适配 protocol
+├── inspector.py      # architecture/KV/router/expert 探查
+├── benchmark.py      # 能力、确定性、资源测量
+├── artifacts.py      # manifest/ledger/summary 原子写入与 loader
+└── runner.py         # P0-A/B/C/D 状态机和停止条件
+
+scripts/preflight_moe_host.py
+tests/v2/test_pretrained_moe_p0.py
+```
+
+公开 API 必须有类型标注和中文 docstring。候选适配器只能暴露只读结构信息和受控 instrumentation，不在 P0 改写 Router 或创建授权 route。CLI 至少支持 `--registry`、`--fixture`、`--candidate-id`、`--snapshot-root`、`--output-root`、`--offline-check`、`--timeout-seconds` 和 `--dry-metadata`；candidate ID 必须来自冻结 registry，调用方不能传任意 repository 或更弱 profile。正式 run 默认启用离线检查，输出目录存在即拒绝覆盖。
+
+#### P0-MoE.8 Manifest、ledger、summary 与目录
+
+预登记输入固定在：
+
+```text
+experiments/p0_moe_host_v1/
+├── candidate_registry.json
+└── fixture_v1.json
+```
+
+运行输出固定为：
+
+```text
+results/p0-moe-host-v1/<candidate-id>/<profile-id>/run-YYYYMMDD-NN/
+├── manifest.json
+├── architecture.json
+├── generations.jsonl
+├── resource_samples.jsonl
+└── summary.json
+```
+
+`manifest.json` 至少包含：schema/protocol/config ID、registry/fixture SHA-256、candidate/profile、requested/resolved revision、snapshot/file/tokenizer/code/license 摘要、remote-code 审核状态、依赖与硬件、dtype/quantization、generation config、determinism 设置、预算、Git provenance 和 dirty 状态。
+
+`generations.jsonl` 每行记录 case/repetition/process/cache mode、prompt token 摘要、continuation token IDs、stop reason、raw/canonical text、strict/normalized EM、时长和错误；不得记录访问 token、环境变量或 credential。`architecture.json` 使用 P0-C 的结构化字段，不保存完整权重或 tensor 内容。`resource_samples.jsonl` 使用单调时间戳，记录阶段、GPU/CPU 内存和延迟。
+
+`summary.json` 至少包含：`status`、`exit_code`、`failure_stage`、稳定 reason code、candidate/profile/revision、四道门的 pass/fail、三组 EM、非法生成数、determinism/KV 差异数、结构能力矩阵、remote-code/license 状态、峰值显存/内存/延迟/吞吐、预算消耗、artifact SHA-256、selected candidate（仅通过时）和 `no_suitable_host`。所有字段由 runner 实测或从已校验 manifest 复制，不允许手填通过状态。
+
+#### P0-MoE.9 测试矩阵、覆盖率与失败语义
+
+本地 CPU/fixture 单元测试至少覆盖：未知/重复字段、浮动 revision、摘要漂移、错误候选顺序、未知 profile、fixture 组数/metric/答案错误、strict/normalized EM 边界、非法控制 token、timeout/OOM 映射、已有目录拒绝、partial artifact 原子性、首个通过者选择及三候选耗尽的 `no_suitable_host`。
+
+候选 adapter 的离线 fake-host 测试至少覆盖：完整 native shared/routed host、无 shared expert、mask 只能事后应用、无法逐行 mask、expert 计数不可见、router top-k 漂移、tied weights、KV 类型/位置漂移、batch 重排和 state-dict 摘要变化。所有不可信模型元数据默认 fail closed。
+
+正式服务器 integration 必须覆盖：metadata-only、不加载权重的拒绝路径；在线 snapshot 后离线二次加载；24-case KV/no-KV；3 次同进程 + 3 次新进程确定性；batch 2 mixed-shape；实际 expert call ledger；显存/timeout；退出码与 summary 一致。核心解析、fixture、选择和 artifact 模块 statement coverage 目标 `>=95%`、branch coverage `>=90%`；候选库/CUDA/驱动不可达分支单列 integration evidence，不用伪造 mock coverage 声称设备路径已测。
+
+稳定失败码至少包括：`metadata_unresolved`、`revision_not_immutable`、`license_unresolved`、`remote_code_rejected`、`snapshot_digest_mismatch`、`offline_reload_failed`、`capability_below_threshold`、`nondeterministic_generation`、`host_interface_not_controllable`、`kv_semantics_unsupported`、`resource_limit_exceeded`、`timeout`、`artifact_validation_failed` 和 `no_suitable_host`。异常不得自动重试到更弱 profile；只有注册表明确列出的下一 attempt 可继续。
+
+#### P0-MoE.10 验收门、实施顺序和 P1 入口
+
+单 candidate/profile 的 P0 通过条件是：P0-A 全部摘要/许可证/离线重载通过；P0-B 三组分别达到 `7/8`、`7/8`、`5/8` 且重复 token-exact；P0-C 七项结构门全部通过；P0-D 不 OOM/超时、峰值 `<=14.5 GiB`、余量 `>=1.0 GiB`、KV/no-KV token-exact；artifact loader 能从磁盘独立复核全部摘要和状态。
+
+实施顺序固定为：
+
+1. Claude 审阅本节，用户指定实现者；
+2. 实现严格 registry/fixture/schema、fake-host adapter 和本地负向测试，不下载模型；
+3. 将 `candidate_registry.json` 与 `fixture_v1.json` 交 Claude 审阅，提交并推送其 SHA-256；
+4. 服务器 `git pull --ff-only`，记录环境后按 registry 顺序执行 P0-A；
+5. 只有 P0-A 通过的候选才下载/加载权重并执行 P0-B/C/D；
+6. runner 选择首个全门通过者，生成不可覆盖 summary；全部失败则输出 `no_suitable_host`；
+7. 将选中 candidate 的 resolved revision、profile、architecture map、资源预算和 artifact SHA-256 写回工作日志并交 Claude 验收；
+8. P0-MoE 验收通过后，才编写 P1-MoE 详细方案，冻结 cut/MoE layer、H/S/G/E adapter、业务容差和 zero-call/KV 测试。P0 代码不得直接演化成未经审阅的 P1 注入实现。
+
+P0-MoE 需要服务器 GPU 推理但不训练。估计时间只能在 P0-A 得到 snapshot 大小和首次 load/smoke 后报告；本方案的 `4 h` 是硬预算上限，不是预计完成时间。任何候选只有通过全部门槛才能成为真实宿主；能力通过但结构失败、结构通过但能力失败或资源不满足，均不得以“部分可用”进入 P1。
+
+---
