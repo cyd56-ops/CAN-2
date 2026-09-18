@@ -3,10 +3,20 @@
 ## 当前研究阶段
 
 **阶段**: V2 - Gate Layer 在计算图中间架构  
-**状态**: R3、G0、M0、M1a tiny-MoE contract、M2 多专家 scope contract、G1-a reference、G1-b CPU verifier 与 I1 均已通过 Claude contract 验收；P0-MoE 详细方案已起草，待 Claude 审阅。
-**最后更新**: 2026-09-17（P0-MoE 详细方案完成）
+**状态**: R3、G0、M0、M1a tiny-MoE contract、M2 多专家 scope contract、G1-a reference、G1-b CPU verifier、I1、P0-MoE 本地实现与正式 fixture 均已通过 Claude contract 验收；真实 registry 待服务器元数据核验。
+**最后更新**: 2026-09-18（P0-MoE fixture 审阅通过）
 
-**当前唯一下一步**：将 `docs/DESIGN_PROPOSALS.md` R3.17 的 `p0-moe-host-preflight-plan-v1` 交 Claude 审阅。审阅通过且用户指定实现者前，不实现 P0 package/CLI，不创建正式 registry/fixture，不下载真实模型，也不启动服务器运行。
+**当前唯一下一步**：在服务器执行 P0-A 元数据阶段，解析候选官方 resolved revision、许可证、remote-code 和文件摘要，生成正式 `candidate_registry.json` 并交 Claude 审阅。在 registry 审阅通过前不下载模型、不启动 P0-B/C/D。
+
+**2026-09-18 P0-MoE fixture 与本地实现验收 checkpoint**：Claude 已审阅并通过 `fixture_v1.json`、严格 fixture/registry schema、fake-host 结构门、artifact runner、负向测试矩阵和 branch coverage 证据。已确认本阶段不包含真实模型 registry、权重下载或 P1 AuthExpert/Coordinator；当前转入服务器 P0-A，仅允许先获取并冻结官方元数据。
+
+**2026-09-17 P0-MoE fixture 冻结 checkpoint（待 Claude 审阅）**：新增 `experiments/p0_moe_host_v1/fixture_v1.json` 及生成脚本 `scripts/generate_p0_moe_fixture.py`。fixture canonical bytes SHA-256 为 `233bf2a2517182510515bbf7d1a33a4c37fd06b9a8da55139fbb137652547391`，包含 `format_copy`、`single_hop`、`two_hop` 各 8 条，后两组均标记 `fact_source=stated_in_prompt` 并含 rationale；项目 loader 校验通过（24 条）。fixture 仅使用 prompt 内显式公开事实，不包含 credential、私有事实或正式 test。候选 registry 暂不创建：真实 resolved commit、许可证、remote-code 审计和文件摘要必须在服务器 P0-A 从官方元数据核验后冻结。
+
+**2026-09-17 P0-MoE 本地实现完成 checkpoint（待 Claude contract 验收）**：新增 `src/can/v2/pretrained_moe_p0/`、`scripts/preflight_moe_host.py` 和 `tests/v2/test_pretrained_moe_p0.py`。实现严格 registry/fixture schema（含 C3 unknown variant、fact_source/rationale）、固定 profile/候选顺序、fake-host 七道结构门、hook 只读记录、artifact 原子写入和首个通过者/no_suitable_host 状态机；本地 fake-host 负向矩阵覆盖 dense、无 shared、post-dispatch mask、无逐行 mask、无 expert counter、top-k 漂移、batch 重排、KV 未绑定和 state-dict 变化。P0 专项 **41 passed**；P0 核心包 statement coverage **99%**、branch coverage **约 98%**（artifacts、registry、runner、host_adapter 均 100%，fixture 97%）；全量 `tests/v2/` **905 passed in 46.50s**，仅 1 个既有 PyTorch sparse warning；compileall、`git diff --check` 通过。本阶段未创建正式 registry/fixture，未下载或加载 Qwen/DeepSeek/Granite，未访问服务器，未实现 P1 AuthExpert/Coordinator。
+
+**2026-09-17 P0-MoE 实现启动 checkpoint**：R3.17 已通过 Claude 复审。当前实现范围固定为 `src/can/v2/pretrained_moe_p0/` 的 registry、fixture、供应链元数据类型、只读 fake-host adapter、结构探查契约、artifact 原子写入和候选选择状态机，以及 `scripts/preflight_moe_host.py` 与本地负向测试。不会在本阶段下载 Qwen/DeepSeek/Granite 权重、访问服务器、修改 I1 verifier 或实现 P1 AuthExpert/Coordinator。C3 的 MoE 变体和 C2 remote-code 结论仍必须在真实 P0-A 中从官方 resolved revision 核验。
+
+**2026-09-17 P0-MoE 方案复审修订 checkpoint（待 Claude 复审）**：采纳审阅意见，补充 C3 `expected_moe_variant=unknown_requires_verification` 与 BF16→NF4 仅限显存失败、从 P0-A 重新开始的原子 profile 切换；明确 remote-code 审计必须提交 Python 文件路径/SHA-256、危险调用扫描、审阅人/时间/结论，并在离线只读独立进程中加载；`single_hop`/`two_hop` fixture 强制 `fact_source=stated_in_prompt` 与 rationale，禁止依赖预训练知识；P0 仅记录 instrumentation hook 点和 P1 预期用途，P1 AuthExpert/Coordinator 独立实现，不复用 P0 hook 业务逻辑。当前未创建 registry/fixture、未下载模型、未启动服务器。
 
 **2026-09-17 P0-MoE 详细方案 checkpoint（待 Claude 审阅）**：在唯一权威设计文档新增 R3.17，固定四道预检门：供应链/许可证/remote-code、24 条公开能力 fixture、MoE 结构可插入性、A4000 资源与确定性。候选 registry 预登记 C1 `Qwen/Qwen1.5-MoE-A2.7B-Chat`、C2 `deepseek-ai/deepseek-moe-16b-chat`、C3 `ibm-granite/granite-3.1-1b-a400m-instruct`，按固定顺序选择首个全门通过者；候选公开元数据在当前环境无法联网核验，因此方案明确要求 P0-A 在任何权重下载/forward 前解析不可变 revision，并核验许可证、代码和文件摘要。方案固定三组各 8 条 fixture 与 `7/8`、`7/8`、`5/8` 门槛，定义 native shared/routed、mask-before-dispatch、真实 expert zero-call、mixed-batch/KV 可控等结构硬门，设定 snapshot/墙钟/显存预算、artifact schema、覆盖率、失败码与 `no_suitable_host` 停止条件。P0 只做服务器推理预检，不训练、不修改 I1 verifier、不读取正式 test；本轮仅修改设计文档和工作日志。
 

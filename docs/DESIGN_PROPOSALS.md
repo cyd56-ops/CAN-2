@@ -5064,7 +5064,7 @@ I1 已满足进入 P0-MoE 方案阶段的前置条件。下一步只编写并审
 
 ---
 
-### R3.17 P0-MoE：真实预训练 MoE 宿主预检详细方案 [PROPOSED / CLAUDE REVIEW REQUIRED]
+### R3.17 P0-MoE：真实预训练 MoE 宿主预检详细方案 [IMPLEMENTED / CLAUDE CONTRACT ACCEPTED]
 
 **计划 ID**：`p0-moe-host-preflight-plan-v1`
 **实验配置 ID**：`p0-moe-host-preflight-v1`
@@ -5093,11 +5093,11 @@ P0-MoE 明确不做：读取正式 test；以 benchmark 分数选 checkpoint；�
 |---|---|---|---|---|
 | C1 | `Qwen/Qwen1.5-MoE-A2.7B-Chat` | `bnb-nf4-bf16-v1` | 优先检查原生 shared + routed MoE 形态与较低 active 参数路径 | Transformers 原生支持、shared expert 真实性、量化后 router/expert 可观测性、许可证 |
 | C2 | `deepseek-ai/deepseek-moe-16b-chat` | `bnb-nf4-bf16-v1` | 作为 DeepSeek-MoE 风格 shared/routed 直接候选 | remote code、许可证、自定义 dispatch/KV、离线加载与 A4000 显存 |
-| C3 | `ibm-granite/granite-3.1-1b-a400m-instruct` | `bf16-v1`，仅在失败原因是显存时允许预登记的 `bnb-nf4-bf16-v1` | 小型资源候选，用于检验可否在标准库接口上完成真实 MoE 插入 | 必须由 P0-A/P0-C 证明确实存在可分离 shared/routed 分支；若实际为 dense、只能构造事后 mask 或改变 H 语义则拒绝 |
+| C3 | `ibm-granite/granite-3.1-1b-a400m-instruct` | `c3-bf16-v1`；仅在该 profile **因显存失败**时按独立 attempt 启动 `c3-bnb-nf4-bf16-v1` | 小型资源候选，用于检验可否在标准库接口上完成真实 MoE 插入 | `expected_moe_variant: "unknown_requires_verification"`；必须由 P0-A/P0-C 证明确实存在可分离 shared/routed 分支；若实际为 dense、只能构造事后 mask 或改变 H 语义则拒绝 |
 
-选择规则为“**固定顺序、首个全门通过者**”：按 C1→C2→C3 运行，每个 candidate/profile 产生独立不可覆盖 run；一个候选只有 P0-A/B/C/D 全通过才可选中并停止后续候选。不得在看到生成结果后重排候选、增加 profile、改变 prompt/阈值或只报告成功项。三者均失败时 summary 必须为 `status=no_suitable_host`，P1-MoE 停止；增加新候选必须新建 `candidate_registry` 版本与 `p0-moe-host-v2`，不能续写 v1。
+选择规则为“**固定顺序、首个全门通过者**”：按 C1→C2→C3 运行，每个 candidate/profile 产生独立不可覆盖 run；一个候选只有 P0-A/B/C/D 全通过才可选中并停止后续候选。C3 的 BF16 与 NF4 是两个独立 profile：只有 `c3-bf16-v1` 在 P0-D 明确因显存失败时，才允许启动 `c3-bnb-nf4-bf16-v1`；NF4 必须从 P0-A 重新执行，不能沿用或合并 BF16 的能力、结构、资源或摘要结果。若 BF16 因许可证、结构、确定性、能力或其他原因失败，不得切换 NF4。不得在看到生成结果后重排候选、增加 profile、改变 prompt/阈值或只报告成功项。三者均失败时 summary 必须为 `status=no_suitable_host`，P1-MoE 停止；增加新候选必须新建 `candidate_registry` 版本与 `p0-moe-host-v2`，不能续写 v1。
 
-每个注册项至少包含：`candidate_id`、`repository_id`、`attempt_order`、`requested_revision`、`resolved_commit_sha`、`load_profile_id`、`allowed_dtypes`、`quantization_config`、`allow_remote_code`、`expected_architecture_family`、`max_snapshot_bytes`、`license_review_status` 和 `metadata_source_sha256`。`requested_revision` 可以在实现前登记为待解析的 tag/branch，但在下载任何权重及首次 forward 前必须解析成 40 位 commit 并原子冻结；解析失败即该候选失败，不回退到浮动 `main`。
+每个注册项至少包含：`candidate_id`、`repository_id`、`attempt_order`、`requested_revision`、`resolved_commit_sha`、`load_profile_id`、`allowed_dtypes`、`quantization_config`、`allow_remote_code`、`expected_architecture_family`、`expected_moe_variant`、`max_snapshot_bytes`、`license_review_status` 和 `metadata_source_sha256`。同一 candidate 的不同 profile 必须使用不同 `attempt_order`/run 身份并绑定各自的量化摘要；`requested_revision` 可以在实现前登记为待解析的 tag/branch，但在下载任何权重及首次 forward 前必须解析成 40 位 commit 并原子冻结；解析失败即该候选失败，不回退到浮动 `main`。
 
 #### P0-MoE.3 供应链、许可证与 remote-code 门（P0-A）
 
@@ -5107,7 +5107,7 @@ P0-A 先只获取元数据和小型文本配置，再决定是否允许权重下
 * `config.json`、generation config、tokenizer config、tokenizer model/vocab/merges、chat template 和 special-token map 的原始 bytes SHA-256；
 * 官方模型卡和仓库声明的许可证标识、许可证文件 SHA-256、用途限制及人工审核结论；缺失、冲突或无法定位时标记 `license_unresolved` 并拒绝，不由代码作法律判断；
 * Python、PyTorch、CUDA、driver、Transformers、Accelerate、Safetensors、bitsandbytes 与 tokenizer 库的精确版本和安装来源；
-* `trust_remote_code` 是否需要。默认 `false`；若 C2 等候选必须启用，则先冻结并人工审阅 resolved revision 的 Python 文件清单/摘要，确认无网络、subprocess、动态下载、任意文件写入或 credential 读取，再在网络关闭、只读 snapshot 和独立进程中加载。审阅不通过或无法完成时拒绝；
+* `trust_remote_code` 是否需要。默认 `false`；若 C2 等候选必须启用，则先冻结并人工审阅 resolved revision 的 Python 文件清单/摘要，确认无网络、subprocess、动态下载、任意文件写入或 credential 读取，再在网络关闭、只读 snapshot 和独立进程中加载。审阅记录必须包含每个 Python 文件的相对路径与 SHA-256、对 `import`、`open`、`subprocess`、`requests`、`urllib` 等关键调用的扫描结果、审阅人、UTC 时间和 `approved`/`rejected` 结论；扫描不能替代人工审阅。审阅不通过或无法完成时拒绝；
 * snapshot 必须能在 `local_files_only=true`、网络禁用状态下二次加载；任何缺文件时联网 fallback 都算失败。
 
 下载预算按 candidate 独立计算：单 candidate snapshot 上限 `40 GiB`，P0-v1 累计下载上限 `80 GiB`。超限在下载前通过 metadata size 拒绝；若远端未提供可靠大小，先拉取 index/metadata 估算，不能盲目下载。模型权重、tokenizer cache 和许可证副本留在服务器 artifact/cache，不提交 Git。
@@ -5120,7 +5120,7 @@ P0-A 先只获取元数据和小型文本配置，再决定是否允许权重下
 2. `single_hop`：根据 prompt 内显式给出的单条公开事实回答一个短答案；
 3. `two_hop`：根据 prompt 内两条关系完成一次组合推理，答案仍为短字符串。
 
-这 24 条用于验证宿主能执行受控语言任务，不测试预训练知识，也不作为安全数据。每条 schema 固定为：`case_id`、`group`、`system_text`、`user_text`、`expected_text`、`metric`、`max_new_tokens` 和 `content_sha256`；未知字段、重复 case、空答案、非 ASCII 控制字符或组数不等于 8 时 loader 拒绝。
+这 24 条用于验证宿主能执行受控语言任务，不测试预训练知识，也不作为安全数据。每条 schema 固定为：`case_id`、`group`、`system_text`、`user_text`、`expected_text`、`metric`、`max_new_tokens`、`content_sha256`；`single_hop` 和 `two_hop` 还必须包含 `fact_source: "stated_in_prompt"` 与人工可读的 `rationale`，说明答案所需事实在 `user_text` 中逐字给出。依赖预训练知识的提问（例如只问“法国的首都是什么”而不在 prompt 给出事实）不得进入这两组。未知字段、重复 case、空答案、非 ASCII 控制字符或组数不等于 8 时 loader 拒绝。
 
 统一 system prompt 为 `Answer with only the requested text. Do not explain.`。优先使用候选原生 `apply_chat_template(..., add_generation_prompt=true)`；不存在时使用预登记 plain prompt template，不能为单个候选人工改写问题。生成配置固定为 `do_sample=false`、`num_beams=1`、`temperature` 不传入、`max_new_tokens=24`、batch size `1`，EOS/PAD/BOS 只取冻结 tokenizer/config。prompt token 数超过 256、答案在 prompt 截断后缺失、生成含 undecodable bytes/非法控制 token 或未在 24 token 内停止均记失败，不临时加预算。
 
@@ -5148,7 +5148,7 @@ P0-A 先只获取元数据和小型文本配置，再决定是否允许权重下
 6. KV prefill/decode 的身份、位置和长度可绑定；无法在 cache 使用前检查或无法阻止未授权 routed expert 的 decode 路径时拒绝；
 7. instrumentation 移除后，原宿主权重/state-dict 摘要与加载时一致。
 
-P0-C 只证明“接口足以设计 P1”，不在此阶段实现 AuthExpert/Coordinator，也不把普通 forward hook 当作最终安全边界。任何需要 monkey-patch 私有全局状态、依赖未冻结 C++ kernel 行为或只能事后观察 dispatch 的候选，记录 `host_interface_not_controllable`。
+P0-C 只证明“接口足以设计 P1”，不在此阶段实现 AuthExpert/Coordinator，也不把普通 forward hook 当作最终安全边界。P0 的 `host_adapter.py` 只能暴露只读结构信息和受控 instrumentation hook 点；记录的 hook 点（例如某个 MoE gate 的 pre-dispatch 位置、expert forward 计数位置）及其在 P1 中预期的 mask/审计用途仅作为架构证据，不能在 P0 实现授权业务逻辑。P1 的 AuthExpert/Coordinator 注入必须作为独立模块实现，不得直接复用 P0 forward hook 的业务实现。任何需要 monkey-patch 私有全局状态、依赖未冻结 C++ kernel 行为或只能事后观察 dispatch 的候选，记录 `host_interface_not_controllable`。
 
 #### P0-MoE.6 A4000 资源、数值与确定性门（P0-D）
 
@@ -5159,7 +5159,7 @@ P0-C 只证明“接口足以设计 P1”，不在此阶段实现 AuthExpert/Coo
 * load timeout `20 min`；单次 24-case suite timeout `60 min`；单 candidate/profile 总 timeout `90 min`；P0-v1 总墙钟上限 `4 h`；
 * 主 capability suite 为 batch `1`、prompt `<=256` tokens、`max_new_tokens=24`；另做 batch `2` mixed-shape smoke，但不改变能力分数；
 * 稳态 `torch.cuda.max_memory_reserved <= 14.5 GiB`，并在生成峰值保留至少 `1.0 GiB` 的设备可用余量；任一 OOM 先保留失败 run，不自动减小 fixture、上下文或层数；
-* C1/C2 只运行已登记的 NF4/BF16 compute profile；C3 先 BF16，只有 BF16 因显存失败才运行已登记 NF4 profile。量化配置是宿主 profile 的一部分，P1 必须沿用，不能把 BF16 与 NF4 结果合并；
+* C1/C2 只运行已登记的 NF4/BF16 compute profile；C3 先运行完整的 `c3-bf16-v1`，仅当该 profile 在 P0-D 因显存失败时，才启动独立的 `c3-bnb-nf4-bf16-v1` attempt，并从 P0-A 重新检查供应链、revision、文件摘要和离线加载。量化配置是宿主 profile 的一部分，P1 必须沿用选中 profile；BF16 与 NF4 的结果、门状态和摘要不得合并，NF4 能力低于门槛即 C3 失败；
 * verifier 仍在 CPU canonical int64 路径运行；P0 不把 G1-b 静默移到 GPU，也不为模型显存改变 verifier backend。
 
 对选中 profile，固定输入分别运行 `use_cache=false` 和 `use_cache=true`。两者 continuation token IDs 和 stop reason 必须一致；允许 logits 存在宿主自身的浮点差异，但 P0 只记录最大差值，不据此设定 P1 容差。相同 cache profile 重复 3 次必须 token-exact；发现非确定算子时只允许在 manifest 中登记确定性 backend 设置后从全新 run 重测，不能删除首个失败 run。
@@ -5235,9 +5235,24 @@ results/p0-moe-host-v1/<candidate-id>/<profile-id>/run-YYYYMMDD-NN/
 4. 服务器 `git pull --ff-only`，记录环境后按 registry 顺序执行 P0-A；
 5. 只有 P0-A 通过的候选才下载/加载权重并执行 P0-B/C/D；
 6. runner 选择首个全门通过者，生成不可覆盖 summary；全部失败则输出 `no_suitable_host`；
-7. 将选中 candidate 的 resolved revision、profile、architecture map、资源预算和 artifact SHA-256 写回工作日志并交 Claude 验收；
+7. 将选中 candidate 的 resolved revision、profile、architecture map、资源预算、artifact SHA-256、可插入 instrumentation hook 点及其 P1 预期用途写回工作日志并交 Claude 验收；这些 hook 点只作记录，不在 P0 实现 AuthExpert/Coordinator 逻辑；
 8. P0-MoE 验收通过后，才编写 P1-MoE 详细方案，冻结 cut/MoE layer、H/S/G/E adapter、业务容差和 zero-call/KV 测试。P0 代码不得直接演化成未经审阅的 P1 注入实现。
 
 P0-MoE 需要服务器 GPU 推理但不训练。估计时间只能在 P0-A 得到 snapshot 大小和首次 load/smoke 后报告；本方案的 `4 h` 是硬预算上限，不是预计完成时间。任何候选只有通过全部门槛才能成为真实宿主；能力通过但结构失败、结构通过但能力失败或资源不满足，均不得以“部分可用”进入 P1。
+
+#### P0-MoE.11 本地实现 checkpoint（2026-09-17）
+
+R3.17 已按方案完成本地实现，仍未下载或加载任何真实宿主：
+
+* 新增 `src/can/v2/pretrained_moe_p0/`，包含严格 registry/fixture parser、公开事实来源与摘要校验、`HostAdapter`/fake-host 结构门、不可覆盖 artifact writer 和固定顺序 `P0Runner`；新增 `scripts/preflight_moe_host.py` 作为仅 fake-host 的本地 CLI；
+* fake-host 负向矩阵覆盖 dense、无 shared expert、dispatch 后 mask、无法逐行 mask、不可观测 expert call、top-k 漂移、batch 重排、KV 未绑定和 state-dict 改变；C3 `unknown_requires_verification`、BF16/NF4 profile 原子切换和 P0/P1 hook 边界仅在 schema/契约层表达；
+* `tests/v2/test_pretrained_moe_p0.py` 专项 **41 passed**；P0 核心包 statement coverage **99%**、branch coverage **约 98%**（`artifacts`、`registry`、`runner`、`host_adapter` 均 100%，fixture 97%）；全量 `tests/v2/` **905 passed in 46.50s**，仅 1 个既有 PyTorch sparse invariant warning；`compileall` 与 `git diff --check` 通过；
+* 本 checkpoint 不创建正式 `candidate_registry.json`/`fixture_v1.json`，不写入真实 resolved revision、许可证结论、模型文件摘要或服务器结果。当前实现只证明本地解析、拒绝和选择契约；真实 P0-A/B/C/D 仍必须在正式 registry/fixture 经 Claude 审阅后于服务器执行。
+
+当前状态：`IMPLEMENTED / CLAUDE CONTRACT ACCEPTED`。
+
+#### P0-MoE.12 正式 fixture 冻结 checkpoint（2026-09-17）
+
+已生成 `experiments/p0_moe_host_v1/fixture_v1.json`，canonical bytes SHA-256 为 `233bf2a2517182510515bbf7d1a33a4c37fd06b9a8da55139fbb137652547391`；项目 loader 校验 24 条 case、三组各 8 条及公开事实字段通过。正式候选 registry 不在本地填入占位 revision 或许可证结论，必须由服务器 P0-A 从官方元数据解析并在下载前冻结。
 
 ---
