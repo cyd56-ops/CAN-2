@@ -790,9 +790,18 @@ def _validate_human_fields(payload: Mapping[str, Any], context: str) -> None:
 
 
 def _load_reviews(
-    input_root: Path, prepared_dir: Path, preset: P0ACandidatePreset
+    input_root: Path,
+    prepared_dir: Path,
+    preset: P0ACandidatePreset,
+    *,
+    require_human_review: bool = True,
 ) -> Tuple[Mapping[str, Any], Mapping[str, Any], Mapping[str, Any], Mapping[str, Any]]:
-    """读取并严格校验一个候选的 manifest 和三类审阅记录。"""
+    """读取并校验一个候选的 manifest 和三类审阅记录。
+
+    参数 require_human_review 为 False 时只校验机器可复核的结构证据，
+    允许 prepare 生成的 pending 模板直接进入 provisional 预筛；这不构成
+    正式 P0-A 通过，正式模式仍要求完整人工字段。
+    """
 
     candidate_dir = prepared_dir / preset.candidate_id
     manifest = load_strict_json(candidate_dir / "metadata_manifest.json")
@@ -861,10 +870,14 @@ def _load_reviews(
         (remote, "remote review"),
     ):
         _validate_review_identity(review, manifest, name)
-        _validate_human_fields(review, name)
+        if require_human_review:
+            _validate_human_fields(review, name)
 
-    if source["status"] not in {"approved", "rejected"}:
-        raise P0Error("p0a_review_incomplete", "source review 尚未完成")
+    allowed_source_status = {"approved", "rejected"}
+    if not require_human_review:
+        allowed_source_status.add("pending")
+    if source["status"] not in allowed_source_status:
+        raise P0Error("p0a_review_incomplete", "source review 状态非法")
     for field in (
         "native_shared_expert",
         "native_routed_experts",
@@ -887,8 +900,11 @@ def _load_reviews(
     if source["status"] == "approved" and not implementation_evidence:
         raise P0Error("p0a_review_incomplete", "批准的源码审阅缺少实现证据")
 
-    if license_review["status"] not in {"approved", "rejected"}:
-        raise P0Error("p0a_review_incomplete", "license review 尚未完成")
+    allowed_license_status = {"approved", "rejected"}
+    if not require_human_review:
+        allowed_license_status.add("pending")
+    if license_review["status"] not in allowed_license_status:
+        raise P0Error("p0a_review_incomplete", "license review 状态非法")
     if not isinstance(license_review["declared_license"], str):
         raise P0Error("artifact_schema_mismatch", "declared_license 非字符串")
     if not isinstance(license_review["usage_restrictions"], list) or any(
@@ -914,6 +930,8 @@ def _load_reviews(
     allowed_remote_status = (
         {"approved", "rejected"} if preset.allow_remote_code else {"not_required"}
     )
+    if not require_human_review and preset.allow_remote_code:
+        allowed_remote_status.add("pending")
     if remote["status"] not in allowed_remote_status:
         raise P0Error("p0a_review_incomplete", "remote-code review 状态非法或未完成")
     remote_references = _validate_reference_list(
@@ -941,9 +959,14 @@ def _load_reviews(
         _safe_relative_path(record["path"], "dangerous call finding")
         if type(record["line"]) is not int or record["line"] < 1:
             raise P0Error("artifact_schema_mismatch", "finding line 非法")
-        if record["review_disposition"] not in {"accepted", "rejected"}:
+        allowed_dispositions = {"accepted", "rejected"}
+        if not require_human_review:
+            allowed_dispositions.add("pending")
+        if record["review_disposition"] not in allowed_dispositions:
             raise P0Error("p0a_review_incomplete", "危险调用命中尚未人工处置")
-        if not isinstance(record["rationale"], str) or not record["rationale"].strip():
+        if require_human_review and (
+            not isinstance(record["rationale"], str) or not record["rationale"].strip()
+        ):
             raise P0Error("p0a_review_incomplete", "危险调用命中缺少解释")
     expected_findings = {
         (item["path"], item["line"], item["pattern"])
@@ -975,35 +998,54 @@ def _decision_for(
     source: Mapping[str, Any],
     license_review: Mapping[str, Any],
     remote: Mapping[str, Any],
+    *,
+    approval_mode: str = "human_review",
 ) -> Dict[str, Any]:
-    """根据机器检查和已完成审阅生成 fail-closed P0-A 决策。"""
+    """根据机器检查和审阅状态生成 fail-closed P0-A 决策。"""
 
     hub = manifest["hub_metadata"]
     local = manifest["local_metadata"]
-    checks = {
+    static_checks = {
         "revision_immutable": bool(_COMMIT.fullmatch(manifest["resolved_commit_sha"])),
         "metadata_complete": bool(hub["snapshot_size_complete"]),
-        "license_approved": license_review["status"] == "approved",
-        "remote_code_approved": remote["status"] in {"approved", "not_required"},
-        "source_review_approved": source["status"] == "approved",
-        "native_shared_expert": source["native_shared_expert"],
-        "native_routed_experts": source["native_routed_experts"],
-        "shared_always_executes": source["shared_always_executes"],
-        "mask_before_dispatch_static_feasibility": source[
-            "mask_before_dispatch_static_feasibility"
-        ],
-        "expert_call_observability_static_feasibility": source[
-            "expert_call_observability_static_feasibility"
-        ],
         "snapshot_within_limit": (
             type(hub["snapshot_size_bytes"]) is int
             and hub["snapshot_size_bytes"] <= manifest["max_snapshot_bytes"]
         ),
         "no_weight_files_downloaded": not local["forbidden_weight_files"],
     }
+    if approval_mode == "machine_only":
+        static_checks["config_shared_hint"] = source["native_shared_expert"]
+        static_checks["config_routed_hint"] = source["native_routed_experts"]
+        static_checks["remote_scan_clear"] = not bool(
+            manifest["remote_code_scan"]["findings"]
+        )
+    if approval_mode == "human_review":
+        checks = {
+            **static_checks,
+            "license_approved": license_review["status"] == "approved",
+            "remote_code_approved": remote["status"] in {"approved", "not_required"},
+            "source_review_approved": source["status"] == "approved",
+            "native_shared_expert": source["native_shared_expert"],
+            "native_routed_experts": source["native_routed_experts"],
+            "shared_always_executes": source["shared_always_executes"],
+            "mask_before_dispatch_static_feasibility": source[
+                "mask_before_dispatch_static_feasibility"
+            ],
+            "expert_call_observability_static_feasibility": source[
+                "expert_call_observability_static_feasibility"
+            ],
+        }
+    elif approval_mode == "machine_only":
+        checks = static_checks
+    else:
+        raise P0Error("artifact_schema_mismatch", "approval_mode 非法")
     failure_map = {
         "revision_immutable": "revision_not_immutable",
         "metadata_complete": "metadata_unresolved",
+        "config_shared_hint": "native_shared_expert_missing",
+        "config_routed_hint": "native_routed_expert_missing",
+        "remote_scan_clear": "remote_code_scan_findings",
         "license_approved": "license_unresolved",
         "remote_code_approved": "remote_code_rejected",
         "source_review_approved": "source_review_rejected",
@@ -1016,13 +1058,31 @@ def _decision_for(
         "no_weight_files_downloaded": "unexpected_weight_file",
     }
     failure_codes = [failure_map[name] for name, passed in checks.items() if not passed]
+    unverified_checks: List[str] = []
+    if approval_mode == "machine_only":
+        unverified_checks = [
+            "license_approved",
+            "remote_code_approved",
+            "source_review_approved",
+            "shared_always_executes",
+            "mask_before_dispatch_static_feasibility",
+            "expert_call_observability_static_feasibility",
+        ]
+        failure_codes.append("human_review_required")
+        status = "rejected" if len(failure_codes) > 1 else "provisional"
+    else:
+        status = "passed" if not failure_codes else "rejected"
     return {
         "schema_version": 1,
+        "approval_mode": approval_mode,
+        "human_review_required": approval_mode == "machine_only",
+        "formal_acceptance": approval_mode == "human_review",
         "candidate_id": manifest["candidate_id"],
         "repository_id": manifest["repository_id"],
         "resolved_commit_sha": manifest["resolved_commit_sha"],
         "checks": checks,
-        "status": "passed" if not failure_codes else "rejected",
+        "unverified_checks": unverified_checks,
+        "status": status,
         "failure_codes": failure_codes,
         "evidence_sha256": {
             "metadata_manifest": sha256_file(manifest_path),
@@ -1058,8 +1118,18 @@ def finalize_p0a_registry(
     prepared_root: Path,
     output_root: Path,
     registry_path: Path,
+    *,
+    require_human_review: bool = True,
 ) -> Mapping[str, object]:
-    """从已完成审阅生成三份决策、正式 registry 和摘要 sidecar。"""
+    """生成 P0-A 决策、registry 和摘要 sidecar。
+
+    Python API 默认保持严格人工模式以兼容既有调用者；服务器 CLI 默认
+    使用 machine-only 预筛，并将结果标记为 provisional。只有显式人工模式
+    才能产生 formal acceptance，provisional 永远不能进入 P0-B/C/D。
+    """
+
+    if type(require_human_review) is not bool:
+        raise P0Error("artifact_schema_mismatch", "require_human_review 必须为 bool")
 
     if (
         output_root.exists()
@@ -1072,7 +1142,10 @@ def finalize_p0a_registry(
     for preset in P0A_CANDIDATES:
         candidate_dir = prepared_root / preset.candidate_id
         manifest, source, license_review, remote = _load_reviews(
-            input_root, prepared_root, preset
+            input_root,
+            prepared_root,
+            preset,
+            require_human_review=require_human_review,
         )
         decision = _decision_for(
             candidate_dir / "metadata_manifest.json",
@@ -1083,6 +1156,7 @@ def finalize_p0a_registry(
             source,
             license_review,
             remote,
+            approval_mode=("human_review" if require_human_review else "machine_only"),
         )
         collected.append((preset, manifest, decision))
 
@@ -1104,7 +1178,22 @@ def finalize_p0a_registry(
                 "expected_moe_variant": preset.expected_moe_variant,
                 "max_snapshot_bytes": preset.max_snapshot_bytes,
                 "license_review_status": (
-                    "approved" if decision["checks"]["license_approved"] else "rejected"
+                    (
+                        "approved"
+                        if decision["checks"]["license_approved"]
+                        else "rejected"
+                    )
+                    if require_human_review
+                    else (
+                        "machine_detected"
+                        if any(
+                            Path(str(item["path"]))
+                            .name.lower()
+                            .startswith(("license", "readme"))
+                            for item in manifest["local_metadata"]["inventory"]
+                        )
+                        else "unresolved"
+                    )
                 ),
                 "metadata_source_sha256": decision["evidence_sha256"][
                     "metadata_manifest"
@@ -1118,6 +1207,9 @@ def finalize_p0a_registry(
             {
                 "candidate_id": preset.candidate_id,
                 "status": decision["status"],
+                "approval_mode": decision["approval_mode"],
+                "human_review_required": decision["human_review_required"],
+                "formal_acceptance": decision["formal_acceptance"],
                 "failure_codes": decision["failure_codes"],
                 "decision_file": decision_name,
                 "decision_sha256": decision_sha,
@@ -1142,6 +1234,9 @@ def finalize_p0a_registry(
     summary = {
         "schema_version": 1,
         "status": "complete",
+        "approval_mode": "human_review" if require_human_review else "machine_only",
+        "formal_acceptance": require_human_review,
+        "human_review_required": not require_human_review,
         "registry_path": registry_path.as_posix(),
         "registry_sha256": registry_sha,
         "candidates": decision_summaries,

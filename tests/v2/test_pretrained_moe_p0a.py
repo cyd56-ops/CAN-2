@@ -184,6 +184,49 @@ def test_prepare_and_finalize_generate_bound_registry(tmp_path: Path) -> None:
     assert hashlib.sha256(registry.read_bytes()).hexdigest() in sidecar
 
 
+def test_machine_only_finalize_needs_no_human_fields(tmp_path: Path) -> None:
+    """验证未填写人工模板也能生成受限的机器预筛 registry。"""
+
+    input_root = _input_root(tmp_path)
+    prepared = tmp_path / "prepared"
+    prepare_p0a_reviews(input_root, prepared)
+
+    decisions = tmp_path / "machine-decisions"
+    registry = tmp_path / "machine-registry.json"
+    final = finalize_p0a_registry(
+        input_root,
+        prepared,
+        decisions,
+        registry,
+        require_human_review=False,
+    )
+
+    assert final["approval_mode"] == "machine_only"
+    assert final["formal_acceptance"] is False
+    assert final["human_review_required"] is True
+    assert [item["status"] for item in final["candidates"]] == [
+        "provisional",
+        "provisional",
+        "rejected",
+    ]
+    assert "human_review_required" in final["candidates"][0]["failure_codes"]
+    assert "remote_code_scan_findings" not in final["candidates"][1]["failure_codes"]
+    assert "native_shared_expert_missing" in final["candidates"][2]["failure_codes"]
+
+    candidates = load_registry(registry)
+    assert [candidate.p0a_status for candidate in candidates] == [
+        "provisional",
+        "provisional",
+        "rejected",
+    ]
+    decision = json.loads(
+        (decisions / "c1_p0a_decision.json").read_text(encoding="utf-8")
+    )
+    assert decision["approval_mode"] == "machine_only"
+    assert decision["formal_acceptance"] is False
+    assert "shared_always_executes" in decision["unverified_checks"]
+
+
 def test_finalize_rejects_pending_and_digest_drift(tmp_path: Path) -> None:
     """验证未完成人工审阅和证据漂移均失败关闭。"""
 

@@ -113,11 +113,13 @@ def validate_registry(payload: object) -> Tuple[CandidateSpec, ...]:
         if candidate["license_review_status"] not in {
             "approved",
             "rejected",
+            "machine_detected",
+            "unresolved",
         }:
             raise P0Error("license_unresolved", "license_review_status 非法")
         status = candidate["p0a_status"]
         failure_codes = candidate["p0a_failure_codes"]
-        if status not in {"passed", "rejected"}:
+        if status not in {"passed", "rejected", "provisional"}:
             raise P0Error("p0a_decision_invalid", "p0a_status 非法")
         if (
             not isinstance(failure_codes, list)
@@ -128,6 +130,12 @@ def validate_registry(payload: object) -> Tuple[CandidateSpec, ...]:
         if status == "passed":
             if failure_codes or candidate["license_review_status"] != "approved":
                 raise P0Error("p0a_decision_invalid", "通过候选仍含失败或许可证未批准")
+        elif status == "provisional":
+            if "human_review_required" not in failure_codes:
+                raise P0Error(
+                    "p0a_decision_invalid",
+                    "provisional 候选必须明确要求人工审阅",
+                )
         elif not failure_codes:
             raise P0Error("p0a_decision_invalid", "拒绝候选必须登记失败码")
         seen_ids.add(candidate_id)

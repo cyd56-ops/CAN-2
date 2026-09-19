@@ -4,9 +4,11 @@
 
 **阶段**: V2 - Gate Layer 在计算图中间架构  
 **状态**: R3、G0、M0、M1a tiny-MoE contract、M2 多专家 scope contract、G1-a reference、G1-b CPU verifier、I1、P0-MoE 本地实现与正式 fixture 均已通过 Claude contract 验收；P0-A 决策与正式 registry 自动生成入口已完成，待 Claude 验收并上传服务器运行。
-**最后更新**: 2026-09-19（P0-A 生成器实现完成）
+**最后更新**: 2026-09-19（P0-A machine-only 预筛入口完成）
 
-**当前唯一下一步**：将 P0-A 生成器交 Claude 做 contract 验收；验收通过后提交推送并在服务器对已下载的小型元数据运行 prepare，完成人工 source/license/remote-code 审阅，再运行 finalize 生成三份 decision 和正式 `candidate_registry.json`。在 registry 审阅通过前不下载模型、不启动 P0-B/C/D。
+**当前唯一下一步**：提交推送后，在服务器对已下载的小型元数据运行 prepare，再直接运行默认 machine-only finalize 生成 provisional decision 和 registry；查看静态失败与候选排序后，若要进入正式 P0-B/C/D，另行补齐人工审阅并使用 `--require-human-review` 重新生成正式 registry。在正式 registry 通过前不下载模型、不启动 P0-B/C/D。
+
+**2026-09-19 machine-only 预筛实现 checkpoint**：`scripts/finalize_p0a_registry.py` 默认不再要求填写 reviewer、时间、rationale 或逐条 finding 处置，直接复核 metadata manifest、revision、snapshot、权重文件、配置结构提示和 remote-code 静态扫描。静态检查全部通过的候选标记为 `p0a_status=provisional`，decision/summary 记录 `approval_mode=machine_only`、`formal_acceptance=false` 和 `human_review_required=true`；明确静态失败的候选标记为 `rejected`。`--require-human-review` 保留原严格模式，只有该模式才能产生正式 `passed`。registry 接受 provisional 但 runner 仍只执行 `passed`，因此机器预筛不能绕过 P0-A 正式验收。专项测试 **91 passed**；全量 `tests/v2/` 在当前执行环境两次运行均在约 45% 进度后被外部终止且未生成 JUnit summary，因此未宣称全量通过；Black、compileall 和 `git diff --check` 通过。
 
 **2026-09-19 P0-A 生成器实现完成 checkpoint（待 Claude contract 验收）**：新增 `src/can/v2/pretrained_moe_p0/p0a.py`、`scripts/prepare_p0a_reviews.py`、`scripts/finalize_p0a_registry.py` 和 `tests/v2/test_pretrained_moe_p0a.py`。prepare 对三组固定候选复算 Hub metadata/revision、snapshot 声明大小、本地 inventory/SHA-256、config MoE 字段、Python 文件与危险调用扫描，并创建不可覆盖的人工审阅模板；finalize 不信任 prepared 自描述值，重新绑定原始输入，严格校验 source/license/remote-code 结论、完整 Python 清单和每个危险调用处置后，自动生成逐候选 decision、正式 registry 与 SHA-256 sidecar。registry 新增 `p0a_status`、decision 摘要和失败码，runner 会无条件跳过 P0-A rejected 候选。专项 **89 passed**；核心包 statement coverage **95.61%**、branch coverage **92.11%**；全量 `tests/v2/` **953 passed in 66.84s**，仅 1 个既有 PyTorch sparse warning；Black、isort、compileall、`git diff --check` 均通过。本实现不联网、不下载权重、不运行模型，也不替代许可证与源码人工审阅。
 

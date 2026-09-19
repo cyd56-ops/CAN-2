@@ -364,6 +364,24 @@ def test_runner_skips_p0a_rejected_candidate() -> None:
     }
 
 
+def test_runner_skips_machine_only_provisional_candidate() -> None:
+    """验证 machine-only provisional 不会绕过正式 P0-A 进入 runner。"""
+
+    payload = _registry_payload()
+    payload["candidates"][0].update(
+        p0a_status="provisional",
+        p0a_failure_codes=["human_review_required"],
+        license_review_status="machine_detected",
+    )
+    candidates = validate_registry(payload)
+    result = P0Runner(candidates).run_structure_only(
+        {"C1": FakeHostAdapter("native"), "C2": FakeHostAdapter("native")}
+    )
+    assert result["selected_candidate"] == "C2"
+    assert result["attempts"][0]["status"] == "not_run"
+    assert result["attempts"][0]["reason"] == "p0a_rejected"
+
+
 def test_artifact_writer_is_atomic_and_non_overwriting(tmp_path: Path) -> None:
     """验证 artifact 原子写入和目录不可覆盖。"""
     output = tmp_path / "run"

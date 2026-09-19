@@ -5257,9 +5257,9 @@ R3.17 已按方案完成本地实现，仍未下载或加载任何真实宿主�
 
 #### P0-MoE.13 P0-A 决策与 registry 生成器（2026-09-19）
 
-新增 `src/can/v2/pretrained_moe_p0/p0a.py`、`scripts/prepare_p0a_reviews.py` 与 `scripts/finalize_p0a_registry.py`，补齐此前仅有 schema、没有正式生成入口的问题。prepare 入口只读取服务器已有的三组 Hub metadata JSON 和小型文件目录，复算 resolved revision、snapshot 声明大小、本地文件 inventory/SHA-256、config MoE 字段、Python 文件及危险调用文本扫描，并生成 source/license/remote-code 三类人工审阅模板；不会联网、下载权重或加载模型。finalize 入口重新从原始输入复算上述绑定，拒绝 prepared manifest 自描述漂移，只在全部人工记录完成后生成逐候选 `p0a_decision.json`、正式 `candidate_registry.json` 和 SHA-256 sidecar。
+新增 `src/can/v2/pretrained_moe_p0/p0a.py`、`scripts/prepare_p0a_reviews.py` 与 `scripts/finalize_p0a_registry.py`，补齐此前仅有 schema、没有正式生成入口的问题。prepare 入口只读取服务器已有的三组 Hub metadata JSON 和小型文件目录，复算 resolved revision、snapshot 声明大小、本地文件 inventory/SHA-256、config MoE 字段、Python 文件及危险调用文本扫描，并生成 source/license/remote-code 审阅模板；不会联网、下载权重或加载模型。finalize CLI 默认执行 machine-only 预筛：重新从原始输入复算上述绑定，拒绝 prepared manifest 自描述漂移，静态检查通过的候选生成 `p0a_status=provisional`、`approval_mode=machine_only`、`formal_acceptance=false` 的 decision、registry 和 SHA-256 sidecar；明确静态失败仍为 `rejected`。`--require-human-review` 显式启用严格人工模式，只有该模式在完整 reviewer/时间/rationale/finding 处置后才允许生成正式 `passed`。
 
-正式 registry 的每个候选新增 `p0a_status`、`p0a_decision_sha256` 与 `p0a_failure_codes`。P0 runner 对 `p0a_status=rejected` 的候选无条件记为 `not_run/p0a_rejected`，即使调用方提供 adapter 也不能进入 P0-B/C/D。人工 source review 只形成静态可插入性判断，不能替代 P0-C 的真实 mask-before-dispatch 和 routed zero-call 证据；许可证判断仍是人工研究用途审阅，不由代码作法律结论。
+正式 registry 的每个候选新增 `p0a_status`、`p0a_decision_sha256` 与 `p0a_failure_codes`，并允许显式的 `provisional` 状态。P0 runner 对 `p0a_status!=passed`（包括 `rejected` 和 `provisional`）的候选无条件记为 `not_run/p0a_rejected`，即使调用方提供 adapter 也不能进入 P0-B/C/D。machine-only 只用于候选排序和决定优先人工审阅哪个模型，不是正式安全或许可证批准；source review 仍不能替代 P0-C 的真实 mask-before-dispatch 和 routed zero-call 证据，许可证判断仍不由代码作法律结论。
 
 服务器固定操作为：
 
@@ -5268,14 +5268,16 @@ PYTHONPATH="$PWD/src" python scripts/prepare_p0a_reviews.py \
   --input-root artifacts/p0_moe_host_v1/p0_a \
   --output-root artifacts/p0_moe_host_v1/p0_a_review_v1
 
-# 人工填写 C1/C2/C3 下的 source_review.json、license_review.json、
-# remote_code_review.json；不得修改 metadata_manifest.json。
+# 默认不需要填写人工字段，直接生成 machine-only provisional 结果；不得修改 metadata_manifest.json。
 
 PYTHONPATH="$PWD/src" python scripts/finalize_p0a_registry.py \
   --input-root artifacts/p0_moe_host_v1/p0_a \
   --prepared-root artifacts/p0_moe_host_v1/p0_a_review_v1 \
   --output-root artifacts/p0_moe_host_v1/p0_a_decisions_v1 \
   --registry-output experiments/p0_moe_host_v1/candidate_registry.json
+
+# 只有需要正式 P0-A 通过时，才补齐三类人工审阅字段并追加：
+#   --require-human-review
 ```
 
 所有输出拒绝覆盖。若需重跑，必须选择新的 review/decision 目录和 registry 版本，保留失败证据；不得删除失败候选或重排 C1→C2→C3。当前实现仍只完成 P0-A 供应链和静态结构决策，不下载完整权重、不运行 P0-B/C/D，也不实现 P1-MoE。
