@@ -5255,4 +5255,29 @@ R3.17 已按方案完成本地实现，仍未下载或加载任何真实宿主�
 
 已生成 `experiments/p0_moe_host_v1/fixture_v1.json`，canonical bytes SHA-256 为 `233bf2a2517182510515bbf7d1a33a4c37fd06b9a8da55139fbb137652547391`；项目 loader 校验 24 条 case、三组各 8 条及公开事实字段通过。正式候选 registry 不在本地填入占位 revision 或许可证结论，必须由服务器 P0-A 从官方元数据解析并在下载前冻结。
 
+#### P0-MoE.13 P0-A 决策与 registry 生成器（2026-09-19）
+
+新增 `src/can/v2/pretrained_moe_p0/p0a.py`、`scripts/prepare_p0a_reviews.py` 与 `scripts/finalize_p0a_registry.py`，补齐此前仅有 schema、没有正式生成入口的问题。prepare 入口只读取服务器已有的三组 Hub metadata JSON 和小型文件目录，复算 resolved revision、snapshot 声明大小、本地文件 inventory/SHA-256、config MoE 字段、Python 文件及危险调用文本扫描，并生成 source/license/remote-code 三类人工审阅模板；不会联网、下载权重或加载模型。finalize 入口重新从原始输入复算上述绑定，拒绝 prepared manifest 自描述漂移，只在全部人工记录完成后生成逐候选 `p0a_decision.json`、正式 `candidate_registry.json` 和 SHA-256 sidecar。
+
+正式 registry 的每个候选新增 `p0a_status`、`p0a_decision_sha256` 与 `p0a_failure_codes`。P0 runner 对 `p0a_status=rejected` 的候选无条件记为 `not_run/p0a_rejected`，即使调用方提供 adapter 也不能进入 P0-B/C/D。人工 source review 只形成静态可插入性判断，不能替代 P0-C 的真实 mask-before-dispatch 和 routed zero-call 证据；许可证判断仍是人工研究用途审阅，不由代码作法律结论。
+
+服务器固定操作为：
+
+```bash
+PYTHONPATH="$PWD/src" python scripts/prepare_p0a_reviews.py \
+  --input-root artifacts/p0_moe_host_v1/p0_a \
+  --output-root artifacts/p0_moe_host_v1/p0_a_review_v1
+
+# 人工填写 C1/C2/C3 下的 source_review.json、license_review.json、
+# remote_code_review.json；不得修改 metadata_manifest.json。
+
+PYTHONPATH="$PWD/src" python scripts/finalize_p0a_registry.py \
+  --input-root artifacts/p0_moe_host_v1/p0_a \
+  --prepared-root artifacts/p0_moe_host_v1/p0_a_review_v1 \
+  --output-root artifacts/p0_moe_host_v1/p0_a_decisions_v1 \
+  --registry-output experiments/p0_moe_host_v1/candidate_registry.json
+```
+
+所有输出拒绝覆盖。若需重跑，必须选择新的 review/decision 目录和 registry 版本，保留失败证据；不得删除失败候选或重排 C1→C2→C3。当前实现仍只完成 P0-A 供应链和静态结构决策，不下载完整权重、不运行 P0-B/C/D，也不实现 P1-MoE。
+
 ---

@@ -26,6 +26,9 @@ _CANDIDATE_KEYS = {
     "max_snapshot_bytes",
     "license_review_status",
     "metadata_source_sha256",
+    "p0a_status",
+    "p0a_decision_sha256",
+    "p0a_failure_codes",
 }
 _PROFILE_KEYS = {"profile_id", "dtype", "quantization_config", "allow_remote_code"}
 
@@ -106,12 +109,27 @@ def validate_registry(payload: object) -> Tuple[CandidateSpec, ...]:
         if type(profile_data["allow_remote_code"]) is not bool:
             raise P0Error("artifact_schema_mismatch", "allow_remote_code 必须为 bool")
         _sha(candidate["metadata_source_sha256"], "metadata_source_sha256")
+        _sha(candidate["p0a_decision_sha256"], "p0a_decision_sha256")
         if candidate["license_review_status"] not in {
-            "pending",
             "approved",
             "rejected",
         }:
             raise P0Error("license_unresolved", "license_review_status 非法")
+        status = candidate["p0a_status"]
+        failure_codes = candidate["p0a_failure_codes"]
+        if status not in {"passed", "rejected"}:
+            raise P0Error("p0a_decision_invalid", "p0a_status 非法")
+        if (
+            not isinstance(failure_codes, list)
+            or any(not isinstance(code, str) or not code for code in failure_codes)
+            or len(set(failure_codes)) != len(failure_codes)
+        ):
+            raise P0Error("p0a_decision_invalid", "P0-A failure codes 非法")
+        if status == "passed":
+            if failure_codes or candidate["license_review_status"] != "approved":
+                raise P0Error("p0a_decision_invalid", "通过候选仍含失败或许可证未批准")
+        elif not failure_codes:
+            raise P0Error("p0a_decision_invalid", "拒绝候选必须登记失败码")
         seen_ids.add(candidate_id)
         seen_orders.add(order)
         parsed.append(
@@ -132,6 +150,9 @@ def validate_registry(payload: object) -> Tuple[CandidateSpec, ...]:
                 max_snapshot_bytes=candidate["max_snapshot_bytes"],
                 license_review_status=candidate["license_review_status"],
                 metadata_source_sha256=candidate["metadata_source_sha256"],
+                p0a_status=status,
+                p0a_decision_sha256=candidate["p0a_decision_sha256"],
+                p0a_failure_codes=tuple(failure_codes),
             )
         )
     orders = sorted(seen_orders)

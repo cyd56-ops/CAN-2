@@ -40,6 +40,9 @@ class CandidateSpec:
     max_snapshot_bytes: int
     license_review_status: str
     metadata_source_sha256: str
+    p0a_status: str
+    p0a_decision_sha256: str
+    p0a_failure_codes: Tuple[str, ...]
 
 
 @dataclass(frozen=True)

@@ -44,8 +44,11 @@ def _registry_payload(count: int = 3) -> dict:
                 "expected_architecture_family": "moe",
                 "expected_moe_variant": "unknown_requires_verification",
                 "max_snapshot_bytes": 1024,
-                "license_review_status": "pending",
+                "license_review_status": "approved",
                 "metadata_source_sha256": ("b" * 64),
+                "p0a_status": "passed",
+                "p0a_decision_sha256": ("c" * 64),
+                "p0a_failure_codes": [],
             }
         )
     return {
@@ -95,7 +98,10 @@ def test_registry_accepts_fixed_order_and_profile() -> None:
     assert candidates[0].profile.profile_id == "bf16-v1"
 
 
-@pytest.mark.parametrize("field", ["resolved_commit_sha", "metadata_source_sha256"])
+@pytest.mark.parametrize(
+    "field",
+    ["resolved_commit_sha", "metadata_source_sha256", "p0a_decision_sha256"],
+)
 def test_registry_rejects_bad_digest_or_revision(field: str) -> None:
     """验证摘要和不可变 revision 失败关闭。"""
     payload = _registry_payload()
@@ -144,6 +150,22 @@ def test_registry_rejects_non_contiguous_order_and_unknown_profile() -> None:
         (
             lambda p: p["candidates"][0].update(license_review_status="unknown"),
             "license_unresolved",
+        ),
+        (
+            lambda p: p["candidates"][0].update(p0a_status="pending"),
+            "p0a_decision_invalid",
+        ),
+        (
+            lambda p: p["candidates"][0].update(
+                p0a_status="rejected", p0a_failure_codes=[]
+            ),
+            "p0a_decision_invalid",
+        ),
+        (
+            lambda p: p["candidates"][0].update(
+                p0a_status="passed", p0a_failure_codes=["failure"]
+            ),
+            "p0a_decision_invalid",
         ),
         (
             lambda p: p["candidates"][0].update(candidate_id=""),
@@ -318,6 +340,28 @@ def test_runner_selects_first_passing_candidate_and_exhausts() -> None:
         P0Runner([candidates[1], candidates[2]])
     missing = P0Runner(candidates).run_structure_only({})
     assert missing["status"] == "no_suitable_host"
+
+
+def test_runner_skips_p0a_rejected_candidate() -> None:
+    """验证 P0-A 拒绝候选即使提供 adapter 也不得运行。"""
+
+    payload = _registry_payload()
+    payload["candidates"][0].update(
+        p0a_status="rejected",
+        p0a_failure_codes=["native_shared_expert_missing"],
+        license_review_status="rejected",
+    )
+    candidates = validate_registry(payload)
+    result = P0Runner(candidates).run_structure_only(
+        {"C1": FakeHostAdapter("native"), "C2": FakeHostAdapter("native")}
+    )
+    assert result["selected_candidate"] == "C2"
+    assert result["attempts"][0] == {
+        "candidate_id": "C1",
+        "status": "not_run",
+        "reason": "p0a_rejected",
+        "failure_codes": ["native_shared_expert_missing"],
+    }
 
 
 def test_artifact_writer_is_atomic_and_non_overwriting(tmp_path: Path) -> None:

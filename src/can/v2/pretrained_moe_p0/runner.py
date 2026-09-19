@@ -28,6 +28,16 @@ class P0Runner:
         attempts = []
         selected: Optional[str] = None
         for candidate in self._candidates:
+            if candidate.p0a_status != "passed":
+                attempts.append(
+                    {
+                        "candidate_id": candidate.candidate_id,
+                        "status": "not_run",
+                        "reason": "p0a_rejected",
+                        "failure_codes": list(candidate.p0a_failure_codes),
+                    }
+                )
+                continue
             adapter = adapters.get(candidate.candidate_id)
             if adapter is None:
                 attempts.append(

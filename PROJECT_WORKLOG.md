@@ -3,10 +3,14 @@
 ## 当前研究阶段
 
 **阶段**: V2 - Gate Layer 在计算图中间架构  
-**状态**: R3、G0、M0、M1a tiny-MoE contract、M2 多专家 scope contract、G1-a reference、G1-b CPU verifier、I1、P0-MoE 本地实现与正式 fixture 均已通过 Claude contract 验收；真实 registry 待服务器元数据核验。
-**最后更新**: 2026-09-18（P0-MoE fixture 审阅通过）
+**状态**: R3、G0、M0、M1a tiny-MoE contract、M2 多专家 scope contract、G1-a reference、G1-b CPU verifier、I1、P0-MoE 本地实现与正式 fixture 均已通过 Claude contract 验收；P0-A 决策与正式 registry 自动生成入口已完成，待 Claude 验收并上传服务器运行。
+**最后更新**: 2026-09-19（P0-A 生成器实现完成）
 
-**当前唯一下一步**：在服务器执行 P0-A 元数据阶段，解析候选官方 resolved revision、许可证、remote-code 和文件摘要，生成正式 `candidate_registry.json` 并交 Claude 审阅。在 registry 审阅通过前不下载模型、不启动 P0-B/C/D。
+**当前唯一下一步**：将 P0-A 生成器交 Claude 做 contract 验收；验收通过后提交推送并在服务器对已下载的小型元数据运行 prepare，完成人工 source/license/remote-code 审阅，再运行 finalize 生成三份 decision 和正式 `candidate_registry.json`。在 registry 审阅通过前不下载模型、不启动 P0-B/C/D。
+
+**2026-09-19 P0-A 生成器实现完成 checkpoint（待 Claude contract 验收）**：新增 `src/can/v2/pretrained_moe_p0/p0a.py`、`scripts/prepare_p0a_reviews.py`、`scripts/finalize_p0a_registry.py` 和 `tests/v2/test_pretrained_moe_p0a.py`。prepare 对三组固定候选复算 Hub metadata/revision、snapshot 声明大小、本地 inventory/SHA-256、config MoE 字段、Python 文件与危险调用扫描，并创建不可覆盖的人工审阅模板；finalize 不信任 prepared 自描述值，重新绑定原始输入，严格校验 source/license/remote-code 结论、完整 Python 清单和每个危险调用处置后，自动生成逐候选 decision、正式 registry 与 SHA-256 sidecar。registry 新增 `p0a_status`、decision 摘要和失败码，runner 会无条件跳过 P0-A rejected 候选。专项 **89 passed**；核心包 statement coverage **95.61%**、branch coverage **92.11%**；全量 `tests/v2/` **953 passed in 66.84s**，仅 1 个既有 PyTorch sparse warning；Black、isort、compileall、`git diff --check` 均通过。本实现不联网、不下载权重、不运行模型，也不替代许可证与源码人工审阅。
+
+**2026-09-19 P0-A 生成器实现启动 checkpoint**：用户明确要求本轮跳过新增方案文档，直接按已审阅 R3.17 实现。发现现有 registry schema 未绑定 P0-A decision、失败码或人工审阅摘要，fake-host runner 也不会阻止 P0-A rejected 候选。实现范围限定为标准库离线盘点、严格人工审阅 schema、自动 fail-closed 决策、registry/decision 摘要绑定、拒绝候选阻断和服务器 CLI；不联网、不下载权重、不运行真实模型或 P0-B/C/D。
 
 **2026-09-18 P0-MoE fixture 与本地实现验收 checkpoint**：Claude 已审阅并通过 `fixture_v1.json`、严格 fixture/registry schema、fake-host 结构门、artifact runner、负向测试矩阵和 branch coverage 证据。已确认本阶段不包含真实模型 registry、权重下载或 P1 AuthExpert/Coordinator；当前转入服务器 P0-A，仅允许先获取并冻结官方元数据。
 
