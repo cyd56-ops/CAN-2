@@ -1,0 +1,24 @@
+{
+  "candidate_id": "C1",
+  "evidence_files": [
+    {
+      "path": "c1-files/config.json",
+      "sha256": "b3e9fc1ad643d12f6536dee80a66c5ea045b571856165a598252720b6f2c553e"
+    },
+    {
+      "path": "c1-qwen-source-review.txt",
+      "sha256": "35eb2d445071a6bc2c625798c426f1417cb74c373c62d722073fbc919612fb18"
+    }
+  ],
+  "expert_call_observability_static_feasibility": false,
+  "mask_before_dispatch_static_feasibility": false,
+  "native_routed_experts": true,
+  "native_shared_expert": true,
+  "rationale": "",
+  "resolved_commit_sha": "ec052fda178e241c7c443468d2fa1db6618996be",
+  "reviewed_at_utc": "",
+  "reviewer": "",
+  "schema_version": 1,
+  "shared_always_executes": false,
+  "status": "pending"
+}

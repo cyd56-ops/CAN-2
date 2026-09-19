@@ -1,0 +1,25 @@
+{
+  "candidate_id": "C2",
+  "declared_license": "",
+  "license_files": [
+    {
+      "path": "c2-files/.cache/huggingface/download/README.md.lock",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "c2-files/.cache/huggingface/download/README.md.metadata",
+      "sha256": "13dd1d98001ac6e69bb25453aa07f5e8787125b856282ffd76cb9ce49f8d46c6"
+    },
+    {
+      "path": "c2-files/README.md",
+      "sha256": "8960ea6caa678c3fc99df4f43af27524dff41e06e4f93440b66df60b7034b646"
+    }
+  ],
+  "rationale": "",
+  "resolved_commit_sha": "eefd8ac7e8dc90e095129fe1a537d5e236b2e57c",
+  "reviewed_at_utc": "",
+  "reviewer": "",
+  "schema_version": 1,
+  "status": "pending",
+  "usage_restrictions": []
+}

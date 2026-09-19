@@ -1,0 +1,32 @@
+{
+  "candidate_id": "C2",
+  "evidence_files": [
+    {
+      "path": "c2-files/config.json",
+      "sha256": "856a97c4451cf43d1ef14483c98db6564767b3b3fca6384938b208b8ce1088b0"
+    },
+    {
+      "path": "c2-files/configuration_deepseek.py",
+      "sha256": "c39b0ce3c52b1e786cbde2aea93bf35994379f617f1d50a9851f40db134aa78c"
+    },
+    {
+      "path": "c2-files/modeling_deepseek.py",
+      "sha256": "c21ae68b8466d020cdfaa3a27acbd51acfe6664d8fc1d112902540b964816158"
+    },
+    {
+      "path": "c2-deepseek-source-review.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "expert_call_observability_static_feasibility": false,
+  "mask_before_dispatch_static_feasibility": false,
+  "native_routed_experts": true,
+  "native_shared_expert": true,
+  "rationale": "",
+  "resolved_commit_sha": "eefd8ac7e8dc90e095129fe1a537d5e236b2e57c",
+  "reviewed_at_utc": "",
+  "reviewer": "",
+  "schema_version": 1,
+  "shared_always_executes": false,
+  "status": "pending"
+}

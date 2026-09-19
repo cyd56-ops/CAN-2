@@ -1,0 +1,22 @@
+{
+  "allow_remote_code": true,
+  "candidate_id": "C2",
+  "dangerous_call_findings": [],
+  "rationale": "",
+  "remote_code_required": true,
+  "resolved_commit_sha": "eefd8ac7e8dc90e095129fe1a537d5e236b2e57c",
+  "reviewed_at_utc": "",
+  "reviewed_python_files": [
+    {
+      "path": "c2-files/configuration_deepseek.py",
+      "sha256": "c39b0ce3c52b1e786cbde2aea93bf35994379f617f1d50a9851f40db134aa78c"
+    },
+    {
+      "path": "c2-files/modeling_deepseek.py",
+      "sha256": "c21ae68b8466d020cdfaa3a27acbd51acfe6664d8fc1d112902540b964816158"
+    }
+  ],
+  "reviewer": "",
+  "schema_version": 1,
+  "status": "pending"
+}

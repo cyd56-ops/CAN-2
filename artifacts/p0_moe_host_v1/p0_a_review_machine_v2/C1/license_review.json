@@ -1,0 +1,37 @@
+{
+  "candidate_id": "C1",
+  "declared_license": "",
+  "license_files": [
+    {
+      "path": "c1-files/.cache/huggingface/download/LICENSE.lock",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "c1-files/.cache/huggingface/download/LICENSE.metadata",
+      "sha256": "bc41028d6c6b2ae7b0adc7fb1156d6f1b2cb40490c8b05e66bed1fd6769f3621"
+    },
+    {
+      "path": "c1-files/.cache/huggingface/download/README.md.lock",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "c1-files/.cache/huggingface/download/README.md.metadata",
+      "sha256": "7e615244a9d7963cf488ca3239478a450de41d509c41690ba5c0ae40082ffb0b"
+    },
+    {
+      "path": "c1-files/LICENSE",
+      "sha256": "6e521a32ba6661de2b3e7b1cd27d7e1e9b8ff99633c79462a23284cac13c8b8d"
+    },
+    {
+      "path": "c1-files/README.md",
+      "sha256": "e495b6b36fcd5bb868e989bc193a13416d20a2ef77c8168069e5869919981141"
+    }
+  ],
+  "rationale": "",
+  "resolved_commit_sha": "ec052fda178e241c7c443468d2fa1db6618996be",
+  "reviewed_at_utc": "",
+  "reviewer": "",
+  "schema_version": 1,
+  "status": "pending",
+  "usage_restrictions": []
+}
