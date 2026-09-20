@@ -1,0 +1,2 @@
+transformers_version: 5.17.0
+source: /root/miniconda3/envs/can-v2/lib/python3.11/site-packages/transformers/models/qwen2_moe/modeling_qwen2_moe.py
