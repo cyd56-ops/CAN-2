@@ -1,0 +1,22 @@
+{
+  "allow_remote_code": true,
+  "candidate_id": "C2",
+  "dangerous_call_findings": [],
+  "rationale": "已审阅冻结 revision 的 configuration_deepseek.py 和 modeling_deepseek.py；未发现网络访问、动态下载、subprocess、任意文件写入、环境凭据读取、eval 或 exec。批准范围仅限摘要绑定的文件，并要求后续在网络关闭、local_files_only、只读 snapshot 和独立进程中加载。依赖包自身不在本结论范围内。",
+  "remote_code_required": true,
+  "resolved_commit_sha": "eefd8ac7e8dc90e095129fe1a537d5e236b2e57c",
+  "reviewed_at_utc": "2026-09-20T08:56:16Z",
+  "reviewed_python_files": [
+    {
+      "path": "c2-files/configuration_deepseek.py",
+      "sha256": "c39b0ce3c52b1e786cbde2aea93bf35994379f617f1d50a9851f40db134aa78c"
+    },
+    {
+      "path": "c2-files/modeling_deepseek.py",
+      "sha256": "c21ae68b8466d020cdfaa3a27acbd51acfe6664d8fc1d112902540b964816158"
+    }
+  ],
+  "reviewer": "cyd56-ops",
+  "schema_version": 1,
+  "status": "approved"
+}

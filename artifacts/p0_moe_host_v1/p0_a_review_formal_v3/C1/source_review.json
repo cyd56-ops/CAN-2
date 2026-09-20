@@ -1,0 +1,28 @@
+{
+  "candidate_id": "C1",
+  "evidence_files": [
+    {
+      "path": "c1-files/config.json",
+      "sha256": "b3e9fc1ad643d12f6536dee80a66c5ea045b571856165a598252720b6f2c553e"
+    },
+    {
+      "path": "c1-files/modeling_qwen2_moe.py",
+      "sha256": "9c56ee9f16e65aad53584a3a6e80a0f9cd416a7e51b16fd92f5ef1ba1aeea5f8"
+    },
+    {
+      "path": "c1-qwen-source-review.txt",
+      "sha256": "35eb2d445071a6bc2c625798c426f1417cb74c373c62d722073fbc919612fb18"
+    }
+  ],
+  "expert_call_observability_static_feasibility": true,
+  "mask_before_dispatch_static_feasibility": true,
+  "native_routed_experts": true,
+  "native_shared_expert": true,
+  "rationale": "冻结源码显示 Qwen2MoeSparseMoeBlock 同时包含 shared_expert、TopK router 和 routed experts；shared 分支在每次 MoE forward 中执行。router logits、softmax、top-k 和 expert dispatch 均位于可识别的 Python 模块中，具备在 top-k 前施加 allowed_mask 的静态适配可行性。Qwen2MoeExperts 的 expert_hit 循环暴露实际 expert_idx，具备调用台账记录可行性。以上仅为 P0-A 静态判断，mask 生效、zero-call、mixed batch 和输出保持仍须由 P0-C 实测。",
+  "resolved_commit_sha": "ec052fda178e241c7c443468d2fa1db6618996be",
+  "reviewed_at_utc": "2026-09-20T08:56:16Z",
+  "reviewer": "cyd56-ops",
+  "schema_version": 1,
+  "shared_always_executes": true,
+  "status": "approved"
+}

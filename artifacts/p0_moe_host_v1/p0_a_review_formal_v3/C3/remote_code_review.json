@@ -1,0 +1,13 @@
+{
+  "allow_remote_code": false,
+  "candidate_id": "C3",
+  "dangerous_call_findings": [],
+  "rationale": "当前 profile 不启用 remote code。",
+  "remote_code_required": false,
+  "resolved_commit_sha": "0da7a48b0276d500ce5922fd2b33944091fc6c09",
+  "reviewed_at_utc": "2026-09-20T08:52:39Z",
+  "reviewed_python_files": [],
+  "reviewer": "automatic-metadata-check",
+  "schema_version": 1,
+  "status": "not_required"
+}

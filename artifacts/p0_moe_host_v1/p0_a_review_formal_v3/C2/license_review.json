@@ -1,0 +1,35 @@
+{
+  "candidate_id": "C2",
+  "declared_license": "DeepSeek License Agreement v1.0, 23 October 2023",
+  "license_files": [
+    {
+      "path": "c2-files/.cache/huggingface/download/README.md.lock",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "c2-files/.cache/huggingface/download/README.md.metadata",
+      "sha256": "13dd1d98001ac6e69bb25453aa07f5e8787125b856282ffd76cb9ce49f8d46c6"
+    },
+    {
+      "path": "c2-files/LICENSE-MODEL",
+      "sha256": "a3a0e9449cb691a12f4de1d03725fd41326614fdeaf5d80b28c51187da0bed0e"
+    },
+    {
+      "path": "c2-files/README.md",
+      "sha256": "8960ea6caa678c3fc99df4f43af27524dff41e06e4f93440b66df60b7034b646"
+    }
+  ],
+  "rationale": "已审阅冻结的 DeepSeek License Agreement v1.0。许可证明确允许运行、评估、更新和 reparametrize 模型，并支持研究使用，但受 Attachment A 用途限制以及再分发要求约束。当前批准仅适用于本项目的防御性科研评估，不构成法律意见。",
+  "resolved_commit_sha": "eefd8ac7e8dc90e095129fe1a537d5e236b2e57c",
+  "reviewed_at_utc": "2026-09-20T08:56:16Z",
+  "reviewer": "cyd56-ops",
+  "schema_version": 1,
+  "status": "approved",
+  "usage_restrictions": [
+    "使用必须合法，并遵守 LICENSE-MODEL Attachment A 的用途限制。",
+    "禁止军事用途。",
+    "禁止伤害未成年人、侵害第三方权利及许可证列明的歧视性或有害用途。",
+    "分发模型或衍生模型时必须保留许可证、署名和用途限制。",
+    "当前批准范围仅限本项目的防御性、非生产科研评估和宿主适配实验。"
+  ]
+}

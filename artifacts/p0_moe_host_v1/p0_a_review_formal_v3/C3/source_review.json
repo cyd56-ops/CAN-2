@@ -1,0 +1,24 @@
+{
+  "candidate_id": "C3",
+  "evidence_files": [
+    {
+      "path": "c3-files/config.json",
+      "sha256": "f1b64813debfabeb9cc20f1a13ed8248da6774fe54e532d19912d4b3f2ab335d"
+    },
+    {
+      "path": "c3-granite-source-review.txt",
+      "sha256": "a2abfa7eb7ecd016cd1e68345e32f9120a5bd79db3ff24e581e5e2498b77cf4c"
+    }
+  ],
+  "expert_call_observability_static_feasibility": false,
+  "mask_before_dispatch_static_feasibility": false,
+  "native_routed_experts": true,
+  "native_shared_expert": false,
+  "rationale": "冻结配置未提供原生 shared expert 证据，无法满足当前 P0-MoE shared+routed 架构硬门；不通过新增随机权重或改变原模型语义进行补救，因此在 P0-A 拒绝。",
+  "resolved_commit_sha": "0da7a48b0276d500ce5922fd2b33944091fc6c09",
+  "reviewed_at_utc": "2026-09-20T08:56:16Z",
+  "reviewer": "cyd56-ops",
+  "schema_version": 1,
+  "shared_always_executes": false,
+  "status": "rejected"
+}

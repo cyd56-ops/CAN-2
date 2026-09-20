@@ -1,0 +1,25 @@
+{
+  "candidate_id": "C3",
+  "declared_license": "",
+  "license_files": [
+    {
+      "path": "c3-files/.cache/huggingface/download/README.md.lock",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "c3-files/.cache/huggingface/download/README.md.metadata",
+      "sha256": "9bdef6211bcfdef6f4e29eaf07005c4e3bedfd8737e13ee74386bccc5e280001"
+    },
+    {
+      "path": "c3-files/README.md",
+      "sha256": "94866d3eae184357d34878f77aa830ffc09f4da9504ca72cadca64f4b8f94931"
+    }
+  ],
+  "rationale": "候选已因缺少原生 shared expert 在结构门被拒绝，本轮不形成该模型许可证批准结论。",
+  "resolved_commit_sha": "0da7a48b0276d500ce5922fd2b33944091fc6c09",
+  "reviewed_at_utc": "2026-09-20T08:56:16Z",
+  "reviewer": "cyd56-ops",
+  "schema_version": 1,
+  "status": "rejected",
+  "usage_restrictions": []
+}
