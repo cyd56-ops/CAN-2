@@ -4,9 +4,24 @@
 """
 
 from .artifacts import ArtifactWriter
+from .deepseek_adapter import DeepSeekHostAdapter
 from .fixture import load_fixture, validate_fixture
 from .host_adapter import FakeHostAdapter, HostAdapter, inspect_host
 from .p0a import finalize_p0a_registry, prepare_p0a_reviews
+from .qwen_adapter import QwenHostAdapter
+from .real_adapter import RealHostAdapter, TransformersHostAdapter
+from .real_runner import RealP0Runner
+from .real_types import (
+    ArchitectureMap,
+    GenerationRecord,
+    GenerationRequest,
+    PreflightResult,
+    ProbeRequest,
+    ProbeResult,
+    RealRunResult,
+    ResourceSample,
+    SnapshotManifest,
+)
 from .registry import load_registry, validate_registry
 from .runner import P0Runner
 from .types import P0Error
@@ -24,4 +39,18 @@ __all__ = [
     "prepare_p0a_reviews",
     "validate_fixture",
     "validate_registry",
+    "ArchitectureMap",
+    "DeepSeekHostAdapter",
+    "GenerationRecord",
+    "GenerationRequest",
+    "PreflightResult",
+    "ProbeRequest",
+    "ProbeResult",
+    "QwenHostAdapter",
+    "RealHostAdapter",
+    "RealP0Runner",
+    "RealRunResult",
+    "ResourceSample",
+    "SnapshotManifest",
+    "TransformersHostAdapter",
 ]

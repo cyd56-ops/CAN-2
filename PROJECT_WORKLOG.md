@@ -3,10 +3,24 @@
 ## 当前研究阶段
 
 **阶段**: V2 - Gate Layer 在计算图中间架构  
-**状态**: R3、G0、M0、M1a tiny-MoE contract、M2 多专家 scope contract、G1-a reference、G1-b CPU verifier、I1、P0-MoE 本地实现与正式 fixture 均已通过 Claude contract 验收；P0-A 决策与正式 registry 自动生成入口已完成，待 Claude 验收并上传服务器运行。
-**最后更新**: 2026-09-19（P0-A machine-only 预筛入口完成）
+**状态**: R3、G0、M0、M1a tiny-MoE contract、M2 多专家 scope contract、G1-a reference、G1-b CPU verifier、I1、P0-MoE 本地实现与正式 fixture、P0-MoE.14 真实宿主 runner 均已通过 Claude contract 验收；P0-A-static 正式 artifact 已验收通过，C1/C2 passed、C3 rejected；当前转入服务器 C1 实测。
+**最后更新**: 2026-09-21（P0-MoE.14 Claude 验收通过）
 
-**当前唯一下一步**：提交推送后，在服务器对已下载的小型元数据运行 prepare，再直接运行默认 machine-only finalize 生成 provisional decision 和 registry；查看静态失败与候选排序后，若要进入正式 P0-B/C/D，另行补齐人工审阅并使用 `--require-human-review` 重新生成正式 registry。在正式 registry 通过前不下载模型、不启动 P0-B/C/D。
+**当前唯一下一步**：提交并推送 P0-MoE.14 实现；服务器先执行 infrastructure non-formal preflight，只有通过后才下载 C1，并严格按 P0-A-runtime → P0-B → P0-C → P0-D 顺序运行。服务器前仍不下载 C2，除非 C1 形成可验证正式失败摘要。
+
+**2026-09-21 P0-MoE.14 Claude 验收通过 checkpoint**：Claude 已验收通过真实宿主 runner、C1/C2 adapter、snapshot budget/freeze、formal artifact、controller、CPU 负向测试及本地 coverage/回归证据。下一步不再修改本地实现，先提交推送；服务器只执行 infrastructure preflight 和 C1，C2 继续保持未下载状态，除非 C1 正式硬门失败并生成 summary.json 及匹配 sidecar。
+
+**2026-09-21 P0-MoE.14 验收后边界修复 checkpoint**：在准备服务器流程时发现下载前 infrastructure preflight 若把尚未创建的 C1 snapshot 当作失败，会阻断“preflight → download”顺序。已将 `infrastructure_preflight(..., require_snapshot=False)` 用于下载前入口，正式 runner 默认保持 `require_snapshot=True`，因此下载前只验证隔离/依赖/GPU，正式加载仍强制要求已冻结 snapshot manifest。同步更新 mock 测试后，P0 相关测试 **166 passed in 29.46s**，Black、isort、compileall 通过。该修复未下载权重、未运行 CUDA、未提交或推送；下一步仍是提交推送，然后在服务器执行 infrastructure preflight。
+
+**2026-09-21 P0-MoE.14 本地验收 checkpoint（待 Claude contract 验收）**：补齐真实 runner 的 CPU 可审计分支并修复一个实际缺陷：`hf_device_map` 的 offload 检测现在检查映射值而不是错误地检查键。新增 `tests/v2/test_pretrained_moe_real_branches.py`，覆盖 P0-B chat/tensor/重复/cache 等价失败、C2 mask/top-k/request 绑定、probe 重入与非法 bridge、KV 失败矩阵、snapshot schema/路径/预算/只读/绑定、loader helper、资源采样、runner 状态机和稳定 reason code。修复 routed expert 调用台账越界会抛裸 `IndexError` 的问题，改为 `expert_call_index_invalid`。本地核心模块（明确排除真实 CUDA/Transformers/Hub 下载集成路径）branch coverage 报告为 **1147/1183 statements = 96.96%**、**370/404 branches = 91.58%**；P0 相关测试 **166 passed in 26.42s**；完整 `tests/v2/` **1030 passed in 113.50s**，仅 1 个既有 PyTorch sparse warning；Black、isort、compileall、`git diff --check` 全部通过。生成了本地 coverage JSON `coverage_p0_real.json`（不作为模型/权重 artifact）。未下载权重、未运行 CUDA/Transformers 真实路径、未提交或推送。
+
+**2026-09-20 P0-MoE.14 当日收尾 checkpoint（实现未完成）**：在既有真实宿主 runner 上补充了 P0-C false gate 稳定失败码、tensor storage/version 状态摘要、C2 mixed probe 的 `torch.no_grad()` 与 train/eval 恢复、下载前 Hub 声明大小/磁盘/80 GiB 总预算、下载后只读冻结、cache/no-cache 精确一致性、候选/全局时限、无 stderr 持久化的 worker 失败占位，以及包含 P0-B 分数与阈值、重复性、七道 P0-C gate、调用总数、资源峰值、阶段时长和退出码的正式 summary。新增相应无权重负向测试后，P0 专项为 **75 passed in 3.82s**，compileall 与 `git diff --check` 通过。一次多模块 branch coverage 命令在本机导入 PyTorch 时触发 Windows access violation，未产生可信 coverage 报告，因此尚未达到/宣称 `>=95%` statement、`>=90%` branch 门槛；完整 `tests/v2/` 与 isort 也留待下一工作段。未下载权重、未运行 CUDA/Transformers 真实路径、未提交或推送。
+
+**2026-09-20 P0-MoE.14 实现启动 checkpoint**：用户确认方案复审通过并指定 Codex 实现。首轮已新增真实 runner 的严格类型、snapshot inventory/只读复核、延迟依赖 loader、NF4 packed-expert/设备盘点、P0-B greedy evaluator、mixed-batch 索引与 zero-call 校验、资源 preflight、artifact writer、CLI 和无权重 stand-in 测试；既有 P0 + 新增专项为 **55 passed**，完整 `tests/v2/` 为 **963 passed**（1 个既有 sparse warning）。当前继续依据归档候选源码实现 candidate-specific adapter，并补齐新进程重复、正式 summary/ledger 和 CPU 可测负向覆盖；此 checkpoint 尚未达到代码验收，未下载权重、未运行 CUDA/Transformers 真实路径。
+
+**2026-09-20 P0-MoE.14 首轮审阅修订 checkpoint（待 Claude 复审）**：采纳真实宿主实施风险意见并收紧证据边界。新增下载前 network namespace/只读挂载/GPU 依赖基础设施 preflight，以及下载 C1 后、正式 run 前的 backend/load smoke；二者均为 `non_formal`，不能替代正式门、不能改变 C1→C2 顺序。C1 smoke 与正式 runner 必须核验 packed expert 参数的运行时类型、dtype/device、NF4 元数据、实际 storage bytes、bitsandbytes 管理状态、加载峰值和 CPU/disk offload；packed 参数未实际 NF4、量化不可验证、offload 或单卡资源失败均 fail closed。原生 backend 若只能观察 router selection，或必须切换 eager/逐 expert backend 才能计数，则 C1 失败，不再使用动态 logits 容差补救。mixed batch 固定 `[B,S,H]`/`[B,S,E]` 和 `global_row=batch_index*S+token_index`，要求单调唯一 gather、显式 `index_copy` 重组、有效行一一映射、padding 排除及顺序保持。C2 仍只能在 C1 形成正式失败 artifact 后进入，并在冻结环境检查 remote-code 兼容性。本轮仅修订 `docs/DESIGN_PROPOSALS.md` 与工作日志，未实现代码、下载权重或运行 GPU。
+
+**2026-09-20 P0-A-static 正式验收 checkpoint**：提交 `8ab8edb2085cd6ed954b8de24f97584a7fcf5ba8` 的正式 registry、三候选 decision、review manifest 与 SHA-256 sidecar 已完成只读复核。summary 为 `status=complete`、`approval_mode=human_review`、`formal_acceptance=true`、`human_review_required=false`；C1 Qwen 与 C2 DeepSeek 为 `passed` 且无失败码，C3 Granite 为 `rejected`。registry 实际 SHA-256 与 summary/sidecar 均为 `3d9f4102dcbe6a282e3847410e8df18e34603689701462ed6812b644c5443a0a`，项目严格 loader 通过，三份 decision 摘要一致。该结论只授权 C1/C2 下载冻结 snapshot 并进入真实预检；原 P0-A 中必须依赖完整 snapshot 的断网、只读二次加载改记为 `P0-A-runtime`，尚未执行。当前也不证明运行时 mask、zero-call、mixed batch、KV、能力或 A4000 资源门。
 
 **2026-09-19 machine-only 预筛实现 checkpoint**：`scripts/finalize_p0a_registry.py` 默认不再要求填写 reviewer、时间、rationale 或逐条 finding 处置，直接复核 metadata manifest、revision、snapshot、权重文件、配置结构提示和 remote-code 静态扫描。静态检查全部通过的候选标记为 `p0a_status=provisional`，decision/summary 记录 `approval_mode=machine_only`、`formal_acceptance=false` 和 `human_review_required=true`；明确静态失败的候选标记为 `rejected`。`--require-human-review` 保留原严格模式，只有该模式才能产生正式 `passed`。registry 接受 provisional 但 runner 仍只执行 `passed`，因此机器预筛不能绕过 P0-A 正式验收。专项测试 **91 passed**；全量 `tests/v2/` 在当前执行环境两次运行均在约 45% 进度后被外部终止且未生成 JUnit summary，因此未宣称全量通过；Black、compileall 和 `git diff --check` 通过。
 

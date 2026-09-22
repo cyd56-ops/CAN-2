@@ -5282,4 +5282,235 @@ PYTHONPATH="$PWD/src" python scripts/finalize_p0a_registry.py \
 
 所有输出拒绝覆盖。若需重跑，必须选择新的 review/decision 目录和 registry 版本，保留失败证据；不得删除失败候选或重排 C1→C2→C3。当前实现仍只完成 P0-A 供应链和静态结构决策，不下载完整权重、不运行 P0-B/C/D，也不实现 P1-MoE。
 
+#### P0-MoE.14 P0-B/C/D 真实宿主 runner 详细实现方案 v1.1（2026-09-20，Claude 首轮审阅修订）
+
+##### P0-MoE.14.1 前置状态、目标和边界
+
+正式静态 P0-A artifact 已通过严格 loader 验收：registry SHA-256 为 `3d9f4102dcbe6a282e3847410e8df18e34603689701462ed6812b644c5443a0a`，C1 `Qwen/Qwen1.5-MoE-A2.7B-Chat` 与 C2 `deepseek-ai/deepseek-moe-16b-chat` 为 `passed`，C3 Granite 为 `rejected`。这里的 `passed` 只表示允许按冻结 revision/profile 下载并进入真实宿主预检，不表示能力、运行时结构或资源门已经通过。
+
+原 P0-A 条款还包含“断网、只读 snapshot 二次加载”。该证据在完整 snapshot 下载前不可能产生，因此真实 runner 将其明确命名为 **P0-A-runtime**，并作为 P0-B 的硬前置门。论文和工作日志必须区分 `P0-A-static passed` 与 `P0-A-runtime passed`；两者都通过后才可称 P0-A 完整通过。
+
+本阶段目标是：在冻结的真实预训练 MoE 宿主上完成 P0-A-runtime、P0-B 公共能力、P0-C 可插入性与 P0-D A4000 资源/确定性验证，并按 C1→C2 的固定顺序选择首个全门通过者。阶段内不训练、不微调、不接入 G1-b verifier、不实现 AuthExpert/Coordinator、不创建真实授权 route，也不把测试 instrumentation 称为模型内生访问控制。
+
+##### P0-MoE.14.2 必须修正的 top-k 契约差异
+
+现有 `HostCapabilities`/`inspect_host()` 来自 top-k=1 的 tiny-MoE contract，并把 `top_k != 1` 直接判为失败。真实候选的原生设置分别是 C1 `top_k=4`、C2 `top_k=6`；直接复用旧判断会错误拒绝两个正式候选。
+
+实现时不得修改 M1a/M2 的 top-k=1 历史结论。新增真实宿主专用的 `RealHostCapabilities` 与 `inspect_real_host()`：
+
+* `native_top_k` 必须与冻结 config 和实际 router 一致且大于零；
+* all-allowed 对照必须保持原生 top-k、router 选择和输出；
+* partial mask 每行允许 expert 数必须不少于 `native_top_k`，选中集合必须是允许集合的子集，仍选择恰好 `native_top_k` 个 expert；
+* 空允许集合是显式 `shared_only` case，必须绕过 routed router/dispatch，不能以 `top_k=0`、输出乘零或先执行后丢弃模拟；
+* 非空但少于 `native_top_k` 的 mask 是结构错误，整批测试调用 fail closed，不静默降低 top-k；
+* mixed batch 可以同时包含 shared-only 行和允许数不少于 native top-k 的 protected 行，且必须保持原 batch/token 索引。
+
+##### P0-MoE.14.3 模块和依赖边界
+
+新增实现建议放在现有包内，避免把 candidate-specific 逻辑混入 tiny fake adapter：
+
+```text
+src/can/v2/pretrained_moe_p0/
+├── real_types.py              # 真实宿主 manifest、probe、generation、resource 类型
+├── snapshot.py                # 冻结 revision 下载预算、inventory、只读/离线复核
+├── real_loader.py             # registry 驱动的 tokenizer/model 离线加载
+├── real_adapter.py            # RealHostAdapter protocol 与公共约束
+├── qwen_adapter.py            # C1 架构映射和 P0 test-only instrumentation
+├── deepseek_adapter.py        # C2 fallback adapter
+├── capability_eval.py         # P0-B prompt、生成、规范化和阈值
+├── structure_probe.py         # P0-C mask、调用台账、mixed batch、KV 探查
+├── resource_probe.py          # P0-D 显存、RAM、延迟、吞吐和 timeout
+├── real_artifacts.py          # 真实 run schema、摘要、失败保留与 loader
+└── real_runner.py             # 固定候选顺序和 P0-A-runtime/B/C/D 状态机
+
+scripts/download_p0_moe_snapshot.py
+scripts/run_p0_moe_real.py
+tests/v2/test_pretrained_moe_real_*.py
+```
+
+`transformers`、`accelerate`、`bitsandbytes`、CUDA/NVML 等重依赖只能在真实 loader 内延迟导入；导入核心 schema 和运行 CPU 单元测试不得要求 GPU 或联网。服务器首次正式 run 沿用 P0-A manifest 记录的环境，不得在看到结果后升级/降级 Transformers 或 bitsandbytes。若 C2 remote code 与该环境不兼容，记录候选失败；更换依赖必须新建 profile/registry 版本，不能覆盖 v1 结果。
+
+实现阶段必须提供独立的 `preflight` 子命令。它只产生 `non_formal` 诊断 artifact，用于在正式运行前发现基础设施、依赖或 backend 阻塞；其结果不得计入 P0-A-runtime/B/C/D，不得改变 C1→C2 顺序，也不得作为绕过 C1 正式失败证据的依据。C2 的 remote-code import/构造兼容性只在 C1 已形成可验证正式失败后检查；若不兼容，按冻结环境记录 `remote_code_runtime_incompatible`，不得现场更换依赖。
+
+##### P0-MoE.14.4 Snapshot 获取与 P0-A-runtime
+
+snapshot 下载和离线运行必须分成两个显式命令。下载器只接受正式 registry 中 `p0a_status=passed` 的 candidate ID，不接受任意 repository、revision、dtype 或 quantization 参数。它必须：
+
+1. 从 registry 取得 repository ID、40 位 resolved commit 和 40 GiB 单候选上限；
+2. 在网络请求前复核 Hub sibling 总大小、磁盘剩余空间和 P0-v1 累计 80 GiB 上限；
+3. 下载完整离线加载所需的 config、tokenizer、chat template、remote code、index 和权重，不允许浮动 `main`；
+4. 输出全部普通文件的路径、大小和 SHA-256，拒绝符号链接、路径逃逸和下载后 revision 漂移；
+5. 不记录 Hugging Face token、环境变量或 cache 凭据；已有目标目录拒绝覆盖；
+6. 下载完成后冻结 `snapshot_manifest.json`，然后才允许启动运行命令。
+
+P0-A-runtime 在新进程中设置 `HF_HUB_OFFLINE=1`、`TRANSFORMERS_OFFLINE=1`、`HF_DATASETS_OFFLINE=1` 并强制 `local_files_only=True`。正式证据还必须由容器/作业层禁用网络；优先使用可用的 network namespace。若平台无法提供可验证的断网环境，记录 `offline_isolation_unavailable` 并停止正式 run，不能仅凭环境变量声称断网。snapshot 在加载期间只读，加载前后 inventory/SHA-256 必须相同。C2 只允许执行 P0-A 已审阅并摘要绑定的 remote-code 文件，出现额外 `.py` 文件或摘要漂移即 `remote_code_rejected`。
+
+加载 profile 固定使用 registry 的 NF4/BF16 配置；模型必须完整驻留单张 A4000，不允许自动 CPU/disk offload 掩盖显存失败。加载后记录实际 module class、attention backend、quantization class、device placement、parameter/buffer dtype、tied-weight identity 和 state-dict 键/摘要。任何联网 fallback、缺文件、未知自定义代码、设备分片或 profile 漂移均在 P0-B 前失败。
+
+正式 snapshot 下载前先执行不加载模型的基础设施预检：验证容器、作业调度器或 network namespace 能实际阻断出站网络；验证 snapshot 根目录可在正式 worker 中只读挂载；验证 A4000、driver、CUDA 和冻结 Python 依赖可见。仅设置离线环境变量不算网络隔离证据。基础设施预检失败时停止，不下载权重，也不把该结果登记为某个候选的模型失败。
+
+下载 C1 snapshot 后、正式 run 前执行一次不可复用的 C1 backend/load smoke。该 smoke 必须记录：
+
+* `Qwen2MoeExperts.gate_up_proj`、`down_proj` 及同类 packed expert 参数的运行时 Python 类型、实际 dtype、device、逻辑 shape、实际 storage bytes、量化元数据，以及是否由 bitsandbytes 管理；
+* 每层和整模型的 packed expert 逻辑字节数/实际存储字节数、加载峰值显存、加载后 CUDA allocated/reserved、进程 RSS，以及是否发生任何 CPU/disk offload；
+* 实际 `use_experts_implementation`、dispatch/backend 标识，以及能否在每个 expert 的真实矩阵计算前记录 expert ID，而非仅记录 router selection；
+* 同一输入在不安装业务 mask 时的原生生成、router IDs、continuation IDs 和停止原因，供确认 instrumentation 未改变原生路径。
+
+NF4 profile 的 packed expert 必须有可机器验证的 NF4 表示，例如 bitsandbytes `Params4bit`/等价受管对象及 `quant_type=nf4`，并且实际 storage bytes 能按该后端公开的量化布局、padding 和 metadata 得到完整解释，不能只依据模块名称或全局 config 推断。packed expert 仍是原始 BF16/FP16 `nn.Parameter`、量化元数据缺失、发生 CPU/disk offload、A4000 无法完整加载，分别以 `packed_expert_not_nf4`、`quantization_profile_unverifiable`、`offload_detected` 或资源失败结束 C1。smoke 只用于提前暴露这些事实；正式失败仍须由正式 runner 复核并写入不可覆盖 summary。
+
+##### P0-MoE.14.5 RealHostAdapter 与 test-only mask 语义
+
+真实 adapter 是 P0 结构证据工具，不是授权实现。建议 protocol 至少提供：
+
+```python
+class RealHostAdapter(Protocol):
+    def inspect_architecture(self) -> RealArchitectureMap: ...
+    def baseline_generate(self, request: GenerationRequest) -> GenerationRecord: ...
+    def install_probe(self) -> ProbeSession: ...
+    def run_moe_probe(self, request: ProbeRequest) -> ProbeResult: ...
+    def uninstall_probe(self) -> None: ...
+    def state_digest(self) -> str: ...
+```
+
+`ProbeRequest` 的 allowed mask 是 runner 根据公开 probe fixture 构造的测试输入，不接受外部 credential、allow/deny 字段或授权 context。probe 必须是 context manager，禁止跨线程/请求复用；异常时先禁用 probe，再恢复原模块并核对 state digest。P0 结束后模型不得留有 wrapper。P1 后续必须重新设计 verifier→evidence→Coordinator→committed route 链，不能直接把 P0 mask API 暴露给调用方。
+
+C1 的 router 为独立 `Qwen2MoeTopKRouter`，但 routed expert 使用打包参数和可能的优化实现。C1 probe 必须确认运行时实际采用的 expert backend：若可以在执行每个 expert 的实际 matmul 前记录 `expert_idx`，则生成真实调用台账；若原生 backend 只能看到 router selection 而不能证明实际计算，C1 以 `expert_call_unobservable` 失败，不能用 selection ledger 替代执行证据。不得为了获得计数切换到 eager、逐 expert 或其他替代 backend；这会改变待验证对象，不能通过 logits 容差补救。
+
+C2 的 router 为独立 `MoEGate`，routed experts 是 `ModuleList`，可对实际 expert module forward 计数。两种 adapter 均只能在 router softmax/top-k 之前施加布尔 mask；post-dispatch 乘零不合格。all-allowed 时直接走原实现，不进行无意义 `masked_fill`，要求 token、router IDs 和停止原因与 baseline 完全一致。partial mask 才进入受控 probe 路径。
+
+##### P0-MoE.14.6 P0-B 公共能力执行
+
+P0-B 使用冻结 `fixture_v1.json` 及 SHA-256 `233bf2a2517182510515bbf7d1a33a4c37fd06b9a8da55139fbb137652547391`。每条 case 只执行 baseline、无 mask、无 verifier 的原始宿主生成：
+
+* tokenizer 优先使用原生 chat template，消息严格包含 fixture 的 system/user 文本；模板拒绝该角色组合时该 case 失败，不为单候选改写 prompt；
+* `do_sample=false`、`num_beams=1`、不传 temperature、每条使用冻结 `max_new_tokens<=24`，batch size 1；
+* prompt 超过 256 tokens、答案被截断、非法控制 token、无法解码或未停止均失败；
+* `format_copy` 使用既有 strict EM，`single_hop`/`two_hop` 使用既有 normalized EM，同时记录 raw text、canonical text 和 continuation token IDs；
+* `use_cache=false/true` 都运行；同一进程各重复 3 次，另由 controller 启动 3 个全新 worker 进程重复；
+* 每组门槛仍为 `7/8`、`7/8`、`5/8`，所有重复必须 token/stop-reason exact，不能以平均分覆盖不确定性。
+
+P0-B 先于任何 probe 安装执行，防止 instrumentation 影响公共能力基线。能力低于任一门槛时该 candidate 记录 `capability_below_threshold`，停止其 P0-C/D，并按固定顺序决定是否进入 C2。
+
+##### P0-MoE.14.7 P0-C 七道真实结构门
+
+P0-C 必须从实际对象与受控 forward 生成 `architecture.json`、`router_ledger.jsonl` 和 `expert_calls.jsonl`，不得从 config 布尔值直接宣称通过。
+
+1. **稳定 MoE 边界**：枚举所有 MoE layer 的完整模块路径、router、shared branch、routed container/backend、native top-k、dispatch/combine 点和输出 shape；实际值必须与冻结 config 相符。
+2. **pre-dispatch mask**：在 softmax/top-k 前应用 mask；partial case 的每行 selected IDs 必须全部属于 allowed set，数量保持 native top-k；篡改 mask dtype/rank/rows/expert count 必须 fail closed。
+3. **真实 zero-call**：shared-only case 中 shared branch 实际调用次数大于零，所有 routed expert 的实际计算计数为零；partial case 中 forbidden expert 实际计算为零。不得用概率、selected ID 或输出乘零单独作为证据。
+4. **原生 shared branch**：C1/C2 shared 分支输出 shape/dtype/device 与 routed combine 兼容且每个有效行执行；不得把 routed expert 改作 shared。
+5. **mixed batch/index**：输入 hidden 固定解释为 `[B,S,H]`，allowed mask 为 `[B,S,E]`，有效 token 行的全局索引定义为 `global_row=batch_index*S+token_index`。batch=2，至少一行为 shared-only、另一行为 protected partial mask；拆批必须以单调、唯一的 `original_indices` gather，计算后以 `index_copy` 或数学等价的显式索引操作重组，禁止依赖分组迭代顺序。ledger 必须逐行绑定 `global_row`、batch/token index、padding 标记、分组和输出位置，并断言：所有有效行恰好映射一次，索引单调且无重复，padding 不进入 expert 计数，shared-only routed calls 为零，partial forbidden calls 为零，重组后的 batch/token 顺序与输入完全一致。
+6. **KV 语义**：手动 prefill/decode loop 在每步进入同一 immutable probe context，绑定 request IDs、cache position、processed length 和 mask digest；跨请求 cache、位置回退、mask 变化必须在本步任何 MoE/expert 调用前拒绝。这里仅证明宿主可携带和检查上下文，不声称 credential 防重放。
+7. **state/output 保持**：probe 安装前、卸载后 state-dict 键、参数/缓冲区对象身份和逐文件/逐 tensor 摘要相同；all-allowed 必须走同一原生 backend 和原始计算路径，不施加 mask、不替换 expert 实现。baseline 与只读 instrumentation 下的 router selected IDs、continuation token IDs 和停止原因必须完全一致；有效位置 logits 记录最大绝对差异，但 P0 不根据 smoke 结果动态生成接受容差。若只读计数改变离散结果，或只有切换 backend 才能观测执行，C1 直接失败。
+
+任一结构门失败即停止该 candidate，保留已发生的真实调用与 failure artifact，不继续 P0-D。普通 forward hook 只可计数，不能承担最终授权；全局 monkey-patch、线程局部隐式授权、不可恢复模块替换或仅能事后过滤均判 `host_interface_not_controllable`。
+
+##### P0-MoE.14.8 P0-D 资源、性能和确定性
+
+P0-D 只对 P0-B/C 均通过的 candidate 执行。模型保持 registry 冻结 profile和单卡放置，运行前同步 CUDA、清空 cache 并重置峰值统计。记录：
+
+* GPU 名称/UUID、driver、CUDA、PyTorch、Transformers、bitsandbytes；
+* 加载时长、snapshot bytes、host RSS、CUDA allocated/reserved 和 `nvidia-smi` used/free；
+* packed expert 参数类型、dtype、device、量化元数据、实际 storage bytes、bitsandbytes 管理状态和逐 device 参数/缓冲区字节数；
+* TTFT、prefill tokens/s、decode tokens/s、每 token 延迟和完整 24-case 墙钟；
+* `use_cache=false/true` 的 continuation IDs、stop reason 和最大 logits 差异；
+* 同进程/新进程重复差异数、OOM、timeout 和意外 CPU offload。
+
+硬门保持：load `<=20 min`、单次 24-case suite `<=60 min`、candidate 总计 `<=90 min`、P0-v1 总计 `<=4 h`；稳定态 `max_memory_reserved<=14.5 GiB` 且运行峰值仍有 `>=1.0 GiB` 设备余量。所有模型参数和运行所需 buffer 必须位于同一张 A4000；device map、参数枚举和运行时传输台账中出现 CPU/disk offload 均失败。OOM/timeout 不自动减小 fixture、上下文、batch 或 top-k，不切换未登记量化配置。
+
+##### P0-MoE.14.9 Artifact schema、目录和失败原子性
+
+non-formal preflight 与正式 run 使用不同根目录，二者都拒绝覆盖：
+
+```text
+results/p0-moe-host-v1/preflight/<candidate-or-infrastructure>/<profile-id>/preflight-YYYYMMDD-NN/
+├── preflight_manifest.json
+├── environment.json
+├── backend_storage.json
+└── preflight_summary.json
+```
+
+正式目录保持：
+
+```text
+results/p0-moe-host-v1/<candidate-id>/<profile-id>/run-YYYYMMDD-NN/
+├── manifest.json
+├── snapshot_manifest.json
+├── architecture.json
+├── generations.jsonl
+├── router_ledger.jsonl
+├── expert_calls.jsonl
+├── resource_samples.jsonl
+└── summary.json
+```
+
+manifest 必须绑定 registry、fixture、P0-A decision、snapshot inventory、代码、环境、GPU、profile、generation config、预算和 Git provenance 摘要。ledger 不保存 prompt 原文之外的秘密，不保存 HF token、credential 或环境变量。summary 必须实际计算 `p0a_runtime/p0b/p0c/p0d` 四门状态、三组分数、重复/KV 差异、七道结构门、shared/routed 调用数、资源峰值、退出码和失败码。
+
+preflight artifact 必须声明 `non_formal=true`，且不能复制、链接或晋升为正式 run 字段；正式 runner 必须自行复核相同条件。run 目录不可覆盖。可预见异常由 controller 写入最终 `status=failed` summary；OOM/timeout/worker crash 时保留已落盘 JSONL 和 stderr 摘要，不伪造未完成字段。summary 只能写一次；已有 summary 时拒绝续跑。candidate 失败后进入 C2 前，必须能够从 C1 summary 和摘要 sidecar 独立验证其正式失败，不能依赖命令行口述。
+
+##### P0-MoE.14.10 CLI 与固定候选顺序
+
+下载入口建议：
+
+```bash
+PYTHONPATH="$PWD/src" python scripts/download_p0_moe_snapshot.py \
+  --registry experiments/p0_moe_host_v1/candidate_registry_formal_v3.json \
+  --candidate-id C1 \
+  --snapshot-root /data/can/p0_snapshots/C1
+```
+
+运行入口建议：
+
+```bash
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+PYTHONPATH="$PWD/src" python scripts/run_p0_moe_real.py \
+  --registry experiments/p0_moe_host_v1/candidate_registry_formal_v3.json \
+  --fixture experiments/p0_moe_host_v1/fixture_v1.json \
+  --candidate-id C1 \
+  --snapshot-root /data/can/p0_snapshots/C1 \
+  --output-root results/p0-moe-host-v1/C1/c1-bnb-nf4-bf16-v1/run-YYYYMMDD-NN
+```
+
+CLI 的 candidate ID 只能选择 registry 中 passed 候选。C1 是唯一允许在没有前序失败 artifact 时运行的候选；运行 C2 必须额外提供 C1 的可验证 failed summary，且失败必须来自 P0-A-runtime/B/C/D 硬门。不得跳过 C1、并行试跑后择优、临时改变 profile 或只提交成功结果。`--preflight infrastructure` 在下载前验证网络隔离、只读挂载能力和 GPU/依赖；`--preflight candidate` 在下载后采集原生 backend、packed expert 量化/存储、可观测性与加载资源。两者输出都必须明确 `non_formal=true`，拒绝作为正式门摘要或 C2 前置失败 artifact。
+
+##### P0-MoE.14.11 测试、覆盖率和服务器验收
+
+不下载权重的本地测试至少覆盖：
+
+* registry/fixture/snapshot manifest 摘要漂移、路径逃逸、符号链接、超预算和覆盖拒绝；
+* C1 packed-expert stand-in 与 C2 ModuleList stand-in 的 all/partial/shared-only mask；
+* packed expert 未量化、量化元数据缺失、storage bytes 不符、device offload 和 backend 不可观测的稳定失败码；
+* 原生 top-k=4/6 保持、允许数不足、逐行 mask、batch/token index 和 forbidden zero-call；
+* mixed batch gather/index-copy 的索引单调、唯一、一行一次、padding 排除和重组顺序断言；
+* probe 安装/卸载、异常恢复、state digest、并发/重入拒绝；
+* KV request/cache/mask/position 绑定负向路径；
+* strict/normalized EM、非法生成、重复差异、OOM/timeout 和失败 summary；
+* C2 缺少正式 C1 failed artifact 时拒绝启动；
+* optional dependency 缺失时稳定失败而非 import-time 崩溃。
+
+新增核心模块 statement coverage 目标 `>=95%`、branch coverage `>=90%`。CUDA、bitsandbytes、真实 remote code 和 network namespace 路径由服务器 integration artifact 覆盖，不用 mock coverage 冒充设备实测。
+
+正式服务器验收顺序为：基础设施 non-formal preflight → 只下载 C1 → C1 backend/load non-formal smoke → 正式 P0-A-runtime → P0-B baseline → P0-C architecture/all-allowed → partial/shared-only/mixed batch → KV 负向 → P0-D 完整资源/重复套件。每完成一门即写 checkpoint；任一硬门失败立即停止该 candidate。C1 全通过即选中并停止，不下载 C2；只有 C1 正式失败并形成可验证 summary，才下载 C2、检查其冻结 remote code 的运行时兼容性并按同一正式顺序执行。
+
+##### P0-MoE.14.12 实施步骤、风险与停止条件
+
+实施顺序：
+
+1. Claude 复审本节，重点确认 P0-A-static/runtime 拆分、native top-k、C1 packed expert 量化/计数、基础设施 preflight 和 test-only probe 边界；
+2. 用户指定实现者；先新增 schema/types/snapshot loader 和纯 CPU stand-in 测试；
+3. 实现 infrastructure/candidate preflight、dependency-isolated real loader、P0-B evaluator 和 artifact loader；
+4. 实现 C1 adapter、packed expert NF4/storage/offload 审计、原生 backend 实际计算计数、mixed batch/KV probe；
+5. 实现 C2 fallback adapter 和冻结 remote-code runtime compatibility 检查，但不在 C1 正式失败前下载或运行 C2；
+6. 实现 P0-D sampler、controller CLI、timeout/失败恢复，并保证 non-formal smoke artifact 不能晋升为正式 summary；
+7. 运行专项 coverage、全量 `tests/v2/`、Black/isort/compileall/diff-check，交 Claude contract 验收；
+8. 验收通过后提交推送，服务器只下载 C1 snapshot并按门执行；
+9. 回传小型 manifest/ledger/summary，不提交权重、cache 或大型生成日志；
+10. P0 全门通过后才编写 P1-MoE 方案。
+
+主要风险：C1 的 `use_experts_implementation` 可能选择不可逐 expert 观测的 fused backend；packed `nn.Parameter` 可能未被 bitsandbytes 转换为 NF4，从而使 14.3B 模型无法完整驻留 A4000；NF4 后端可能改变模块类型或不支持只读计数；Transformers 5.17 与 C2 旧 remote code 可能不兼容；chat template 可能拒绝 system role；network namespace 可能不可用。所有情况都有稳定失败语义，不通过切换 expert backend、动态设置 logits 容差、改 prompt、降低 top-k、允许 CPU/disk offload、替换依赖或放宽门槛补救。
+
+停止条件：基础设施不能提供可验证断网/只读加载；C1 packed expert 不是可验证 NF4、存在 CPU/disk offload 或单卡资源不满足；真实 adapter 只能看到 router selection、不能证明实际 expert zero-call；需要切换 backend 才能观测；all-allowed 无法在同一原生路径保持原宿主行为；shared-only 仍执行 routed 计算；mask 只能 dispatch 后应用；mixed batch 不能证明索引一一映射和顺序保持；跨请求 cache 无法在执行前拒绝；能力/确定性/资源任一硬门失败。候选失败后保留 artifact 并按固定顺序决定 C2；C1/C2 都失败则输出 `no_suitable_host`，返回候选/方案阶段，不进入 P1。
+
+当前状态：`LOCAL IMPLEMENTATION / AWAITING CLAUDE CONTRACT ACCEPTANCE`。P0-A-runtime/B/C/D runner、C1/C2 adapter、snapshot budget/freeze、formal artifact、controller 和 CPU 负向测试已实现；本地核心 coverage 已达到 statement 96.96% / branch 91.58%，但真实 CUDA/Transformers/Hub integration 尚未执行。Claude contract 验收通过且用户明确要求前，不提交推送、不下载完整权重、不运行 GPU。
+
 ---

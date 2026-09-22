@@ -45,6 +45,14 @@ class ArtifactWriter:
         )
         return self._write(name, raw)
 
+    def write_text(self, name: str, text: str) -> str:
+        """原子写入 ASCII 文本 sidecar 并返回 SHA-256。"""
+        if Path(name).name != name or not name.endswith(".sha256"):
+            raise P0Error("artifact_schema_mismatch", "sidecar 文件名非法")
+        if not isinstance(text, str) or any(ord(char) > 127 for char in text):
+            raise P0Error("artifact_schema_mismatch", "sidecar 必须为 ASCII 文本")
+        return self._write(name, text.encode("ascii"))
+
     def _write(self, name: str, raw: bytes) -> str:
         """先写临时文件，再使用原子替换提交 artifact。"""
         target = self.output_dir / name
