@@ -60,6 +60,15 @@ def _transformers() -> Tuple[Any, Any, Any]:  # pragma: no cover - 服务器依�
     return AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
 
+def _reset_cuda_peak_memory(torch: Any, device_index: int) -> None:
+    """显式选择 CUDA 设备后再重置峰值统计，兼容部分运行时初始化顺序。"""
+
+    # 某些 PyTorch/CUDA 组合在未显式建立当前设备上下文时，直接 reset
+    # 会报 Invalid device argument；先选择设备可使 runner 与独立诊断一致。
+    torch.cuda.set_device(device_index)
+    torch.cuda.reset_peak_memory_stats(device_index)
+
+
 def _quantization_config(candidate: CandidateSpec, bits_config: Any) -> Any:
     """根据 registry 的冻结字段创建量化配置，不接受调用方覆盖。"""
 
@@ -260,7 +269,7 @@ def load_transformers_host(
         kwargs["quantization_config"] = quantization
     started = time.monotonic()
     if torch.cuda.is_available():
-        torch.cuda.reset_peak_memory_stats(device_index)
+        _reset_cuda_peak_memory(torch, device_index)
     try:
         tokenizer = AutoTokenizer.from_pretrained(
             str(snapshot_root),

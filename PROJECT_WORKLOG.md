@@ -6,7 +6,9 @@
 **状态**: R3、G0、M0、M1a tiny-MoE contract、M2 多专家 scope contract、G1-a reference、G1-b CPU verifier、I1、P0-MoE 本地实现与正式 fixture、P0-MoE.14 真实宿主 runner 均已通过 Claude contract 验收；P0-A-static 正式 artifact 已验收通过，C1/C2 passed、C3 rejected；当前转入服务器 C1 实测。
 **最后更新**: 2026-09-21（P0-MoE.14 Claude 验收通过）
 
-**当前唯一下一步**：提交并推送 P0-MoE.14 实现；服务器先执行 infrastructure non-formal preflight，只有通过后才下载 C1，并严格按 P0-A-runtime → P0-B → P0-C → P0-D 顺序运行。服务器前仍不下载 C2，除非 C1 形成可验证正式失败摘要。
+**当前唯一下一步**：将 CUDA 设备初始化修复提交并推送；服务器重新运行 C1 candidate preflight，随后严格按 P0-A-runtime → P0-B → P0-C → P0-D 顺序运行。服务器前仍不下载 C2，除非 C1 形成可验证正式失败摘要。
+
+**2026-09-22 P0-MoE.14 CUDA 初始化修复 checkpoint**：服务器 C1 candidate preflight 暴露 `torch.cuda.reset_peak_memory_stats(0)` 在未显式建立当前设备上下文时返回 `Invalid device argument`；独立诊断确认先执行 `torch.cuda.set_device(0)` 后 reset 稳定通过。已在 `real_loader.py` 增加显式设备选择并封装峰值统计初始化，新增调用顺序回归测试。P0 真实宿主专项 **76 passed**，完整 `tests/v2/` **1031 passed**（仅 1 个既有 PyTorch sparse warning），compileall 与 `git diff --check` 通过。该修复不改变 snapshot、registry、P0 接受门或候选顺序；服务器现有 C1 snapshot 可复用，失败的 candidate preflight 不构成正式 C1 失败证据。
 
 **2026-09-21 P0-MoE.14 Claude 验收通过 checkpoint**：Claude 已验收通过真实宿主 runner、C1/C2 adapter、snapshot budget/freeze、formal artifact、controller、CPU 负向测试及本地 coverage/回归证据。下一步不再修改本地实现，先提交推送；服务器只执行 infrastructure preflight 和 C1，C2 继续保持未下载状态，除非 C1 正式硬门失败并生成 summary.json 及匹配 sidecar。
 

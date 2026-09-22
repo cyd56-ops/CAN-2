@@ -699,6 +699,28 @@ def test_qwen_and_generic_adapter_uninstalled_paths() -> None:
         qwen.run_moe_probe(make_mixed_probe_request())
 
 
+def test_cuda_peak_reset_selects_device_before_reset() -> None:
+    """验证真实 loader 先选中设备，再重置 CUDA 峰值统计。"""
+
+    from can.v2.pretrained_moe_p0.real_loader import _reset_cuda_peak_memory
+
+    events = []
+
+    class FakeCuda:
+        """记录 CUDA 设备调用顺序的最小替身。"""
+
+        def set_device(self, device_index: int) -> None:
+            """记录显式设备选择。"""
+            events.append(("set_device", device_index))
+
+        def reset_peak_memory_stats(self, device_index: int) -> None:
+            """记录峰值统计重置。"""
+            events.append(("reset_peak_memory_stats", device_index))
+
+    _reset_cuda_peak_memory(SimpleNamespace(cuda=FakeCuda()), 0)
+    assert events == [("set_device", 0), ("reset_peak_memory_stats", 0)]
+
+
 @pytest.mark.parametrize(
     ("mode", "message"),
     [
