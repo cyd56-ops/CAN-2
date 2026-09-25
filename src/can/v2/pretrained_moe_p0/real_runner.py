@@ -233,6 +233,8 @@ class RealP0Runner:
                 loaded.load_seconds,
                 controller_elapsed_seconds + time.monotonic() - started,
                 tuple(resources),
+                max_reserved_bytes=candidate.profile.max_reserved_bytes,
+                min_free_bytes=candidate.profile.min_free_bytes,
             )
             reserved = [
                 item.cuda_reserved_bytes

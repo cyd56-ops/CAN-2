@@ -3,10 +3,12 @@
 ## 当前研究阶段
 
 **阶段**: V2 - Gate Layer 在计算图中间架构  
-**状态**: R3、G0、M0、M1a tiny-MoE contract、M2 多专家 scope contract、G1-a reference、G1-b CPU verifier、I1、P0-MoE 本地实现与正式 fixture、P0-MoE.14 真实宿主 runner 均已通过 Claude contract 验收；P0-A-static 正式 artifact 已验收通过，C1/C2 passed、C3 rejected；当前转入服务器 C1 实测。
-**最后更新**: 2026-09-21（P0-MoE.14 Claude 验收通过）
+**状态**: R3、G0、M0、M1a tiny-MoE contract、M2 多专家 scope contract、G1-a reference、G1-b CPU verifier、I1、P0-MoE 本地实现与正式 fixture、P0-MoE.14 NF4 runner 均已通过 Claude contract 验收；P0-A-static 正式 artifact 已验收通过，C1/C2 passed、C3 rejected。C1 NF4 在服务器未通过 expert 量化可验证性；vGPU-48G BF16 非正式 load smoke 成功，当前新增 `c1-bf16-v1` 独立 profile，等待 Claude contract 复审，尚未运行 BF16 正式 P0。
+**最后更新**: 2026-09-25（C1 BF16 profile 实现待 Claude 验收）
 
-**当前唯一下一步**：将 CUDA 设备初始化修复提交并推送；服务器重新运行 C1 candidate preflight，随后严格按 P0-A-runtime → P0-B → P0-C → P0-D 顺序运行。服务器前仍不下载 C2，除非 C1 形成可验证正式失败摘要。
+**当前唯一下一步**：将本轮 C1 BF16 独立 profile 的代码、registry、资源门和测试交 Claude contract 复审；复审通过后提交推送，再在服务器复用现有只读 C1 snapshot，按 BF16 registry 执行 non-formal candidate preflight，随后严格按 P0-A-runtime → P0-B → P0-C → P0-D 顺序正式运行。未形成 C1-BF16 正式失败 summary 前不下载 C2。
+
+**2026-09-25 C1 BF16 独立 profile 实现 checkpoint（待 Claude contract 复审）**：服务器 vGPU-48G 的 non-formal BF16 smoke 已证明 C1 可在 `cuda:0` 完整加载，load 9.18 秒、peak allocated 27.31 GiB、peak reserved 28.406 GiB，144 条 expert 参数记录为 BF16 普通参数且无 CPU/disk offload；原 NF4 预检失败是实际 expert 未成为 `Params4bit + nf4`，不是显存不足。新增 `candidate_registry_c1_bf16_v1.json`（SHA-256 `0a6b906e729751217fa6cb31395e972375975c71a55038268c53fe6844ae2e3c`）及 sidecar，保留原 NF4 formal_v3 不变；profile-aware candidate smoke 分别验证 NF4/BF16 expert 表示，BF16 仅接受 CUDA BF16 普通参数；profile 资源门冻结为 reserved `<=36 GiB`、全程 free `>=8 GiB`，历史 profile 仍沿用 `14.5 GiB/1 GiB`。BF16 profile 复用相同模型 revision、静态源码/许可证 decision 和 snapshot inventory，但必须重新执行 P0-A-runtime/B/C/D；它仍是研究运行配置，不等于模型授权或安全结论。专项 **122 passed**；完整 `tests/v2/` **1033 passed**（1 个既有 PyTorch sparse warning）；Black、isort、compileall、`git diff --check`、registry schema 与 SHA-256 sidecar 验证通过。branch coverage 命令在本机导入 PyTorch 时触发 Windows access violation，未生成可信 coverage 结果；不宣称本轮 coverage 达标。尚未运行服务器 BF16 candidate preflight 或正式 P0，也未提交推送。
 
 **2026-09-22 P0-MoE.14 CUDA 初始化修复 checkpoint**：服务器 C1 candidate preflight 暴露 `torch.cuda.reset_peak_memory_stats(0)` 在未显式建立当前设备上下文时返回 `Invalid device argument`；独立诊断确认先执行 `torch.cuda.set_device(0)` 后 reset 稳定通过。已在 `real_loader.py` 增加显式设备选择并封装峰值统计初始化，新增调用顺序回归测试。P0 真实宿主专项 **76 passed**，完整 `tests/v2/` **1031 passed**（仅 1 个既有 PyTorch sparse warning），compileall 与 `git diff --check` 通过。该修复不改变 snapshot、registry、P0 接受门或候选顺序；服务器现有 C1 snapshot 可复用，失败的 candidate preflight 不构成正式 C1 失败证据。
 

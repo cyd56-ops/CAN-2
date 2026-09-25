@@ -23,6 +23,8 @@ class CandidateProfile:
     dtype: str
     quantization_config: Optional[Mapping[str, Any]]
     allow_remote_code: bool
+    max_reserved_bytes: int = int(14.5 * 1024**3)
+    min_free_bytes: int = 1024**3
 
 
 @dataclass(frozen=True)

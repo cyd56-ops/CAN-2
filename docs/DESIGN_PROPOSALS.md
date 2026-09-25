@@ -5473,6 +5473,18 @@ PYTHONPATH="$PWD/src" python scripts/run_p0_moe_real.py \
 
 CLI 的 candidate ID 只能选择 registry 中 passed 候选。C1 是唯一允许在没有前序失败 artifact 时运行的候选；运行 C2 必须额外提供 C1 的可验证 failed summary，且失败必须来自 P0-A-runtime/B/C/D 硬门。不得跳过 C1、并行试跑后择优、临时改变 profile 或只提交成功结果。`--preflight infrastructure` 在下载前验证网络隔离、只读挂载能力和 GPU/依赖；`--preflight candidate` 在下载后采集原生 backend、packed expert 量化/存储、可观测性与加载资源。两者输出都必须明确 `non_formal=true`，拒绝作为正式门摘要或 C2 前置失败 artifact。
 
+##### P0-MoE.14.10a C1 BF16 独立执行 profile
+
+NF4 candidate preflight 若未能证明 expert 运行时表示为 bitsandbytes `Params4bit` 且 `quant_type=nf4`，不得通过放宽检查继续。由于 C1 在服务器 vGPU-48G 上的非正式 BF16 smoke 已实际加载成功，另登记独立 profile `c1-bf16-v1`，registry 为 `candidate_registry_c1_bf16_v1.json`；原 `candidate_registry_formal_v3.json` 与 `c1-bnb-nf4-bf16-v1` 原样保留，NF4 失败记录不得被 BF16 结果覆盖。
+
+本 profile 只改变运行时 dtype/量化方式，不改变模型仓库、resolved commit、license/source review 或静态结构结论；因此可复用同一只读 snapshot 与 P0-A-static decision。snapshot manifest 绑定 candidate/repository/commit/file inventory，不绑定量化 profile。BF16 run 仍须重新执行 P0-A-runtime，且 P0-B/C/D 的全部门槛均重新验证；NF4 的正式或 smoke 结果不能代替 BF16 证据。
+
+BF16 candidate smoke 的通过条件为：packed expert records 非空；每个记录均为 CUDA 上的普通参数、dtype 为 BF16、非 `Params4bit` 且无 NF4 metadata；宿主全部参数仍只位于目标 CUDA 设备、无 CPU/disk offload；expert 实际执行可观测且 native top-k 可解析。任一不满足均 fail closed。NF4 profile 继续要求 `Params4bit + quant_type=nf4`。两类 profile 共用同一候选适配器与结构门，不切换 expert backend。
+
+vGPU-48G BF16 profile 的 P0-D 资源门预登记为：`max_cuda_reserved <= 36 GiB`、整个 run 中 `min_gpu_free >= 8 GiB`；加载仍须 `<=20 min`、候选总运行 `<=90 min`，且不得 offload/OOM。该资源余量依据服务器 BF16 非正式 load smoke 的 `peak_reserved=28.406 GiB`，给后续 P0-B/C 激活、probe 和框架开销预留空间；该阈值在正式 P0 run 前冻结，不能根据正式结果回调。原 A4000/NF4 profile 没有显式资源字段时仍使用历史 `14.5 GiB` reserved、`1 GiB` free 门槛。
+
+BF16 registry 的 SHA-256 通过同目录 `.sha256` sidecar 固定。此 profile 当前仅完成本地实现，必须先由 Claude 复审其代码、registry 摘要、资源阈值和测试；复审前不得将 BF16 candidate preflight 晋升为正式证据或运行正式 P0。模型行为、效用与 expert 结构仍未由本次 load smoke 验证。
+
 ##### P0-MoE.14.11 测试、覆盖率和服务器验收
 
 不下载权重的本地测试至少覆盖：

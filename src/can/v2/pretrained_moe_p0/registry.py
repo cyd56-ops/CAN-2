@@ -30,7 +30,8 @@ _CANDIDATE_KEYS = {
     "p0a_decision_sha256",
     "p0a_failure_codes",
 }
-_PROFILE_KEYS = {"profile_id", "dtype", "quantization_config", "allow_remote_code"}
+_PROFILE_KEYS_V1 = {"profile_id", "dtype", "quantization_config", "allow_remote_code"}
+_PROFILE_KEYS_V2 = _PROFILE_KEYS_V1 | {"max_reserved_bytes", "min_free_bytes"}
 
 
 def _duplicate_object(pairs: List[Tuple[str, Any]]) -> Dict[str, Any]:
@@ -63,9 +64,10 @@ def validate_registry(payload: object) -> Tuple[CandidateSpec, ...]:
     seen_orders: Set[int] = set()
     for item in candidates:
         candidate = require_exact_keys(item, _CANDIDATE_KEYS, "candidate")
-        profile_data = require_exact_keys(
-            candidate["profile"], _PROFILE_KEYS, "profile"
-        )
+        profile_data = candidate["profile"]
+        profile_keys = set(profile_data) if isinstance(profile_data, dict) else None
+        if profile_keys not in (_PROFILE_KEYS_V1, _PROFILE_KEYS_V2):
+            raise P0Error("artifact_schema_mismatch", "profile 字段集合不匹配")
         candidate_id = candidate["candidate_id"]
         order = candidate["attempt_order"]
         if (
@@ -108,6 +110,18 @@ def validate_registry(payload: object) -> Tuple[CandidateSpec, ...]:
             raise P0Error("artifact_schema_mismatch", "dtype 不支持")
         if type(profile_data["allow_remote_code"]) is not bool:
             raise P0Error("artifact_schema_mismatch", "allow_remote_code 必须为 bool")
+        max_reserved_bytes = int(14.5 * 1024**3)
+        min_free_bytes = 1024**3
+        if set(profile_data) == _PROFILE_KEYS_V2:
+            if (
+                type(profile_data["max_reserved_bytes"]) is not int
+                or profile_data["max_reserved_bytes"] <= 0
+                or type(profile_data["min_free_bytes"]) is not int
+                or profile_data["min_free_bytes"] <= 0
+            ):
+                raise P0Error("artifact_schema_mismatch", "profile 资源门槛非法")
+            max_reserved_bytes = profile_data["max_reserved_bytes"]
+            min_free_bytes = profile_data["min_free_bytes"]
         _sha(candidate["metadata_source_sha256"], "metadata_source_sha256")
         _sha(candidate["p0a_decision_sha256"], "p0a_decision_sha256")
         if candidate["license_review_status"] not in {
@@ -152,6 +166,8 @@ def validate_registry(payload: object) -> Tuple[CandidateSpec, ...]:
                     dtype=profile_data["dtype"],
                     quantization_config=profile_data["quantization_config"],
                     allow_remote_code=profile_data["allow_remote_code"],
+                    max_reserved_bytes=max_reserved_bytes,
+                    min_free_bytes=min_free_bytes,
                 ),
                 expected_architecture_family=candidate["expected_architecture_family"],
                 expected_moe_variant=candidate["expected_moe_variant"],

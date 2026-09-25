@@ -494,6 +494,26 @@ def test_resource_hard_gates() -> None:
         )
     with pytest.raises(P0Error, match="gpu_memory_headroom_insufficient"):
         validate_resource_gates(1.0, 2.0, (replace(good, gpu_free_bytes=1),))
+    bf16_sample = replace(
+        good,
+        cuda_reserved_bytes=30 * 1024**3,
+        gpu_free_bytes=9 * 1024**3,
+    )
+    validate_resource_gates(
+        1.0,
+        2.0,
+        (bf16_sample,),
+        max_reserved_bytes=36 * 1024**3,
+        min_free_bytes=8 * 1024**3,
+    )
+    with pytest.raises(P0Error, match="gpu_memory_limit_exceeded"):
+        validate_resource_gates(
+            1.0,
+            2.0,
+            (bf16_sample,),
+            max_reserved_bytes=29 * 1024**3,
+            min_free_bytes=8 * 1024**3,
+        )
 
 
 def test_candidate_smoke_reports_quantization_and_observability() -> None:
@@ -525,6 +545,62 @@ def test_candidate_smoke_reports_quantization_and_observability() -> None:
     assert "expert_call_unobservable" in failed.failure_codes
     loaded.packed_expert_records = ({"is_params4bit": False, "quant_type": None},)
     assert "packed_expert_not_nf4" in candidate_load_smoke(loaded).failure_codes
+
+
+def test_candidate_smoke_accepts_registered_bf16_experts() -> None:
+    """BF16 profile 只接受 CUDA 上未量化的 BF16 expert 参数。"""
+    candidate = validate_registry(_candidate_payload())[0]
+    candidate = replace(
+        candidate,
+        profile=replace(
+            candidate.profile,
+            profile_id="c1-bf16-v1",
+            quantization_config={},
+        ),
+    )
+    loaded = SimpleNamespace(
+        candidate=candidate,
+        packed_expert_records=(
+            {
+                "is_params4bit": False,
+                "quant_type": None,
+                "dtype": "torch.bfloat16",
+                "device": "cuda:0",
+            },
+        ),
+        parameter_devices=("cuda:0",),
+        cpu_offload_detected=False,
+        disk_offload_detected=False,
+        architecture=_architecture(),
+        load_seconds=1.0,
+        parameter_dtypes=("torch.bfloat16",),
+        quantization_class="none",
+        cuda_peak_allocated=1,
+        cuda_peak_reserved=2,
+    )
+    assert candidate_load_smoke(loaded).status == "passed"
+    loaded.packed_expert_records = (
+        {
+            "is_params4bit": False,
+            "quant_type": None,
+            "dtype": "torch.float16",
+            "device": "cuda:0",
+        },
+    )
+    assert "packed_expert_not_bf16" in candidate_load_smoke(loaded).failure_codes
+
+
+def test_registry_profile_resource_budget_is_optional_and_strict() -> None:
+    """旧 registry 使用历史门槛，新 profile 可登记独立资源门槛。"""
+    payload = _candidate_payload()
+    parsed = validate_registry(payload)
+    assert parsed[0].profile.max_reserved_bytes == int(14.5 * 1024**3)
+    payload["candidates"][0]["profile"].update(
+        {"max_reserved_bytes": 36 * 1024**3, "min_free_bytes": 8 * 1024**3}
+    )
+    parsed = validate_registry(payload)
+    assert parsed[0].profile.max_reserved_bytes == 36 * 1024**3
+    assert parsed[0].profile.min_free_bytes == 8 * 1024**3
 
 
 def test_loader_helpers_inspect_modules_devices_and_nf4() -> None:
@@ -832,7 +908,11 @@ def test_formal_runner_success_collects_generation_and_call_ledgers(
         },
     )
     monkeypatch.setattr(runner_module, "sample_resource", lambda *args: good_sample)
-    monkeypatch.setattr(runner_module, "validate_resource_gates", lambda *args: None)
+    monkeypatch.setattr(
+        runner_module,
+        "validate_resource_gates",
+        lambda *args, **kwargs: None,
+    )
     monkeypatch.setattr(
         QwenHostAdapter, "inspect_architecture", lambda self: architecture
     )

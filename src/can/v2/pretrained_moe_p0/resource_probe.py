@@ -57,17 +57,30 @@ def infrastructure_preflight(
 def candidate_load_smoke(
     loaded: LoadedRealHost, architecture: Optional[Any] = None
 ) -> PreflightResult:
-    """检查 C1/C2 load 结果的量化、设备和逐 expert 可观测性。"""
+    """按冻结 profile 检查量化、设备和逐 expert 可观测性。"""
 
     records = loaded.packed_expert_records
     architecture = loaded.architecture if architecture is None else architecture
+    profile = getattr(loaded, "candidate", None)
+    profile = getattr(profile, "profile", None)
+    quantization_config = getattr(profile, "quantization_config", None)
+    # 没有 candidate 的旧 CPU stand-in 默认按 NF4 处理，保持旧测试和旧摘要语义。
+    expects_nf4 = quantization_config is None or bool(quantization_config)
+    packed_experts_nf4 = bool(records) and all(
+        item.get("is_params4bit") and item.get("quant_type") == "nf4"
+        for item in records
+    )
+    packed_experts_bf16 = bool(records) and all(
+        item.get("dtype") in {"torch.bfloat16", "bfloat16"}
+        and not item.get("is_params4bit")
+        and item.get("quant_type") is None
+        and str(item.get("device", "")).startswith("cuda:")
+        for item in records
+    )
     checks = {
         "packed_experts_present": bool(records),
-        "packed_experts_nf4": bool(records)
-        and all(
-            item.get("is_params4bit") and item.get("quant_type") == "nf4"
-            for item in records
-        ),
+        "packed_experts_nf4": packed_experts_nf4,
+        "packed_experts_bf16": packed_experts_bf16,
         "single_device": len(loaded.parameter_devices) == 1
         and loaded.parameter_devices[0].startswith("cuda:"),
         "no_cpu_offload": not loaded.cpu_offload_detected,
@@ -76,8 +89,10 @@ def candidate_load_smoke(
         "native_top_k_resolved": architecture.native_top_k > 0,
     }
     failure_codes = []
-    if not checks["packed_experts_nf4"]:
+    if expects_nf4 and not packed_experts_nf4:
         failure_codes.append("packed_expert_not_nf4")
+    if not expects_nf4 and not packed_experts_bf16:
+        failure_codes.append("packed_expert_not_bf16")
     if (
         not checks["single_device"]
         or not checks["no_cpu_offload"]
@@ -150,8 +165,11 @@ def validate_resource_gates(
     load_seconds: float,
     total_seconds: float,
     samples: tuple[ResourceSample, ...],
+    *,
+    max_reserved_bytes: int = int(14.5 * 1024**3),
+    min_free_bytes: int = 1024**3,
 ) -> None:
-    """执行 P0-D 预登记的时长、显存和 offload 硬门。"""
+    """执行 profile 预登记的时长、显存和 offload 硬门。"""
     if load_seconds > 20 * 60:
         raise P0Error("load_timeout", "模型加载超过 20 分钟")
     if total_seconds > 90 * 60:
@@ -168,7 +186,7 @@ def validate_resource_gates(
     free = [item.gpu_free_bytes for item in samples if item.gpu_free_bytes is not None]
     if not reserved or not free:
         raise P0Error("resource_evidence_missing", "缺少 CUDA 显存采样")
-    if max(reserved) > int(14.5 * 1024**3):
-        raise P0Error("gpu_memory_limit_exceeded", "reserved 显存超过 14.5 GiB")
-    if min(free) < 1024**3:
-        raise P0Error("gpu_memory_headroom_insufficient", "设备余量低于 1 GiB")
+    if max(reserved) > max_reserved_bytes:
+        raise P0Error("gpu_memory_limit_exceeded", "reserved 显存超过 profile 门槛")
+    if min(free) < min_free_bytes:
+        raise P0Error("gpu_memory_headroom_insufficient", "设备余量低于 profile 门槛")
