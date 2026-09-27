@@ -178,7 +178,13 @@ class _Tokenizer:
 
     def decode(self, values, skip_special_tokens=False):
         """把测试 token 映射到固定答案文本。"""
-        return "CODE-format_copy-00" if values and values[0] == 7 else "bad"
+        if values and values[0] == 7:
+            return (
+                "CODE-format_copy-00<|im_end|>"
+                if 99 in values
+                else "CODE-format_copy-00"
+            )
+        return "bad"
 
 
 class _Model:

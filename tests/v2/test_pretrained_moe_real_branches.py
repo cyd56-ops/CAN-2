@@ -224,6 +224,31 @@ def test_generation_helpers_classify_input_output_and_length_failures() -> None:
     }
 
 
+def test_generate_one_excludes_eos_from_answer_text_but_keeps_audit_tokens() -> None:
+    """EOS 不得进入答案匹配，但完整 continuation 必须保留。"""
+
+    class EosTokenizer:
+        """返回可观察 EOS 标记的最小 tokenizer。"""
+
+        eos_token_id = 9
+
+        def apply_chat_template(self, *args: Any, **kwargs: Any) -> Any:
+            """返回固定 prompt。"""
+            return {"input_ids": [[1]], "attention_mask": [[1]]}
+
+        def decode(self, values: Any, **kwargs: Any) -> str:
+            """模拟 tokenizer 将 EOS 解码为控制标记。"""
+            return "answer<|im_end|>" if 9 in values else "answer"
+
+    model = SimpleNamespace(generate=lambda **kwargs: [[1, 7, 9, 8]])
+    request = GenerationRequest("eos", "s", "u", "answer", "strict_em", 4, False)
+    record = generate_one(EosTokenizer(), model, request)
+    assert record.matched is True
+    assert record.generated_text == "answer"
+    assert record.continuation_tokens == (7, 9, 8)
+    assert record.stop_reason == "eos"
+
+
 def test_evaluate_fixture_passes_and_rejects_cache_difference() -> None:
     """P0-B 必须同时满足组阈值、重复一致和 cache 等价。"""
 

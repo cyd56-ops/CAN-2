@@ -24,6 +24,17 @@ def _safe_decode(tokenizer: Any, token_ids: Sequence[int]) -> str:
     return text
 
 
+def _eos_ids(tokenizer: Any) -> Tuple[int, ...]:
+    """读取 tokenizer 的 EOS token 集合，并拒绝非整数配置。"""
+
+    value = getattr(tokenizer, "eos_token_id", None)
+    if type(value) is int:
+        return (value,)
+    if isinstance(value, (list, tuple)):
+        return tuple(item for item in value if type(item) is int)
+    return ()
+
+
 def _input_ids(tokenizer: Any, request: GenerationRequest) -> Any:
     """按原生 chat template 构造单样本输入。"""
 
@@ -133,11 +144,17 @@ def generate_one(
             },
         )
     continuation = output_tokens[len(prompt_tokens) :]
-    generated = _safe_decode(tokenizer, continuation)
-    eos_id = getattr(tokenizer, "eos_token_id", None)
-    stop_reason = (
-        "eos" if eos_id is not None and eos_id in continuation else "max_new_tokens"
+    eos_ids = _eos_ids(tokenizer)
+    eos_position = next(
+        (index for index, token_id in enumerate(continuation) if token_id in eos_ids),
+        None,
     )
+    # EOS 及其后的控制 token 只用于停止/确定性审计，不参与答案文本评分。
+    answer_tokens = (
+        continuation if eos_position is None else continuation[:eos_position]
+    )
+    generated = _safe_decode(tokenizer, answer_tokens)
+    stop_reason = "eos" if eos_position is not None else "max_new_tokens"
     matched = (
         strict_em(generated, request.expected_text)
         if request.metric == "strict_em"
