@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, Iterable, List, Mapping, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from .fixture import normalized_em, strict_em
 from .real_types import GenerationRecord, GenerationRequest
@@ -47,17 +47,40 @@ def _input_ids(tokenizer: Any, request: GenerationRequest) -> Any:
         ) from exc
 
 
-def _tensor_to_list(value: Any) -> List[int]:
+def _value_summary(value: Any) -> Dict[str, Any]:
+    """生成不含 token 内容的类型、形状和长度摘要。"""
+
+    summary: Dict[str, Any] = {"type": type(value).__name__}
+    shape = getattr(value, "shape", None)
+    if shape is not None:
+        try:
+            summary["shape"] = [int(item) for item in tuple(shape)]
+        except (TypeError, ValueError):
+            summary["shape"] = "unavailable"
+    ndim = getattr(value, "ndim", None)
+    if isinstance(ndim, int):
+        summary["ndim"] = ndim
+    if isinstance(value, (list, tuple)):
+        summary["outer_length"] = len(value)
+    return summary
+
+
+def _tensor_to_list(value: Any, stage: Optional[str] = None) -> List[int]:
     """将一维/单 batch token tensor 转成 Python int 列表。"""
 
+    original_summary = _value_summary(value)
     if hasattr(value, "detach"):
         value = value.detach().cpu()
     if hasattr(value, "tolist"):
         value = value.tolist()
-    if value and isinstance(value[0], list):
+    if isinstance(value, list) and value and isinstance(value[0], list):
         value = value[0]
     if not isinstance(value, list) or any(type(item) is not int for item in value):
-        raise P0Error("generation_tensor_invalid", "token 输出结构非法")
+        code = {
+            "input": "input_tensor_invalid",
+            "output": "output_tensor_invalid",
+        }.get(stage, "generation_tensor_invalid")
+        raise P0Error(code, "token 张量结构非法", {"value": original_summary})
     return value
 
 
@@ -67,13 +90,22 @@ def generate_one(
     """对单条 fixture 执行 greedy 生成并返回逐 token 诊断。"""
 
     inputs = _input_ids(tokenizer, request)
-    if isinstance(inputs, dict):
+    if isinstance(inputs, Mapping):
         input_ids = inputs.get("input_ids")
         attention_mask = inputs.get("attention_mask")
     else:
         input_ids = inputs
         attention_mask = None
-    prompt_tokens = _tensor_to_list(input_ids)
+    try:
+        prompt_tokens = _tensor_to_list(input_ids, "input")
+    except P0Error as exc:
+        if exc.code == "input_tensor_invalid":
+            raise
+        raise P0Error(
+            "input_tensor_invalid",
+            "tokenizer 输入结构非法",
+            {"value": _value_summary(input_ids)},
+        ) from exc
     if len(prompt_tokens) > 256:
         raise P0Error("prompt_too_long", "prompt 超过冻结 256 token 上限")
     kwargs: Dict[str, Any] = {
@@ -89,9 +121,17 @@ def generate_one(
         output = model.generate(**kwargs)
     except Exception as exc:  # pragma: no cover - 服务器模型路径
         raise P0Error("generation_failed", "模型生成失败") from exc
-    output_tokens = _tensor_to_list(output)
+    output_tokens = _tensor_to_list(output, "output")
     if len(output_tokens) < len(prompt_tokens):
-        raise P0Error("generation_tensor_invalid", "输出短于 prompt")
+        raise P0Error(
+            "output_shorter_than_prompt",
+            "模型输出短于 prompt",
+            {
+                "prompt_length": len(prompt_tokens),
+                "output_length": len(output_tokens),
+                "output": _value_summary(output),
+            },
+        )
     continuation = output_tokens[len(prompt_tokens) :]
     generated = _safe_decode(tokenizer, continuation)
     eos_id = getattr(tokenizer, "eos_token_id", None)
@@ -140,7 +180,7 @@ def evaluate_fixture(adapter: Any, cases: Iterable[FixtureCase]) -> Dict[str, An
 
     case_list = tuple(cases)
     records: List[GenerationRecord] = []
-    errors: List[Dict[str, str]] = []
+    errors: List[Dict[str, Any]] = []
     for use_cache in (False, True):
         for repeat in range(3):
             for request in requests_from_fixture(case_list, use_cache):
@@ -148,14 +188,15 @@ def evaluate_fixture(adapter: Any, cases: Iterable[FixtureCase]) -> Dict[str, An
                     record = adapter.baseline_generate(request)
                     records.append(record)
                 except P0Error as exc:
-                    errors.append(
-                        {
-                            "case_id": request.case_id,
-                            "use_cache": str(use_cache),
-                            "repeat": str(repeat),
-                            "code": exc.code,
-                        }
-                    )
+                    error: Dict[str, Any] = {
+                        "case_id": request.case_id,
+                        "use_cache": str(use_cache),
+                        "repeat": str(repeat),
+                        "code": exc.code,
+                    }
+                    if exc.details:
+                        error["details"] = dict(exc.details)
+                    errors.append(error)
     by_group: Dict[str, Dict[str, int]] = {}
     for case in case_list:
         group = case.case_id.split("-", 1)[0]

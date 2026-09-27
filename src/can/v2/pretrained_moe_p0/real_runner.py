@@ -381,8 +381,8 @@ class RealP0Runner:
     @staticmethod
     def _p0b_error_examples(
         capability: Mapping[str, Any], limit: int = 8
-    ) -> Tuple[Mapping[str, str], ...]:
-        """保留有限错误定位样本，避免写入 prompt、token 或异常消息。"""
+    ) -> Tuple[Mapping[str, Any], ...]:
+        """保留有限错误定位样本和安全摘要，避免写入 prompt/token/异常文本。"""
 
         errors = capability.get("errors", ())
         if not isinstance(errors, (tuple, list)):
@@ -407,6 +407,16 @@ class RealP0Runner:
                     "code": code,
                 }
             )
+            details = item.get("details")
+            if isinstance(details, Mapping):
+                safe_details = {
+                    key: value
+                    for key, value in details.items()
+                    if key in {"value", "output", "prompt_length", "output_length"}
+                    and isinstance(value, (str, int, float, list, dict, tuple))
+                }
+                if safe_details:
+                    examples[-1]["details"] = safe_details
             if len(examples) >= limit:
                 break
         return tuple(examples)

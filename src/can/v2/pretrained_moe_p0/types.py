@@ -9,9 +9,12 @@ from typing import Any, Dict, Mapping, Optional, Set, Tuple
 class P0Error(ValueError):
     """表示 P0 输入、供应链或宿主能力违反冻结契约。"""
 
-    def __init__(self, code: str, message: str) -> None:
-        """使用稳定 reason code 构造错误。"""
+    def __init__(
+        self, code: str, message: str, details: Optional[Mapping[str, Any]] = None
+    ) -> None:
+        """使用稳定 reason code 构造错误，并保存受限诊断摘要。"""
         self.code = code
+        self.details = dict(details or {})
         super().__init__(f"{code}: {message}")
 
 

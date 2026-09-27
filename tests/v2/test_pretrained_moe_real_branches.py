@@ -179,6 +179,51 @@ def test_generation_helpers_cover_templates_tensors_and_failures() -> None:
         _safe_decode(broken, (1,))
 
 
+def test_generation_helpers_classify_input_output_and_length_failures() -> None:
+    """生成失败必须区分输入结构、输出结构和输出长度。"""
+
+    import torch
+
+    request = _request()
+    invalid_input = SimpleNamespace(
+        apply_chat_template=lambda *args, **kwargs: {"input_ids": {"bad": True}},
+        decode=lambda ids, **kwargs: "ok",
+        eos_token_id=None,
+    )
+    with pytest.raises(P0Error) as input_error:
+        generate_one(
+            invalid_input, SimpleNamespace(generate=lambda **kwargs: None), request
+        )
+    assert input_error.value.code == "input_tensor_invalid"
+    assert input_error.value.details["value"]["type"] == "dict"
+
+    tokenizer = SimpleNamespace(
+        apply_chat_template=lambda *args, **kwargs: {
+            "input_ids": torch.tensor([[1, 2]])
+        },
+        decode=lambda ids, **kwargs: "ok",
+        eos_token_id=None,
+    )
+    with pytest.raises(P0Error) as output_error:
+        generate_one(
+            tokenizer, SimpleNamespace(generate=lambda **kwargs: {"bad": True}), request
+        )
+    assert output_error.value.code == "output_tensor_invalid"
+
+    with pytest.raises(P0Error) as length_error:
+        generate_one(
+            tokenizer,
+            SimpleNamespace(generate=lambda **kwargs: torch.tensor([[1]])),
+            request,
+        )
+    assert length_error.value.code == "output_shorter_than_prompt"
+    assert length_error.value.details == {
+        "prompt_length": 2,
+        "output_length": 1,
+        "output": {"type": "Tensor", "shape": [1, 1], "ndim": 2},
+    }
+
+
 def test_evaluate_fixture_passes_and_rejects_cache_difference() -> None:
     """P0-B 必须同时满足组阈值、重复一致和 cache 等价。"""
 
