@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import time
+from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Tuple
 
@@ -157,6 +158,8 @@ class RealP0Runner:
                 "groups": capability.get("groups", {}),
                 "thresholds": capability.get("thresholds", {}),
                 "error_count": len(capability.get("errors", ())),
+                "error_code_counts": self._p0b_error_code_counts(capability),
+                "error_examples": self._p0b_error_examples(capability),
             }
             determinism = {
                 "in_process_run_count": capability.get("in_process_run_count", 0),
@@ -360,6 +363,53 @@ class RealP0Runner:
             adapter = TransformersHostAdapter(loaded)
         capability = evaluate_fixture(adapter, fixture_cases)
         return self._p0b_signature(capability)
+
+    @staticmethod
+    def _p0b_error_code_counts(capability: Mapping[str, Any]) -> Mapping[str, int]:
+        """统计 P0-B 稳定错误码，不持久化异常文本或敏感输入。"""
+
+        errors = capability.get("errors", ())
+        if not isinstance(errors, (tuple, list)):
+            return {}
+        counts = Counter(
+            item.get("code")
+            for item in errors
+            if isinstance(item, Mapping) and isinstance(item.get("code"), str)
+        )
+        return {code: counts[code] for code in sorted(counts)}
+
+    @staticmethod
+    def _p0b_error_examples(
+        capability: Mapping[str, Any], limit: int = 8
+    ) -> Tuple[Mapping[str, str], ...]:
+        """保留有限错误定位样本，避免写入 prompt、token 或异常消息。"""
+
+        errors = capability.get("errors", ())
+        if not isinstance(errors, (tuple, list)):
+            return ()
+        examples = []
+        for item in errors:
+            if not isinstance(item, Mapping):
+                continue
+            case_id = item.get("case_id")
+            use_cache = item.get("use_cache")
+            repeat = item.get("repeat")
+            code = item.get("code")
+            if not all(
+                isinstance(value, str) for value in (case_id, use_cache, repeat, code)
+            ):
+                continue
+            examples.append(
+                {
+                    "case_id": case_id,
+                    "use_cache": use_cache,
+                    "repeat": repeat,
+                    "code": code,
+                }
+            )
+            if len(examples) >= limit:
+                break
+        return tuple(examples)
 
     @staticmethod
     def _p0b_signature(capability: Mapping[str, Any]) -> Mapping[str, Any]:

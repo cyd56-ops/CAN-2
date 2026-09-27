@@ -937,6 +937,43 @@ def test_formal_runner_success_collects_generation_and_call_ledgers(
     assert summary["resource_metrics"]["max_cuda_reserved_bytes"] == 1
 
 
+def test_p0b_error_diagnostics_preserve_codes_without_sensitive_text() -> None:
+    """P0-B 摘要应保存错误码计数和有限定位样本，不保存异常消息。"""
+    capability = {
+        "errors": [
+            {
+                "case_id": "format-00",
+                "use_cache": "False",
+                "repeat": "0",
+                "code": "chat_template_rejected",
+                "message": "secret prompt must not persist",
+            },
+            {
+                "case_id": "format-01",
+                "use_cache": "True",
+                "repeat": "1",
+                "code": "chat_template_rejected",
+            },
+            {
+                "case_id": "single-00",
+                "use_cache": "False",
+                "repeat": "0",
+                "code": "generation_failed",
+            },
+        ]
+    }
+    counts = RealP0Runner._p0b_error_code_counts(capability)
+    examples = RealP0Runner._p0b_error_examples(capability)
+    assert counts == {
+        "chat_template_rejected": 2,
+        "generation_failed": 1,
+    }
+    assert len(examples) == 3
+    assert all(
+        set(item) == {"case_id", "use_cache", "repeat", "code"} for item in examples
+    )
+
+
 def test_structure_false_boundary_always_has_stable_failure_code() -> None:
     """MoE 边界缺失时不得返回 false gate 加空失败码。"""
 
