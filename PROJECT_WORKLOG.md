@@ -4,11 +4,13 @@
 
 **阶段**: V2 - Gate Layer 在计算图中间架构  
 **状态**: R3、G0、M0、M1a tiny-MoE contract、M2 多专家 scope contract、G1-a reference、G1-b CPU verifier、I1、P0-MoE 本地实现与正式 fixture、P0-MoE.14 NF4 runner 均已通过 Claude contract 验收；P0-A-static 正式 artifact 已验收通过，C1/C2 passed、C3 rejected。C1 NF4 在服务器未通过 expert 量化可验证性；vGPU-48G BF16 非正式 load smoke 成功，当前新增 `c1-bf16-v1` 独立 profile，等待 Claude contract 复审，尚未运行 BF16 正式 P0。
-**最后更新**: 2026-09-27（C1 BF16 P0-B EOS 评分边界已修复，待提交与 Claude contract 复审）
+**最后更新**: 2026-09-30（C1 BF16 P0-B canonical cache 协议调整，待提交与 Claude contract 复审）
 
-**当前唯一下一步**：完成本轮 P0-B EOS 评分边界修复的测试与提交，交 Claude contract 复审；复审通过后在服务器复用现有只读 C1 BF16 snapshot，重新运行正式 P0-B。根据新的错误码判断输入结构、输出结构或输出长度根因；未形成 C1-BF16 正式失败 summary 前不下载 C2。
+**当前唯一下一步**：完成 `p0b-canonical-cache-v1` 代码、设计文档和测试的提交，交 Claude contract 复审；复审通过后在服务器复用现有只读 C1 BF16 snapshot，按新协议重新运行 C1 P0-B，不下载 C2。旧版 C1 `run-20260927-04` 保留为 v1 cache 等价硬门失败证据，不覆盖、不重写。
 
-**2026-09-27 P0-B EOS 评分边界修复 checkpoint（待提交）**：服务器生成结果已显示答案后附加 `<|im_end|>`，导致 evaluator 将 EOS 文本计入 strict/normalized EM，所有 fixture 被错误计为不匹配。`generate_one()` 现在只解码第一个 EOS 之前的 token 作为答案，同时保留完整 continuation token 用于确定性与 cache 等价性审计；兼容单个或多个 EOS ID。新增回归测试验证 EOS 不进入答案文本但仍保留在审计记录中。相关 P0 测试 **81 passed**；待运行完整 `tests/v2` 并提交。
+**2026-09-30 P0-B canonical cache 协议调整 checkpoint（待提交）**：采纳“宿主跨 cache 后端差异不等同于 CAN 失败”的意见，新增 `p0b-canonical-cache-v1`。`use_cache=true` 作为正式 canonical 硬门：三组能力阈值、同进程重复和三 worker 签名必须通过；`use_cache=false` 仍执行并记录独立分数、稳定性和 `cache_difference_count`，但跨模式差异不再单独淘汰 candidate。`groups`、cross-process signature 和 `deterministic` 现在明确对应 canonical 模式，summary 另保存 `groups_by_mode`、`diagnostic_deterministic`、canonical/diagnostic 错误计数。新增/更新协议测试；旧版失败 artifact 不改写。P0 专项 **81 passed**，完整 `tests/v2/` **1036 passed**（1 个既有 PyTorch sparse warning）；Black、isort（`--profile black`）、compileall、`git diff --check` 通过。尚未提交或推送，待 Claude contract 复审。
+
+**2026-09-27 P0-B EOS 评分边界修复 checkpoint（已包含于 `6c44b2e`）**：服务器生成结果已显示答案后附加 `<|im_end|>`，导致 evaluator 将 EOS 文本计入 strict/normalized EM，所有 fixture 被错误计为不匹配。`generate_one()` 现在只解码第一个 EOS 之前的 token 作为答案，同时保留完整 continuation token 用于确定性与 cache 等价性审计；兼容单个或多个 EOS ID。新增回归测试验证 EOS 不进入答案文本但仍保留在审计记录中。
 
 **2026-09-27 P0-B 生成阶段错误细分 checkpoint（已提交，待 Claude contract 复审）**：针对服务器 C1 BF16 正式 run 的 `generation_tensor_invalid=144`，将生成路径拆分为 `input_tensor_invalid`、`output_tensor_invalid` 和 `output_shorter_than_prompt` 三个稳定错误码；tokenizer 输入现在接受任意 `Mapping`（兼容 Hugging Face `BatchEncoding`），不改变 greedy/cache/评分语义。`P0Error` 可携带受限诊断摘要，正式 P0-B 错误样本只保留类型、shape、ndim、prompt/output 长度等信息，不落盘 prompt、完整 token 或异常文本。新增三类错误分支测试；补充 `scripts/__init__.py` 并将 `pytest.ini` 的 `pythonpath` 固定为 `src .`，修复 worker 测试在部分 pytest 启动方式下无法导入脚本包的问题。相关 P0 测试 **80 passed**，完整 `tests/v2/` **1035 passed**（1 个既有 PyTorch sparse warning），Black、`git diff --check` 通过；已提交推送，尚未重新运行服务器。该修复仍不能把原 144 次错误解释为能力不足，下一步只重新运行 C1 BF16 P0-B。
 

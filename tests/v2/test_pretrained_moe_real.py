@@ -744,7 +744,7 @@ def test_prior_candidate_failure_requires_matching_sidecar(tmp_path: Path) -> No
 
 def test_cross_process_p0b_requires_three_exact_signatures() -> None:
     """三次新进程结果必须逐 token、stop reason 和评分精确一致。"""
-    record = GenerationRecord("c0", "x", "x", "x", True, (1,), (2,), "eos", False)
+    record = GenerationRecord("c0", "x", "x", "x", True, (1,), (2,), "eos", True)
     capability = {
         "status": "passed",
         "groups": {"format": {"correct": 8, "total": 8}},
@@ -842,7 +842,7 @@ def test_formal_runner_success_collects_generation_and_call_ledgers(
     loaded = SimpleNamespace(
         model=SimpleNamespace(), architecture=architecture, load_seconds=1.0
     )
-    record = GenerationRecord("c0", "x", "x", "x", True, (1,), (2,), "eos", False)
+    record = GenerationRecord("c0", "x", "x", "x", True, (1,), (2,), "eos", True)
     capability = {
         "status": "passed",
         "groups": {"format": {"correct": 8, "total": 8}},

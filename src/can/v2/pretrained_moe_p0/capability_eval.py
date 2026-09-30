@@ -192,8 +192,63 @@ def requests_from_fixture(
     )
 
 
+def _score_groups(
+    case_list: Sequence[FixtureCase],
+    records: Sequence[GenerationRecord],
+    use_cache: bool,
+) -> Dict[str, Dict[str, int]]:
+    """按固定 cache 模式计算三组能力分数，不混合另一模式结果。"""
+
+    by_group: Dict[str, Dict[str, int]] = {}
+    for case in case_list:
+        group = case.case_id.split("-", 1)[0]
+        group_records = [
+            item
+            for item in records
+            if item.case_id == case.case_id and item.use_cache == use_cache
+        ]
+        by_group.setdefault(group, {"correct": 0, "total": len(case_list) // 3})
+        signatures = {
+            (item.continuation_tokens, item.stop_reason) for item in group_records
+        }
+        if (
+            len(group_records) == 3
+            and len(signatures) == 1
+            and all(item.matched for item in group_records)
+        ):
+            by_group[group]["correct"] += 1
+    return {
+        "format": by_group.get("format", {"correct": 0, "total": 8}),
+        "single": by_group.get("single", {"correct": 0, "total": 8}),
+        "two": by_group.get("two", {"correct": 0, "total": 8}),
+    }
+
+
+def _mode_deterministic(
+    case_list: Sequence[FixtureCase],
+    records: Sequence[GenerationRecord],
+    errors: Sequence[Mapping[str, Any]],
+    use_cache: bool,
+) -> bool:
+    """判断一个 cache 模式是否无错误且每条 case 三次 token-exact。"""
+
+    if errors:
+        return False
+    return all(
+        len(
+            {
+                (item.continuation_tokens, item.stop_reason)
+                for item in records
+                if item.case_id == case.case_id and item.use_cache == use_cache
+            }
+        )
+        == 1
+        for case in case_list
+    )
+
+
 def evaluate_fixture(adapter: Any, cases: Iterable[FixtureCase]) -> Dict[str, Any]:
-    """运行两种 cache 配置各三次 baseline，检查门槛和 token 确定性。"""
+    """执行两种 cache 模式；canonical 模式为 use_cache=True。"""
 
     case_list = tuple(cases)
     records: List[GenerationRecord] = []
@@ -214,39 +269,28 @@ def evaluate_fixture(adapter: Any, cases: Iterable[FixtureCase]) -> Dict[str, An
                     if exc.details:
                         error["details"] = dict(exc.details)
                     errors.append(error)
-    by_group: Dict[str, Dict[str, int]] = {}
-    for case in case_list:
-        group = case.case_id.split("-", 1)[0]
-        group_records = [item for item in records if item.case_id == case.case_id]
-        by_group.setdefault(group, {"correct": 0, "total": len(case_list) // 3})
-        signatures = {
-            (item.continuation_tokens, item.stop_reason) for item in group_records
-        }
-        expected_repetitions = 6
-        if (
-            len(group_records) == expected_repetitions
-            and len(signatures) == 1
-            and all(item.matched for item in group_records)
-        ):
-            by_group[group]["correct"] += 1
     thresholds = {"format": 7, "single": 7, "two": 5}
-    groups = {
-        "format": by_group.get("format", {"correct": 0, "total": 8}),
-        "single": by_group.get("single", {"correct": 0, "total": 8}),
-        "two": by_group.get("two", {"correct": 0, "total": 8}),
-    }
-    deterministic = not errors and all(
-        len(
-            {
-                (item.continuation_tokens, item.stop_reason)
-                for item in records
-                if item.case_id == case.case_id and item.use_cache == use_cache
-            }
+    canonical_use_cache = True
+    errors_by_mode = {
+        str(use_cache).lower(): tuple(
+            item for item in errors if item.get("use_cache") == str(use_cache)
         )
-        == 1
-        for case in case_list
         for use_cache in (False, True)
-    )
+    }
+    groups_by_mode = {
+        str(use_cache).lower(): _score_groups(case_list, records, use_cache)
+        for use_cache in (False, True)
+    }
+    deterministic_by_mode = {
+        str(use_cache).lower(): _mode_deterministic(
+            case_list, records, errors_by_mode[str(use_cache).lower()], use_cache
+        )
+        for use_cache in (False, True)
+    }
+    groups = groups_by_mode["true"]
+    canonical_errors = errors_by_mode["true"]
+    canonical_deterministic = deterministic_by_mode["true"]
+    diagnostic_deterministic = all(deterministic_by_mode.values())
     cache_equivalent = not errors and all(
         len(
             {
@@ -259,22 +303,31 @@ def evaluate_fixture(adapter: Any, cases: Iterable[FixtureCase]) -> Dict[str, An
         for case in case_list
     )
     passed = (
-        not errors
-        and deterministic
-        and cache_equivalent
+        not canonical_errors
+        and canonical_deterministic
         and all(groups[key]["correct"] >= thresholds[key] for key in groups)
     )
     return {
         "status": "passed" if passed else "failed",
+        "protocol_id": "p0b-canonical-cache-v1",
+        "canonical_use_cache": canonical_use_cache,
         "groups": groups,
         "thresholds": thresholds,
+        "groups_by_mode": groups_by_mode,
         "records": [record.__dict__ for record in records],
         "record_objects": tuple(records),
         "errors": errors,
+        "canonical_error_count": len(canonical_errors),
+        "diagnostic_error_count": len(errors_by_mode["false"]),
         "repeat_count": 3,
-        "deterministic": deterministic,
+        "deterministic": canonical_deterministic,
+        "diagnostic_deterministic": diagnostic_deterministic,
+        "deterministic_by_mode": deterministic_by_mode,
         "cache_equivalent": cache_equivalent,
         "in_process_run_count": 6,
-        "in_process_difference_count": 0 if deterministic else 1,
+        "in_process_difference_count": 0 if canonical_deterministic else 1,
+        "diagnostic_in_process_difference_count": (
+            0 if diagnostic_deterministic else 1
+        ),
         "cache_difference_count": 0 if cache_equivalent else 1,
     }

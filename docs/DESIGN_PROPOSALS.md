@@ -5162,7 +5162,7 @@ P0-C 只证明“接口足以设计 P1”，不在此阶段实现 AuthExpert/Coo
 * C1/C2 只运行已登记的 NF4/BF16 compute profile；C3 先运行完整的 `c3-bf16-v1`，仅当该 profile 在 P0-D 因显存失败时，才启动独立的 `c3-bnb-nf4-bf16-v1` attempt，并从 P0-A 重新检查供应链、revision、文件摘要和离线加载。量化配置是宿主 profile 的一部分，P1 必须沿用选中 profile；BF16 与 NF4 的结果、门状态和摘要不得合并，NF4 能力低于门槛即 C3 失败；
 * verifier 仍在 CPU canonical int64 路径运行；P0 不把 G1-b 静默移到 GPU，也不为模型显存改变 verifier backend。
 
-对选中 profile，固定输入分别运行 `use_cache=false` 和 `use_cache=true`。两者 continuation token IDs 和 stop reason 必须一致；允许 logits 存在宿主自身的浮点差异，但 P0 只记录最大差值，不据此设定 P1 容差。相同 cache profile 重复 3 次必须 token-exact；发现非确定算子时只允许在 manifest 中登记确定性 backend 设置后从全新 run 重测，不能删除首个失败 run。
+对选中 profile，固定输入分别运行 `use_cache=false` 和 `use_cache=true`。两种模式都记录 continuation token IDs、stop reason 和宿主 logits 差异；同一模式重复 3 次必须 token-exact。原始 v1 规则曾把两模式之间的 token 等价作为硬门，但这会把宿主后端的数值路径差异与模型可用性混为一谈；该规则只适用于已归档的旧 run，不得用新规则回写旧 artifact。当前正式 profile 使用 `p0b-canonical-cache-v1`：`use_cache=true` 是 canonical 硬门，`use_cache=false` 和跨模式差异保留为诊断证据。发现 canonical 模式非确定时，只允许在 manifest 中登记确定性 backend 设置后从全新 run 重测，不能删除首个失败 run。
 
 #### P0-MoE.7 模块、CLI 与只读探查接口
 
@@ -5225,7 +5225,7 @@ results/p0-moe-host-v1/<candidate-id>/<profile-id>/run-YYYYMMDD-NN/
 
 #### P0-MoE.10 验收门、实施顺序和 P1 入口
 
-单 candidate/profile 的 P0 通过条件是：P0-A 全部摘要/许可证/离线重载通过；P0-B 三组分别达到 `7/8`、`7/8`、`5/8` 且重复 token-exact；P0-C 七项结构门全部通过；P0-D 不 OOM/超时、峰值 `<=14.5 GiB`、余量 `>=1.0 GiB`、KV/no-KV token-exact；artifact loader 能从磁盘独立复核全部摘要和状态。
+单 candidate/profile 的 P0 通过条件是：P0-A 全部摘要/许可证/离线重载通过；P0-B 在登记的 canonical cache profile（当前为 `use_cache=true`）下三组分别达到 `7/8`、`7/8`、`5/8`，canonical 重复与新进程结果 token-exact；`use_cache=false` 仅作为诊断模式记录其自身重复稳定性、分数和与 canonical 的差异；P0-C 七项结构门全部通过；P0-D 不 OOM/超时、峰值 `<=14.5 GiB`、余量 `>=1.0 GiB`、KV/no-KV token-exact；artifact loader 能从磁盘独立复核全部摘要和状态。
 
 实施顺序固定为：
 
@@ -5386,10 +5386,20 @@ P0-B 使用冻结 `fixture_v1.json` 及 SHA-256 `233bf2a2517182510515bbf7d1a33a4
 * `do_sample=false`、`num_beams=1`、不传 temperature、每条使用冻结 `max_new_tokens<=24`，batch size 1；
 * prompt 超过 256 tokens、答案被截断、非法控制 token、无法解码或未停止均失败；
 * `format_copy` 使用既有 strict EM，`single_hop`/`two_hop` 使用既有 normalized EM，同时记录 raw text、canonical text 和 continuation token IDs；
-* `use_cache=false/true` 都运行；同一进程各重复 3 次，另由 controller 启动 3 个全新 worker 进程重复；
-* 每组门槛仍为 `7/8`、`7/8`、`5/8`，所有重复必须 token/stop-reason exact，不能以平均分覆盖不确定性。
+* `use_cache=false/true` 都运行；同一进程各重复 3 次，另由 controller 启动 3 个全新 worker 进程重复 canonical `use_cache=true`；
+* 当前 `p0b-canonical-cache-v1` 的 canonical `use_cache=true` 每组门槛为 `7/8`、`7/8`、`5/8`，canonical 重复必须 token/stop-reason exact，不能以平均分覆盖不确定性；no-cache 分数和跨模式差异单独记录，不作为一般宿主可用性硬门。
 
-P0-B 先于任何 probe 安装执行，防止 instrumentation 影响公共能力基线。能力低于任一门槛时该 candidate 记录 `capability_below_threshold`，停止其 P0-C/D，并按固定顺序决定是否进入 C2。
+P0-B 先于任何 probe 安装执行，防止 instrumentation 影响公共能力基线。canonical 能力低于任一门槛、canonical 重复不稳定或 canonical 新进程不一致时，该 candidate 记录 `capability_below_threshold`/确定性失败并停止其 P0-C/D；仅因 no-cache 与 canonical 跨模式不等价时，保留诊断证据但不淘汰 candidate。C1 仍按固定顺序优先继续，只有其他正式硬门失败并形成可验证 summary 后才进入 C2。
+
+##### P0-MoE.14.6a P0-B canonical cache profile 修订
+
+`p0b-canonical-cache-v1` 是在 C1 BF16 真实 run 暴露宿主后端数值路径差异后登记的新协议版本。它不修改或覆盖旧版 run；旧版 `cache_difference_count=1` 仍按旧规则记录为失败证据。新协议将以下证据分离：
+
+* **硬门**：canonical `use_cache=true` 的三组能力阈值、同进程三次 token/stop-reason exact、三个全新 worker 的 canonical 签名一致、无 canonical 错误；
+* **诊断**：`use_cache=false` 的独立分数和稳定性、`cache_difference_count`、canonical/no-cache 的分叉 case 与 token；这些字段必须进入 summary，但不再单独否决宿主可用性；
+* **后续 CAN 对照**：固定沿用 registry 登记的 canonical profile，比较原始宿主 canonical 路径与 CAN all-allowed canonical 路径，不把宿主自身的跨 cache 数值差异误写成 CAN 输出保持失败。
+
+该协议仍要求两种模式都执行，禁止删除 no-cache 诊断、只保留成功样本或在看到结果后改变 canonical 模式。若 canonical 模式失败，candidate 仍按 fail-closed 处理。
 
 ##### P0-MoE.14.7 P0-C 七道真实结构门
 

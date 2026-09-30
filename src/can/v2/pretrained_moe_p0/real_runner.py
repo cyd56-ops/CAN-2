@@ -155,9 +155,14 @@ class RealP0Runner:
             stage_timings["p0b_seconds"] = capability_seconds
             generations.extend(capability["record_objects"])
             p0b_metrics = {
+                "protocol_id": capability.get("protocol_id", "p0b-canonical-cache-v1"),
+                "canonical_use_cache": capability.get("canonical_use_cache", True),
                 "groups": capability.get("groups", {}),
                 "thresholds": capability.get("thresholds", {}),
+                "groups_by_mode": capability.get("groups_by_mode", {}),
                 "error_count": len(capability.get("errors", ())),
+                "canonical_error_count": capability.get("canonical_error_count", 0),
+                "diagnostic_error_count": capability.get("diagnostic_error_count", 0),
                 "error_code_counts": self._p0b_error_code_counts(capability),
                 "error_examples": self._p0b_error_examples(capability),
             }
@@ -167,6 +172,12 @@ class RealP0Runner:
                     "in_process_difference_count", 1
                 ),
                 "cache_difference_count": capability.get("cache_difference_count", 1),
+                "diagnostic_in_process_difference_count": capability.get(
+                    "diagnostic_in_process_difference_count", 1
+                ),
+                "diagnostic_deterministic": capability.get(
+                    "diagnostic_deterministic", False
+                ),
                 "new_process_run_count": 0,
                 "new_process_difference_count": None,
             }
@@ -423,12 +434,21 @@ class RealP0Runner:
 
     @staticmethod
     def _p0b_signature(capability: Mapping[str, Any]) -> Mapping[str, Any]:
-        """提取不含 prompt 的 P0-B token/停止签名。"""
+        """提取 canonical cache 模式的不含 prompt token/停止签名。"""
         records = capability.get("record_objects")
         if not isinstance(records, tuple):
             raise P0Error("cross_process_evidence_invalid", "P0-B records 缺失")
+        canonical_use_cache = bool(capability.get("canonical_use_cache", True))
+        canonical_records = [
+            item for item in records if item.use_cache == canonical_use_cache
+        ]
+        if not canonical_records:
+            raise P0Error(
+                "cross_process_evidence_invalid", "canonical P0-B records 缺失"
+            )
         return {
             "status": capability.get("status"),
+            "protocol_id": capability.get("protocol_id", "p0b-canonical-cache-v1"),
             "groups": capability.get("groups"),
             "signatures": [
                 {
@@ -438,7 +458,7 @@ class RealP0Runner:
                     "stop_reason": item.stop_reason,
                     "matched": item.matched,
                 }
-                for item in records
+                for item in canonical_records
             ],
         }
 

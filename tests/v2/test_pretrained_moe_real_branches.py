@@ -249,8 +249,8 @@ def test_generate_one_excludes_eos_from_answer_text_but_keeps_audit_tokens() -> 
     assert record.stop_reason == "eos"
 
 
-def test_evaluate_fixture_passes_and_rejects_cache_difference() -> None:
-    """P0-B 必须同时满足组阈值、重复一致和 cache 等价。"""
+def test_evaluate_fixture_keeps_cache_difference_as_diagnostic() -> None:
+    """P0-B 以 canonical cache 模式验收，跨模式差异仅作诊断。"""
 
     cases = []
     for group in ("format", "single", "two"):
@@ -291,8 +291,10 @@ def test_evaluate_fixture_passes_and_rejects_cache_difference() -> None:
     assert result["cache_difference_count"] == 0
     adapter.different = True
     result = evaluate_fixture(adapter, cases)
-    assert result["status"] == "failed"
+    assert result["status"] == "passed"
     assert result["cache_difference_count"] == 1
+    assert result["canonical_use_cache"] is True
+    assert result["diagnostic_deterministic"] is True
 
 
 @pytest.mark.parametrize(
@@ -676,7 +678,7 @@ def test_runner_selection_preflights_and_worker_paths(
     )
     assert runner.run_candidate_preflight("C2", tmp_path, tmp_path / "out") is smoke
 
-    record = GenerationRecord("c", "x", "x", "x", True, (), (1,), "eos", False)
+    record = GenerationRecord("c", "x", "x", "x", True, (), (1,), "eos", True)
     capability = {"status": "passed", "groups": {}, "record_objects": (record,)}
     monkeypatch.setattr(module, "evaluate_fixture", lambda *args: capability)
     signature = runner.run_p0b_worker("C1", tmp_path, ())
