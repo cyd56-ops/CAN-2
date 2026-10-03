@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import time
 from collections import Counter
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Tuple
 
@@ -209,6 +210,21 @@ class RealP0Runner:
                     ),
                 }
             )
+            all_allowed_invocations = tuple(
+                all_allowed.get("grouped_mm_invocations", ())
+            )
+            if all_allowed_invocations:
+                router_ledger.append(
+                    {
+                        "phase": "all_allowed_grouped_mm_execution",
+                        "execution_observer_kind": all_allowed.get(
+                            "execution_observer_kind"
+                        ),
+                        "invocations": [
+                            asdict(item) for item in all_allowed_invocations
+                        ],
+                    }
+                )
             probe_result = structure.get("probe_result")
             if probe_result is not None:
                 router_ledger.extend(
@@ -220,6 +236,17 @@ class RealP0Runner:
                     for index, selected in enumerate(probe_result.selected_ids)
                 )
                 expert_calls.extend(probe_result.expert_calls)
+                if probe_result.grouped_mm_invocations:
+                    router_ledger.append(
+                        {
+                            "phase": "grouped_mm_execution",
+                            "execution_observer_kind": probe_result.execution_observer_kind,
+                            "invocations": [
+                                asdict(item)
+                                for item in probe_result.grouped_mm_invocations
+                            ],
+                        }
+                    )
             if not structure["passed"]:
                 failures.extend(structure["failure_codes"])
                 code = (
@@ -230,6 +257,11 @@ class RealP0Runner:
                 raise P0Error(code, "P0-C 结构门失败")
             mixed_shared = sum(item.branch == "shared" for item in expert_calls)
             mixed_routed = sum(item.branch == "routed" for item in expert_calls)
+            mixed_invocations = (
+                tuple(probe_result.grouped_mm_invocations)
+                if probe_result is not None
+                else tuple()
+            )
             p0c_metrics = {
                 "shared_actual_calls": int(all_allowed.get("shared_actual_calls", 0))
                 + mixed_shared,
@@ -237,6 +269,38 @@ class RealP0Runner:
                 + mixed_routed,
                 "mixed_shared_actual_calls": mixed_shared,
                 "mixed_routed_actual_calls": mixed_routed,
+                "execution_observer_kind": (
+                    probe_result.execution_observer_kind
+                    if probe_result is not None
+                    else None
+                ),
+                "grouped_mm_invocation_count": (
+                    len(probe_result.grouped_mm_invocations)
+                    if probe_result is not None
+                    else 0
+                ),
+                "grouped_mm_counts": (
+                    list(mixed_invocations[0].counts) if mixed_invocations else []
+                ),
+                "all_allowed_grouped_mm_invocation_count": len(all_allowed_invocations),
+                "all_allowed_grouped_mm_counts": (
+                    list(all_allowed_invocations[0].counts)
+                    if all_allowed_invocations
+                    else []
+                ),
+                "mixed_grouped_mm_original_rows_by_expert": (
+                    [
+                        list(rows)
+                        for rows in mixed_invocations[0].original_rows_by_expert
+                    ]
+                    if mixed_invocations
+                    else []
+                ),
+                "mixed_grouped_mm_zero_call_count": (
+                    sum(count == 0 for count in mixed_invocations[0].counts)
+                    if mixed_invocations
+                    else 0
+                ),
             }
             p0c = "passed"
             resources.append(sample_resource("structure", started, loaded.model))

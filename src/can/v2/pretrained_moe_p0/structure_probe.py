@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List, Mapping, Sequence, Tuple
 
+from .grouped_mm_observer import validate_grouped_invocations
 from .real_types import (
     ArchitectureMap,
     ProbeRequest,
@@ -69,7 +70,10 @@ def validate_probe_result(
     for row_index, selected in enumerate(result.selected_ids):
         allowed = flattened[row_index]
         if not any(allowed) and selected:
-            raise P0Error("routed_call_not_zero", "shared-only 行仍选择 routed expert")
+            if any(expert != experts for expert in selected):
+                raise P0Error(
+                    "routed_call_not_zero", "shared-only 行仍选择 routed expert"
+                )
         if any(allowed):
             if len(selected) != request.native_top_k:
                 raise P0Error("topk_changed", "partial mask 改变了 native top-k")
@@ -82,6 +86,61 @@ def validate_probe_result(
             ):
                 raise P0Error(
                     "forbidden_expert_selected", "selected expert 超出 allowed mask"
+                )
+    if result.grouped_mm_invocations:
+        if result.execution_observer_kind != "grouped_mm_offsets":
+            raise P0Error(
+                "expert_call_unobservable", "grouped invocation observer 类型非法"
+            )
+        validate_grouped_invocations(result.grouped_mm_invocations)
+        invocation = result.grouped_mm_invocations[0]
+        counts = invocation.counts
+        rows_by_expert = invocation.original_rows_by_expert
+        if len(rows_by_expert) != len(counts):
+            raise P0Error(
+                "batch_index_not_preserved",
+                "grouped-mm 未提供完整的 expert 到原始 token 行映射",
+            )
+        valid_rows = tuple(
+            index
+            for index, _ in enumerate(flattened)
+            if request.padding_mask[index // sequence][index % sequence]
+        )
+        valid_row_set = set(valid_rows)
+        routed_occurrences = {index: 0 for index in valid_rows}
+        for expert_index, count in enumerate(counts):
+            rows = rows_by_expert[expert_index]
+            if len(rows) != count:
+                raise P0Error(
+                    "batch_index_not_preserved",
+                    "grouped-mm counts 与原始 token 行映射长度不一致",
+                )
+            for global_row in rows:
+                if global_row not in valid_row_set:
+                    raise P0Error(
+                        "batch_index_not_preserved",
+                        "grouped-mm 行映射包含 padding 或越界 token",
+                    )
+                if not flattened[global_row][expert_index]:
+                    raise P0Error(
+                        "forbidden_expert_called",
+                        "grouped-mm 原始行映射包含 forbidden expert",
+                    )
+                routed_occurrences[global_row] += 1
+            allowed_somewhere = any(
+                flattened[index][expert_index] for index in valid_rows
+            )
+            if not allowed_somewhere and count != 0:
+                raise P0Error(
+                    "forbidden_expert_called",
+                    "grouped-mm 实际 count 包含完全 forbidden expert",
+                )
+        for global_row in valid_rows:
+            expected = request.native_top_k if any(flattened[global_row]) else 0
+            if routed_occurrences[global_row] != expected:
+                raise P0Error(
+                    "routed_call_not_zero" if expected == 0 else "topk_changed",
+                    "grouped-mm 原始行映射与 allowed mask/top-k 不一致",
                 )
     valid_indices = tuple(
         index

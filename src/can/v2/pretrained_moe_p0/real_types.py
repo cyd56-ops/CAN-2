@@ -9,6 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
+from .grouped_mm_observer import GroupedMMInvocation
+
 
 @dataclass(frozen=True)
 class SnapshotFile:
@@ -98,6 +100,8 @@ class ProbeResult:
     reassembled_indices: Tuple[int, ...]
     kv_bound: bool
     error: Optional[str] = None
+    grouped_mm_invocations: Tuple[GroupedMMInvocation, ...] = ()
+    execution_observer_kind: Optional[str] = None
 
 
 @dataclass(frozen=True)

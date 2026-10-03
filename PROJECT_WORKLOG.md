@@ -3,10 +3,14 @@
 ## 当前研究阶段
 
 **阶段**: V2 - Gate Layer 在计算图中间架构  
-**状态**: R3、G0、M0、M1a tiny-MoE contract、M2 多专家 scope contract、G1-a reference、G1-b CPU verifier、I1、P0-MoE 本地实现与正式 fixture、P0-MoE.14 NF4 runner 均已通过 Claude contract 验收；P0-A-static 正式 artifact 已验收通过，C1/C2 passed、C3 rejected。C1 NF4 在服务器未通过 expert 量化可验证性；vGPU-48G BF16 非正式 load smoke 成功，当前新增 `c1-bf16-v1` 独立 profile，等待 Claude contract 复审，尚未运行 BF16 正式 P0。
-**最后更新**: 2026-09-30（C1 BF16 P0-B canonical cache 协议调整，待提交与 Claude contract 复审）
+**状态**: R3、G0、M0、M1a tiny-MoE contract、M2 多专家 scope contract、G1-a reference、G1-b CPU verifier、I1、P0-MoE 本地实现与正式 fixture、P0-MoE.14 NF4 runner 均已通过 Claude contract 验收；P0-A-static 正式 artifact 已验收通过，C1/C2 passed、C3 rejected。C1 NF4 在服务器未通过 expert 量化可验证性；vGPU-48G BF16 非正式 load smoke 成功，当前新增 `c1-bf16-v1` 独立 profile，等待 Claude contract 复审，尚未运行 BF16 正式 P0。grouped-mm observer 实现已完成本地回归，等待 Claude contract 验收。
+**最后更新**: 2026-10-03（C1 grouped-mm observer 实现完成，等待 Claude contract 复审）
 
-**当前唯一下一步**：完成 `p0b-canonical-cache-v1` 代码、设计文档和测试的提交，交 Claude contract 复审；复审通过后在服务器复用现有只读 C1 BF16 snapshot，按新协议重新运行 C1 P0-B，不下载 C2。旧版 C1 `run-20260927-04` 保留为 v1 cache 等价硬门失败证据，不覆盖、不重写。
+**当前唯一下一步**：将 grouped-mm observer 实现交 Claude contract 验收；验收通过后提交推送，服务器复用现有只读 C1 BF16 snapshot 重跑 P0-C。未取得新的正式 P0-C 失败 artifact 前，不下载 C2；旧版 C1 P0-C 失败 artifact 保留、不覆盖。
+
+**2026-10-03 C1 grouped-mm observer 实现 checkpoint（待 Claude contract 复审）**：`GroupedMMObserver` 通过局部 `TorchDispatchMode` 捕获真实 `aten::_grouped_mm` 的完整 offsets/counts，并捕获实际 expert sort 的 permutation，将 grouped 行映射回 `global_row=batch_index*sequence+token_index`；native top-k 已传入 Qwen adapter，up/down invocation 必须具有一致的 offsets、counts 和原始行映射。`validate_probe_result()` 现在逐 expert、逐原始行检查 allowed mask、padding、native top-k 和 shared-only zero-call，拒绝缺失或篡改映射。runner 的 `router_ledger.jsonl` 同时保存 all-allowed 与 mixed 的完整 grouped invocation，summary 增加 invocation/counts、原始行映射和 zero-call 诊断字段；未改变 backend、权重、offsets 或旧版失败 artifact。新增无权重映射负向测试；完整 `tests/v2/` **1047 passed**（1 个既有 PyTorch sparse warning），grouped/真实宿主专项 **92 passed**；Black、isort、compileall、`git diff --check` 通过。真实 Transformers/CUDA P0-C 尚未运行，不能据此宣称 C1 已通过。
+
+**2026-10-03 C1 grouped-mm observer 设计修订 checkpoint（已实现）**：服务器运行时审查确认 C1 使用 `config._experts_implementation=grouped_mm`，实际 `grouped_mm_experts_forward` 在两次 `_grouped_linear` 中将 `offsets` 传入 `_grouped_mm`；因此当前 `QwenHostAdapter` 无条件报告 `supports_execution_counter=False` 不能作为 C1 后端不可观测的结论。本次在设计文档中增加受限 grouped-mm execution observer 契约，并完成对应实现：只有实际 grouped-matmul invocation 消费的完整 `offsets` 和 sort permutation 才能证明 routed expert 执行/zero-call；禁止离线从 router IDs 重算、切换 eager/逐 expert backend、全局永久 monkey-patch 或修改权重/offsets。旧版 C1 P0-C artifact 未重写，C2 未下载。
 
 **2026-09-30 P0-B canonical cache 协议调整 checkpoint（待提交）**：采纳“宿主跨 cache 后端差异不等同于 CAN 失败”的意见，新增 `p0b-canonical-cache-v1`。`use_cache=true` 作为正式 canonical 硬门：三组能力阈值、同进程重复和三 worker 签名必须通过；`use_cache=false` 仍执行并记录独立分数、稳定性和 `cache_difference_count`，但跨模式差异不再单独淘汰 candidate。`groups`、cross-process signature 和 `deterministic` 现在明确对应 canonical 模式，summary 另保存 `groups_by_mode`、`diagnostic_deterministic`、canonical/diagnostic 错误计数。新增/更新协议测试；旧版失败 artifact 不改写。P0 专项 **81 passed**，完整 `tests/v2/` **1036 passed**（1 个既有 PyTorch sparse warning）；Black、isort（`--profile black`）、compileall、`git diff --check` 通过。尚未提交或推送，待 Claude contract 复审。
 

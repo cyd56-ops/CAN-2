@@ -141,6 +141,9 @@ def _infer_architecture(candidate: CandidateSpec, model: Any) -> ArchitectureMap
         if isinstance(implementation, str):
             backend = implementation
     config = getattr(model, "config", None)
+    config_implementation = getattr(config, "_experts_implementation", None)
+    if isinstance(config_implementation, str):
+        backend = config_implementation
     for attr in (
         "num_experts_per_tok",
         "num_selected_experts",

@@ -6,6 +6,7 @@
 from .artifacts import ArtifactWriter
 from .deepseek_adapter import DeepSeekHostAdapter
 from .fixture import load_fixture, validate_fixture
+from .grouped_mm_observer import GroupedMMInvocation, GroupedMMObserver
 from .host_adapter import FakeHostAdapter, HostAdapter, inspect_host
 from .p0a import finalize_p0a_registry, prepare_p0a_reviews
 from .qwen_adapter import QwenHostAdapter
@@ -43,6 +44,8 @@ __all__ = [
     "DeepSeekHostAdapter",
     "GenerationRecord",
     "GenerationRequest",
+    "GroupedMMInvocation",
+    "GroupedMMObserver",
     "PreflightResult",
     "ProbeRequest",
     "ProbeResult",

@@ -5376,6 +5376,23 @@ class RealHostAdapter(Protocol):
 
 C1 的 router 为独立 `Qwen2MoeTopKRouter`，但 routed expert 使用打包参数和可能的优化实现。C1 probe 必须确认运行时实际采用的 expert backend：若可以在执行每个 expert 的实际 matmul 前记录 `expert_idx`，则生成真实调用台账；若原生 backend 只能看到 router selection 而不能证明实际计算，C1 以 `expert_call_unobservable` 失败，不能用 selection ledger 替代执行证据。不得为了获得计数切换到 eager、逐 expert 或其他替代 backend；这会改变待验证对象，不能通过 logits 容差补救。
 
+##### P0-MoE.14.5a C1 grouped-mm execution observer 修订
+
+服务器 runtime source audit 已确认当前 C1 使用 `config._experts_implementation=grouped_mm`。其原生路径先将 `top_k_index` 排序，计算 `tokens_per_expert` 与累计 `offsets`，再把同一 `offsets` 传给 up/down 两次 `_grouped_mm`。因此，对 grouped-GEMM 后端，真实执行证据可以从实际 grouped-matmul invocation 的 `offsets` 取得，但不得把 router selection 或事后重算的 offsets 当作执行证据。
+
+本修订只扩展证据表示，不降低 P0-C zero-call 硬门：
+
+* `expert_call_ledger` 允许两种互斥形式：逐 expert matmul 调用记录，或 `grouped_mm_offsets` 记录。后者每条记录至少绑定 `layer_path`、`projection_stage`（`up`/`down`）、实际 operator invocation 标识、输入行数 `S`、expert 数 `E`、完整 canonical `offsets` 或完整 `counts`（二者至少一个可供机器复核），其 SHA-256 digest、observer backend 和 request/probe ID。digest 只能绑定受限台账，不能替代用于验算 zero-call 的完整值。
+* 对长度为 `E` 的非递减 `offsets`，定义 `count[0]=offsets[0]`、`count[i]=offsets[i]-offsets[i-1]`。必须验证 dtype、设备、长度、非负性、单调性以及末值；末值必须等于本次 grouped operator 实际消费的非 sentinel 行数。`count[i] > 0` 只表示该 expert 在实际 grouped operator 中有输入行，`count[i] = 0` 才能作为该 expert zero-call 的一部分证据。若 probe 是 mixed batch，observer 还必须从同一次实际 sort invocation 保存完整 permutation，并将每个 grouped 行映射回 `global_row`；缺少该行级映射时不得声称 shared-only 行 zero-call 或通过 mixed probe。
+* up/down 两次实际 invocation 必须分别被 observer 捕获，并具有相同的有效 expert 分组、行数和 probe 绑定；只捕获 Python 层 `tokens_per_expert` 计算、只捕获 `top_k_index`，或只看到 `_grouped_linear` 外层调用，均不足以通过。
+* shared-only 行必须使所有 routed expert 的实际 grouped counts 为零；partial mask 中 forbidden expert 的实际 grouped counts 必须为零；允许的 expert 仍须满足 native top-k 和每行索引保持要求。sentinel/无效尾行不得计入实际 GEMM 行数。
+* observer 必须在候选 adapter 的可恢复 probe context 内安装，并在实际 grouped operator 边界读取调用参数；它不得修改 `input`、`weight`、`offsets`、输出、模型参数或 backend 选择。优先使用宿主/backend 提供的受支持 callback 或局部 `TorchDispatchMode`；如果只能通过全局永久 monkey-patch、替换 `_grouped_mm`、修改 Transformers 源码或切换 `_experts_implementation` 才能取得记录，则以 `expert_call_unobservable` 失败。
+* observer 不能把离线根据 `top_k_index` 重算的 offsets 回填为 execution ledger。所有记录必须来自本次实际 operator invocation，并在卸载后恢复原对象；all-allowed 仍须走同一 grouped-mm 原生路径，token IDs、停止原因、state digest 和预登记业务输出保持不变。
+
+新增的诊断细分码为 `grouped_mm_invocation_unobservable`、`grouped_mm_offsets_invalid`、`grouped_mm_stage_mismatch`；它们只能作为 `expert_call_unobservable` 或 `host_interface_not_controllable` 的受限诊断，不能把失败降级为通过。正式 summary 必须记录 `execution_observer_kind=grouped_mm_offsets`、up/down invocation 数、有效 grouped 行数和 forbidden/zero-call 计数；不得保存 prompt、credential 或完整 hidden。
+
+实现前必须用无权重 stand-in 覆盖：有效 offsets、空 expert 组、sentinel 尾行、up/down 不一致、非单调/越界 offsets、observer 异常恢复、重复安装、并发/重入拒绝、mixed-batch 原始索引重组和 all-allowed 输出保持。服务器正式 P0-C 还必须证明 observer 捕获的是实际 grouped operator 参数，而非 router 派生值；在该证据产生前，C1 仍视为 P0-C 未通过，不能进入 P1，也不能据此下载 C2。
+
 C2 的 router 为独立 `MoEGate`，routed experts 是 `ModuleList`，可对实际 expert module forward 计数。两种 adapter 均只能在 router softmax/top-k 之前施加布尔 mask；post-dispatch 乘零不合格。all-allowed 时直接走原实现，不进行无意义 `masked_fill`，要求 token、router IDs 和停止原因与 baseline 完全一致。partial mask 才进入受控 probe 路径。
 
 ##### P0-MoE.14.6 P0-B 公共能力执行
